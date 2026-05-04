@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import pg from "pg";
 import pool from "../db.js";
+import { projectPendingMatchesForCampaign } from "../utils/pendingMatches.js";
 import { parsePagination, softDeleteFilter, buildSortClause, handleMissingTableError } from "../utils/softDelete.js";
 import { sendTemplateEmail } from "../utils/emailService.js";
 import { Resend } from "resend";
@@ -14,11 +15,110 @@ import {
   getInvestmentNotificationRecipients,
   replaceInvestmentNotificationRecipients,
 } from "../utils/investmentNotifications.js";
+import {
+  CAMPAIGN_UPDATE_RECIPIENT_USERS_SQL,
+  CAMPAIGN_UPDATE_RECIPIENT_USER_IDS_SQL,
+  CAMPAIGN_UPDATE_RECIPIENT_COUNT_SQL,
+} from "../utils/campaignUpdateRecipients.js";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 
 const router = Router();
+
+// ── Unified investor source ──────────────────────────────────────────
+// Combines recommendations (status approved/pending, not linked to a Rejected
+// pending grant) with pending_grants in 'Pending' status that don't yet have
+// a recommendation row. Status mapping per row:
+//   pending grant linked & pg.status='Received'   → 'received'
+//   pending grant linked & pg.status='In Transit' → 'in transit'
+//   pending grant linked & pg.status='Pending'    → 'pending'  (rare; usually no rec exists yet)
+//   direct rec (no pg link), rec.status='approved' → 'received'
+//   direct rec (no pg link), rec.status='pending'  → 'pending'
+//   pending_grants in 'Pending' (no rec yet)       → 'pending'
+function unifiedInvestorsCTE(scope: { campaignParamIdx?: number } = {}): string {
+  const idx = scope.campaignParamIdx;
+  const recCampaignFilter = idx ? `AND r.campaign_id = $${idx}` : "";
+  const pgCampaignFilter = idx ? `AND pg.campaign_id = $${idx}` : "";
+  return `WITH unified_investors AS (
+    SELECT
+      r.campaign_id,
+      r.id AS source_id,
+      'recommendation'::text AS source_type,
+      LOWER(TRIM(r.user_email)) AS email_key,
+      r.user_email AS email,
+      COALESCE(NULLIF(TRIM(r.user_full_name), ''), r.user_email) AS name,
+      r.amount::numeric AS amount,
+      r.date_created,
+      CASE
+        -- Recommendation linked to a DAF / foundation pending grant: the
+        -- status follows the grant's funding pipeline (received → in transit
+        -- → pending). A manually-approved rec on a DAF is treated as received.
+        WHEN r.pending_grants_id IS NOT NULL THEN
+          CASE
+            WHEN LOWER(COALESCE(pg.status, '')) = 'received'   THEN 'received'
+            WHEN LOWER(COALESCE(pg.status, '')) = 'in transit' THEN 'in transit'
+            WHEN LOWER(r.status) = 'approved'                  THEN 'received'
+            ELSE 'pending'
+          END
+        -- No DAF / pending grant link = funded from wallet, cash, or match
+        -- grant. Money is already in our hands → always shown as received.
+        ELSE 'received'
+      END AS status,
+      -- Payment-method classification (mirrors the donation flow):
+      --   * Linked pending_grant whose daf_provider is the sentinel
+      --     "foundation grant" → 'foundation'
+      --   * Any other linked pending_grant → 'daf'
+      --   * No linked pending_grant → 'wallet' (cash / CC / ACH / account
+      --     balance / match grant). Match-grant rows are re-labeled to
+      --     'match' in the JS mapping using the matchInfo.asMatch lookup.
+      CASE
+        WHEN r.pending_grants_id IS NULL THEN 'wallet'
+        WHEN LOWER(TRIM(COALESCE(pg.daf_provider, ''))) = 'foundation grant' THEN 'foundation'
+        ELSE 'daf'
+      END AS payment_method,
+      pg.daf_provider AS daf_provider,
+      pg.daf_name     AS daf_name
+    FROM recommendations r
+    LEFT JOIN pending_grants pg ON r.pending_grants_id = pg.id
+    WHERE (r.is_deleted IS NULL OR r.is_deleted = false)
+      AND LOWER(r.status) IN ('approved', 'pending')
+      AND r.amount > 0
+      AND r.user_email IS NOT NULL
+      AND (pg.id IS NULL OR LOWER(COALESCE(pg.status, '')) <> 'rejected')
+      ${recCampaignFilter}
+    UNION ALL
+    SELECT
+      pg.campaign_id,
+      pg.id AS source_id,
+      'pending_grant'::text AS source_type,
+      LOWER(TRIM(u.email)) AS email_key,
+      u.email AS email,
+      COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS name,
+      COALESCE(NULLIF(pg.amount, '')::numeric, 0) AS amount,
+      pg.created_date AS date_created,
+      'pending'::text AS status,
+      CASE
+        WHEN LOWER(TRIM(COALESCE(pg.daf_provider, ''))) = 'foundation grant' THEN 'foundation'
+        ELSE 'daf'
+      END AS payment_method,
+      pg.daf_provider AS daf_provider,
+      pg.daf_name     AS daf_name
+    FROM pending_grants pg
+    JOIN users u ON pg.user_id = u.id
+    WHERE pg.campaign_id IS NOT NULL
+      AND LOWER(COALESCE(pg.status, '')) = 'pending'
+      AND (pg.is_deleted IS NULL OR pg.is_deleted = false)
+      AND COALESCE(NULLIF(pg.amount, '')::numeric, 0) > 0
+      AND u.email IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM recommendations r2
+        WHERE r2.pending_grants_id = pg.id
+          AND (r2.is_deleted IS NULL OR r2.is_deleted = false)
+      )
+      ${pgCampaignFilter}
+  )`;
+}
 
 const InvestmentStageEnum: Record<string, number> = {
   Private: 1,
@@ -212,14 +312,22 @@ router.get("/names", async (req: Request, res: Response) => {
       );
       res.json(result.rows.map((r: any) => ({ id: Number(r.id), name: r.name })));
     } else if (stage === 11) {
-      // Active investable campaigns: Private (1) or Public (2) and is_active = true
+      // Match-grant eligible campaigns:
+      //   Private (1), Public (2), Completed - Ongoing (7), Completed - Ongoing/Private (9)
+      // Excludes: Closed - Invested (3), Closed - Not Invested (4), New (5),
+      //           Compliance Review (6), Vetting (8), CataCap Portfolio (10).
       const result = await pool.query(
         `SELECT id, name FROM campaigns
-         WHERE stage IN ($1, $2) AND is_active = true
+         WHERE stage IN ($1, $2, $3, $4)
          AND TRIM(COALESCE(name, '')) != ''
          AND (is_deleted IS NULL OR is_deleted = false)
          ORDER BY name ASC`,
-        [InvestmentStageEnum.Private, InvestmentStageEnum.Public]
+        [
+          InvestmentStageEnum.Private,
+          InvestmentStageEnum.Public,
+          InvestmentStageEnum.CompletedOngoing,
+          InvestmentStageEnum.CompletedOngoingPrivate,
+        ]
       );
       res.json(result.rows.map((r: any) => ({ id: Number(r.id), name: r.name })));
     } else {
@@ -801,6 +909,68 @@ router.get("/:id/notes/export", async (req: Request, res: Response) => {
   }
 });
 
+async function fetchMatchInfoForCampaign(campaignId: number) {
+  const result = await pool.query(
+    `SELECT a.match_grant_id,
+            cmg.name AS grant_name,
+            a.triggered_by_recommendation_id AS triggered_rec_id,
+            COALESCE(NULLIF(TRIM(tr.user_full_name), ''), tr.user_email) AS triggered_name,
+            tr.amount::numeric AS triggered_amount,
+            a.donor_recommendation_id AS donor_rec_id,
+            COALESCE(NULLIF(TRIM(dr.user_full_name), ''), dr.user_email) AS donor_name,
+            a.amount::numeric AS match_amount
+       FROM campaign_match_grant_activity a
+       JOIN campaign_match_grants cmg ON cmg.id = a.match_grant_id
+       LEFT JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
+       LEFT JOIN recommendations dr ON dr.id = a.donor_recommendation_id
+      WHERE a.campaign_id = $1
+      ORDER BY a.id`,
+    [campaignId],
+  );
+
+  // Map: rec id of the donor (match contribution) → describes which investment it matches
+  const asMatch: Record<number, {
+    grantName: string;
+    triggeredRecId: number | null;
+    triggeredName: string | null;
+    triggeredAmount: number | null;
+    matchAmount: number;
+  }> = {};
+
+  // Map: rec id of the triggering investor → list of matches their investment generated
+  const triggeredBy: Record<number, Array<{
+    grantName: string;
+    donorName: string | null;
+    donorRecId: number | null;
+    matchAmount: number;
+  }>> = {};
+
+  for (const row of result.rows) {
+    const matchAmount = parseFloat(row.match_amount) || 0;
+    if (row.donor_rec_id != null) {
+      asMatch[Number(row.donor_rec_id)] = {
+        grantName: row.grant_name,
+        triggeredRecId: row.triggered_rec_id != null ? Number(row.triggered_rec_id) : null,
+        triggeredName: row.triggered_name || null,
+        triggeredAmount: row.triggered_amount != null ? parseFloat(row.triggered_amount) : null,
+        matchAmount,
+      };
+    }
+    if (row.triggered_rec_id != null) {
+      const tid = Number(row.triggered_rec_id);
+      if (!triggeredBy[tid]) triggeredBy[tid] = [];
+      triggeredBy[tid].push({
+        grantName: row.grant_name,
+        donorName: row.donor_name || null,
+        donorRecId: row.donor_rec_id != null ? Number(row.donor_rec_id) : null,
+        matchAmount,
+      });
+    }
+  }
+
+  return { asMatch, triggeredBy };
+}
+
 router.get("/:id/investors", async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -809,55 +979,364 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       return;
     }
 
-    const PREDICATE = `r.campaign_id = $1
-         AND (r.is_deleted IS NULL OR r.is_deleted = false)
-         AND (LOWER(r.status) = 'approved' OR LOWER(r.status) = 'pending')
-         AND r.amount > 0
-         AND r.user_email IS NOT NULL`;
-
-    const [groupedResult, totalResult] = await Promise.all([
+    const [rowsResult, summaryResult, nameResult, matchInfo, projections] = await Promise.all([
       pool.query(
-        `SELECT
-           COALESCE(NULLIF(TRIM(MAX(r.user_full_name)), ''), MAX(r.user_email)) AS name,
-           MAX(r.user_email) AS email,
-           COUNT(*) AS contributions,
-           COALESCE(SUM(r.amount), 0) AS total_amount,
-           MAX(r.date_created) AS last_contribution_at
-         FROM recommendations r
-         WHERE ${PREDICATE}
-         GROUP BY LOWER(TRIM(r.user_email))
-         ORDER BY total_amount DESC, name ASC`,
+        `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
+         SELECT source_id, source_type, name, email, amount, date_created, status,
+                payment_method, daf_provider, daf_name
+           FROM unified_investors
+          ORDER BY amount DESC, name ASC, date_created DESC`,
         [id],
       ),
       pool.query(
-        `SELECT COALESCE(SUM(r.amount), 0) AS total_amount
-         FROM recommendations r
-         WHERE ${PREDICATE}`,
+        `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
+         SELECT COALESCE(SUM(amount), 0) AS total_amount,
+                COUNT(DISTINCT email_key) AS total_investors
+           FROM unified_investors`,
         [id],
       ),
+      pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
+      fetchMatchInfoForCampaign(id),
+      projectPendingMatchesForCampaign(id),
     ]);
 
-    const items = groupedResult.rows.map((r: any) => ({
-      name: r.name || "Anonymous",
-      email: r.email || null,
-      contributions: parseInt(r.contributions) || 0,
-      totalAmount: parseFloat(r.total_amount) || 0,
-      lastContributionAt: r.last_contribution_at
-        ? new Date(r.last_contribution_at).toISOString()
-        : null,
-    }));
+    const items: any[] = rowsResult.rows.map((r: any) => {
+      const sourceId = Number(r.source_id);
+      const sourceType = r.source_type as "recommendation" | "pending_grant";
+      const matchAsDonor = sourceType === "recommendation" ? matchInfo.asMatch[sourceId] || null : null;
+      const triggeredMatches = sourceType === "recommendation"
+        ? (matchInfo.triggeredBy[sourceId] || []).map((t) => ({ ...t, pending: false as const }))
+        : [];
+      // A recommendation with no linked pending_grant that was created by a
+      // match-grant landing is funded from grant escrow, not the donor's
+      // wallet. Re-label it from 'wallet' → 'match' so the UI badge is
+      // accurate. Detection: matchInfo.asMatch[sourceId] is populated.
+      const sqlPaymentMethod = (r.payment_method as string) || "wallet";
+      const paymentMethod: "wallet" | "daf" | "foundation" | "match" =
+        matchAsDonor && sqlPaymentMethod === "wallet"
+          ? "match"
+          : (sqlPaymentMethod as "wallet" | "daf" | "foundation");
+      return {
+        sourceId,
+        sourceType,
+        name: r.name || "Anonymous",
+        email: r.email || null,
+        totalAmount: parseFloat(r.amount) || 0,
+        date: r.date_created ? new Date(r.date_created).toISOString() : null,
+        status: r.status as "pending" | "in transit" | "received",
+        paymentMethod,
+        dafProvider: r.daf_provider || null,
+        dafName: r.daf_name || null,
+        match: (matchAsDonor || triggeredMatches.length > 0)
+          ? { asMatch: matchAsDonor ? { ...matchAsDonor, pending: false as const } : null, triggeredMatches }
+          : null,
+      };
+    });
 
-    const totalAmount = parseFloat(totalResult.rows[0]?.total_amount) || 0;
+    // ── Inject pending match projections ─────────────────────────────────
+    // 1. Append projection donor rows (status=pending) so admins can see who
+    //    will match each pending DAF when it lands. 2. Append "pending"
+    //    triggered annotations on the trigger investor's existing row.
+    const indexByKey = new Map<string, any>();
+    for (const it of items) indexByKey.set(`${it.sourceType}:${it.sourceId}`, it);
+
+    let projectedTotal = 0;
+    for (const p of projections) {
+      const triggerKey = `${p.trigger.triggerType}:${p.trigger.triggerId}`;
+      const triggerRow = indexByKey.get(triggerKey);
+      if (triggerRow) {
+        const tm = (triggerRow.match?.triggeredMatches as any[] | undefined) || [];
+        tm.push({
+          grantName: p.grantName,
+          donorName: p.donorName,
+          donorRecId: null,
+          matchAmount: p.projectedAmount,
+          pending: true,
+        });
+        triggerRow.match = {
+          asMatch: triggerRow.match?.asMatch ?? null,
+          triggeredMatches: tm,
+        };
+      }
+
+      // Synthetic negative id guarantees no collision with real rec/pg ids.
+      const syntheticId = -(p.grantId * 10_000_000 + p.trigger.triggerId);
+      items.push({
+        sourceId: syntheticId,
+        sourceType: "projected_match",
+        name: p.donorName,
+        email: p.donorEmail || null,
+        totalAmount: p.projectedAmount,
+        date: p.trigger.triggerDate ? new Date(p.trigger.triggerDate).toISOString() : null,
+        status: "pending",
+        paymentMethod: "match",
+        dafProvider: null,
+        dafName: null,
+        match: {
+          asMatch: {
+            grantName: p.grantName,
+            triggeredRecId: p.trigger.triggerType === "recommendation" ? p.trigger.triggerId : null,
+            triggeredName: p.trigger.triggerName,
+            triggeredAmount: p.trigger.triggerAmount,
+            matchAmount: p.projectedAmount,
+            pending: true,
+          },
+          triggeredMatches: [],
+        },
+      });
+      projectedTotal += p.projectedAmount;
+    }
+
+    // Sort once more so projected rows slot into the amount-DESC ordering.
+    items.sort((a, b) => {
+      if (b.totalAmount !== a.totalAmount) return b.totalAmount - a.totalAmount;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    const baseTotalAmount = parseFloat(summaryResult.rows[0]?.total_amount) || 0;
+    const baseTotalInvestors = parseInt(summaryResult.rows[0]?.total_investors) || 0;
+    const totalAmount = Math.round((baseTotalAmount + projectedTotal) * 100) / 100;
+
+    // For distinct-investor count, fold projection donor emails in.
+    const baseEmails = new Set<string>();
+    for (const r of rowsResult.rows) {
+      const k = String(r.email || "").trim().toLowerCase();
+      if (k) baseEmails.add(k);
+    }
+    let extraInvestors = 0;
+    for (const p of projections) {
+      const k = String(p.donorEmail || "").trim().toLowerCase();
+      if (k && !baseEmails.has(k)) {
+        baseEmails.add(k);
+        extraInvestors += 1;
+      }
+    }
+    const totalInvestors = baseTotalInvestors + extraInvestors;
 
     res.json({
       campaignId: id,
-      totalInvestors: items.length,
+      campaignName: nameResult.rows[0]?.name || `Investment #${id}`,
+      totalInvestors,
+      totalContributions: items.length,
       totalAmount,
+      pendingMatchAmount: Math.round(projectedTotal * 100) / 100,
+      pendingMatchCount: projections.length,
       items,
     });
   } catch (err) {
     console.error("Error fetching investment investors:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.get("/:id/investors/export", async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ success: false, message: "Invalid investment id" });
+      return;
+    }
+
+    const [rowsResult, summaryResult, nameResult, matchInfo, projections] = await Promise.all([
+      pool.query(
+        `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
+         SELECT source_id, source_type, name, email, amount, date_created, status,
+                payment_method, daf_provider, daf_name
+           FROM unified_investors
+          ORDER BY amount DESC, name ASC, date_created DESC`,
+        [id],
+      ),
+      pool.query(
+        `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
+         SELECT COALESCE(SUM(amount), 0) AS total_amount,
+                COUNT(DISTINCT email_key) AS total_investors
+           FROM unified_investors`,
+        [id],
+      ),
+      pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
+      fetchMatchInfoForCampaign(id),
+      projectPendingMatchesForCampaign(id),
+    ]);
+
+    if (rowsResult.rows.length === 0 && projections.length === 0) {
+      res.json({ success: false, message: "There are no investors to export for this investment." });
+      return;
+    }
+
+    const baseTotalAmount = parseFloat(summaryResult.rows[0]?.total_amount) || 0;
+    const baseTotalInvestors = parseInt(summaryResult.rows[0]?.total_investors) || 0;
+    const projectedTotal = projections.reduce((s, p) => s + p.projectedAmount, 0);
+    const totalAmount = Math.round((baseTotalAmount + projectedTotal) * 100) / 100;
+
+    const baseEmails = new Set<string>();
+    for (const r of rowsResult.rows) {
+      const k = String(r.email || "").trim().toLowerCase();
+      if (k) baseEmails.add(k);
+    }
+    let extraInvestors = 0;
+    for (const p of projections) {
+      const k = String(p.donorEmail || "").trim().toLowerCase();
+      if (k && !baseEmails.has(k)) { baseEmails.add(k); extraInvestors += 1; }
+    }
+    const totalInvestors = baseTotalInvestors + extraInvestors;
+    const campaignName = nameResult.rows[0]?.name || `Investment #${id}`;
+
+    const fmtUsd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    // Pending triggered annotations indexed by base row key.
+    const pendingTriggeredByKey = new Map<string, { grantName: string; matchAmount: number }[]>();
+    for (const p of projections) {
+      const key = `${p.trigger.triggerType}:${p.trigger.triggerId}`;
+      if (!pendingTriggeredByKey.has(key)) pendingTriggeredByKey.set(key, []);
+      pendingTriggeredByKey.get(key)!.push({ grantName: p.grantName, matchAmount: p.projectedAmount });
+    }
+
+    const buildMatchText = (sourceId: number, sourceType: string): string => {
+      const parts: string[] = [];
+      if (sourceType === "recommendation") {
+        const asMatch = matchInfo.asMatch[sourceId];
+        if (asMatch) {
+          const who = asMatch.triggeredName || "another investor";
+          const amt = asMatch.triggeredAmount != null ? ` ${fmtUsd(asMatch.triggeredAmount)}` : "";
+          parts.push(`Match contribution from "${asMatch.grantName}" for ${who}${amt ? "'s " + amt.trim() : ""}`);
+        }
+        const triggered = matchInfo.triggeredBy[sourceId];
+        if (triggered && triggered.length > 0) {
+          parts.push(triggered.map(t => `+${fmtUsd(t.matchAmount)} from "${t.grantName}"`).join("; "));
+        }
+      }
+      const pending = pendingTriggeredByKey.get(`${sourceType}:${sourceId}`);
+      if (pending && pending.length > 0) {
+        parts.push(`Pending: ${pending.map(t => `+${fmtUsd(t.matchAmount)} from "${t.grantName}"`).join("; ")}`);
+      }
+      return parts.join(" · ");
+    };
+
+    // Build the export rows: actual rows first, then projected match rows
+    // appended (each annotated as "Projected match from <grant>").
+    const exportRows: Array<{
+      name: string; email: string; status: string; date: Date | null; amount: number; matchText: string; methodText: string;
+    }> = [];
+    // Mirror the JSON endpoint's payment-method classification so the Excel
+    // matches what the Investors tab shows (wallet / DAF / Foundation /
+    // Match). Provider/name suffixes are appended for DAF/Foundation rows.
+    const methodLabel = (sqlMethod: string, sourceId: number, sourceType: string, dafProvider: string | null, dafName: string | null): string => {
+      let m = sqlMethod || "wallet";
+      if (m === "wallet" && sourceType === "recommendation" && matchInfo.asMatch[sourceId]) m = "match";
+      if (m === "daf") {
+        const provider = (dafProvider || "").trim();
+        const name = (dafName || "").trim();
+        if (provider && name && provider.toLowerCase() !== name.toLowerCase()) return `DAF · ${provider} (${name})`;
+        if (provider) return `DAF · ${provider}`;
+        return "DAF";
+      }
+      if (m === "foundation") {
+        const name = (dafName || "").trim();
+        return name ? `Foundation · ${name}` : "Foundation";
+      }
+      if (m === "match") return "Match Grant";
+      return "Wallet";
+    };
+    for (const r of rowsResult.rows) {
+      exportRows.push({
+        name: r.name || "Anonymous",
+        email: r.email || "",
+        status: r.status,
+        date: r.date_created ? new Date(r.date_created) : null,
+        amount: parseFloat(r.amount) || 0,
+        matchText: buildMatchText(Number(r.source_id), r.source_type),
+        methodText: methodLabel(r.payment_method, Number(r.source_id), r.source_type, r.daf_provider, r.daf_name),
+      });
+    }
+    for (const p of projections) {
+      const who = p.trigger.triggerName || "another investor";
+      exportRows.push({
+        name: p.donorName,
+        email: p.donorEmail || "",
+        status: "pending",
+        date: p.trigger.triggerDate ? new Date(p.trigger.triggerDate) : null,
+        amount: p.projectedAmount,
+        matchText: `Projected match from "${p.grantName}" for ${who}'s ${fmtUsd(p.trigger.triggerAmount)}`,
+        methodText: "Match Grant (projected)",
+      });
+    }
+    exportRows.sort((a, b) => {
+      if (b.amount !== a.amount) return b.amount - a.amount;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Investors");
+
+    const titleRow = worksheet.addRow([campaignName]);
+    titleRow.getCell(1).font = { bold: true, size: 14 };
+    worksheet.mergeCells(titleRow.number, 1, titleRow.number, 9);
+
+    const summaryParts: string[] = [
+      `${totalInvestors} investor${totalInvestors === 1 ? "" : "s"}`,
+      `${exportRows.length} contribution${exportRows.length === 1 ? "" : "s"}`,
+      `Total raised: ${fmtUsd(totalAmount)}`,
+    ];
+    if (projectedTotal > 0) {
+      summaryParts.push(`(includes ${fmtUsd(projectedTotal)} pending matches across ${projections.length} projection${projections.length === 1 ? "" : "s"})`);
+    }
+    const summaryRow = worksheet.addRow([summaryParts.join(" · ")]);
+    summaryRow.getCell(1).font = { italic: true };
+    worksheet.mergeCells(summaryRow.number, 1, summaryRow.number, 9);
+
+    worksheet.addRow([]);
+
+    const headerRow = worksheet.addRow(["#", "Name", "Email", "Method", "Status", "Date", "Amount Invested", "% of Total", "Match"]);
+    headerRow.eachCell((cell) => { cell.font = { bold: true }; });
+
+    const statusLabel = (s: string) =>
+      s === "in transit" ? "In Transit" : s === "received" ? "Received" : "Pending";
+
+    let rank = 0;
+    for (const r of exportRows) {
+      rank += 1;
+      const pct = totalAmount > 0 ? r.amount / totalAmount : 0;
+      const dataRow = worksheet.addRow([
+        rank,
+        r.name || "Anonymous",
+        r.email || "",
+        r.methodText,
+        statusLabel(r.status),
+        r.date,
+        Math.round(r.amount * 100) / 100,
+        pct,
+        r.matchText,
+      ]);
+      dataRow.getCell(6).numFmt = "mm/dd/yyyy";
+      dataRow.getCell(7).numFmt = "$#,##0.00";
+      dataRow.getCell(8).numFmt = "0.00%";
+      dataRow.getCell(9).alignment = { wrapText: true, vertical: "top" };
+    }
+
+    const totalsRow = worksheet.addRow(["", "Total", "", "", "", "", Math.round(totalAmount * 100) / 100, 1, ""]);
+    totalsRow.eachCell((cell) => { cell.font = { bold: true }; });
+    totalsRow.getCell(7).numFmt = "$#,##0.00";
+    totalsRow.getCell(8).numFmt = "0.00%";
+
+    worksheet.columns.forEach((col, idx) => {
+      col.alignment = { horizontal: idx === 0 || (idx >= 6 && idx <= 7) ? "right" : "left", vertical: "top" };
+      let maxLen = 10;
+      col.eachCell?.({ includeEmpty: false }, (cell) => {
+        const len = String(cell.value ?? "").length;
+        if (len > maxLen) maxLen = len;
+      });
+      // Cap the Match column width so very long descriptions don't blow out the layout
+      col.width = idx === 8 ? Math.min(maxLen + 4, 70) : maxLen + 4;
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=Investors.xlsx");
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err: any) {
+    console.error("Error exporting investors:", err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -957,10 +1436,10 @@ router.get("/:id", async (req: Request, res: Response) => {
     const id = c.id;
 
     const balanceResult = await pool.query(
-      `SELECT COALESCE(SUM(CASE WHEN LOWER(status) = 'approved' OR LOWER(status) = 'pending' THEN amount ELSE 0 END), 0) AS balance,
-              COUNT(DISTINCT CASE WHEN (LOWER(status) = 'approved' OR LOWER(status) = 'pending') AND amount > 0 AND user_email IS NOT NULL THEN user_email END) AS investors
-       FROM recommendations
-       WHERE campaign_id = $1 AND (is_deleted IS NULL OR is_deleted = false)`,
+      `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
+       SELECT COALESCE(SUM(amount), 0) AS balance,
+              COUNT(DISTINCT email_key) AS investors
+         FROM unified_investors`,
       [id]
     );
     const currentBalance = parseFloat(balanceResult.rows[0]?.balance) || 0;
@@ -1093,14 +1572,12 @@ router.get("/", async (req: Request, res: Response) => {
     const investmentStatusRaw = req.query.InvestmentStatus || req.query.investmentStatus;
 
     const recResult = await pool.query(
-      `SELECT campaign_id,
+      `${unifiedInvestorsCTE()}
+       SELECT campaign_id,
               SUM(amount) AS current_balance,
-              COUNT(DISTINCT LOWER(TRIM(user_email))) AS number_of_investors
-       FROM recommendations
-       WHERE amount > 0 AND user_email IS NOT NULL
-         AND (LOWER(status) = 'approved' OR LOWER(status) = 'pending')
-         AND (is_deleted IS NULL OR is_deleted = false)
-       GROUP BY campaign_id`
+              COUNT(DISTINCT email_key) AS number_of_investors
+         FROM unified_investors
+        GROUP BY campaign_id`
     );
     const recMap: Record<number, { currentBalance: number; numberOfInvestors: number }> = {};
     for (const r of recResult.rows) {
@@ -1150,9 +1627,16 @@ router.get("/", async (req: Request, res: Response) => {
       SELECT c.id, c.name, c.created_date, c.stage, c.fundraising_close_date,
              c.is_active, c.property, c.original_pdf_file_name, c.image_file_name,
              c.pdf_file_name, c.meta_title, c.meta_description,
-             c.deleted_at, du.first_name AS deleted_by_first, du.last_name AS deleted_by_last
+             c.contact_info_email_address,
+             c.deleted_at, du.first_name AS deleted_by_first, du.last_name AS deleted_by_last,
+             ou.first_name AS owner_first,
+             ou.last_name  AS owner_last,
+             ou.email      AS owner_email
       FROM campaigns c
       LEFT JOIN users du ON c.deleted_by = du.id
+      LEFT JOIN users ou
+        ON LOWER(TRIM(ou.email)) = LOWER(TRIM(c.contact_info_email_address))
+       AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
       ${whereClause}
     `;
 
@@ -1181,6 +1665,15 @@ router.get("/", async (req: Request, res: Response) => {
           metaDescription: c.meta_description,
           deletedAt: c.deleted_at,
           deletedBy: c.deleted_by_first ? `${c.deleted_by_first} ${c.deleted_by_last || ""}`.trim() : null,
+          ownerFirstName: c.owner_first || null,
+          ownerLastName: c.owner_last || null,
+          ownerFullName: (c.owner_first || c.owner_last)
+            ? `${c.owner_first || ""} ${c.owner_last || ""}`.trim()
+            : null,
+          ownerEmail: c.owner_email
+            || (c.contact_info_email_address && String(c.contact_info_email_address).includes("@")
+              ? String(c.contact_info_email_address).trim()
+              : null),
         };
       });
 
@@ -1725,13 +2218,23 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     let finalUserId = existing.user_id;
-    if ((campaign.contactInfoEmailAddress || "").trim()) {
-      const { id: resolvedUserId } = await findOrCreateAnonymousUser(
-        campaign.contactInfoEmailAddress,
-        campaign.firstName || campaign.contactInfoFullName?.split(" ")[0] || "",
-        campaign.lastName || campaign.contactInfoFullName?.split(" ").slice(1).join(" ") || ""
+    const ownerEmailRaw = (campaign.contactInfoEmailAddress || "").trim();
+    if (ownerEmailRaw) {
+      const ownerLookup = await pool.query(
+        `SELECT id FROM users
+          WHERE (is_deleted IS NULL OR is_deleted = false)
+            AND LOWER(TRIM(email)) = $1
+          LIMIT 1`,
+        [ownerEmailRaw.toLowerCase()]
       );
-      finalUserId = resolvedUserId;
+      if (ownerLookup.rows.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: `Investment Owner "${ownerEmailRaw}" does not match any existing user. Please pick an existing user from the dropdown.`,
+        });
+        return;
+      }
+      finalUserId = ownerLookup.rows[0].id;
     }
 
     const campaignUpdateSql = `UPDATE campaigns SET
@@ -2916,12 +3419,11 @@ router.post("/:id/updates", async (req: Request, res: Response) => {
     const startDateValue = created.startDate ? new Date(created.startDate) : null;
     const shouldFireNow = !startDateValue || startDateValue <= new Date();
     if (shouldFireNow) try {
+      // Recipients mirror the Investors tab (recommendations + orphan
+      // pending_grants + In-Transit asset_based_payment_requests). See
+      // utils/campaignUpdateRecipients.ts for the full definition.
       const investorsResult = await pool.query(
-        `SELECT DISTINCT ui.user_id
-         FROM user_investments ui
-         WHERE ui.campaign_id = $1
-           AND ui.user_id IS NOT NULL
-           AND (ui.is_deleted IS NULL OR ui.is_deleted = false)`,
+        CAMPAIGN_UPDATE_RECIPIENT_USER_IDS_SQL,
         [campaignId]
       );
 
@@ -3248,40 +3750,11 @@ router.get("/:id/updates/:updateId/email-preview", async (req: Request, res: Res
       return;
     }
 
-    // Mirror the recipient filter used by the actual send: investors with
-    // status Pending/Rejected (case-insensitive) are excluded so the preview
-    // shows the true number that will be emailed.
+    // Mirror the recipient filter used by the actual send so the preview
+    // shows the true number that will be emailed. Source-of-truth lives in
+    // utils/campaignUpdateRecipients.ts (kept in sync with the Investors tab).
     const investorsCount = await pool.query(
-      `SELECT COUNT(DISTINCT u.id)::int AS count
-         FROM users u
-         JOIN (
-           -- Standard investors on this campaign whose recommendation is not Rejected
-           SELECT ui.user_id
-             FROM user_investments ui
-            WHERE ui.campaign_id = $1
-              AND ui.user_id IS NOT NULL
-              AND (ui.is_deleted IS NULL OR ui.is_deleted = false)
-              AND EXISTS (
-                SELECT 1 FROM recommendations r
-                 WHERE r.campaign_id = ui.campaign_id
-                   AND r.user_id    = ui.user_id
-                   AND (r.is_deleted IS NULL OR r.is_deleted = false)
-                   AND LOWER(COALESCE(r.status, '')) <> 'rejected'
-              )
-           UNION
-           -- Other-asset (asset_based_payment_requests) investors on this same
-           -- campaign whose request is currently "In Transit". They've committed
-           -- an asset toward this investment but no user_investments row exists
-           -- yet, so without this branch they'd never receive update emails.
-           SELECT abpr.user_id
-             FROM asset_based_payment_requests abpr
-            WHERE abpr.campaign_id = $1
-              AND abpr.user_id IS NOT NULL
-              AND (abpr.is_deleted IS NULL OR abpr.is_deleted = false)
-              AND LOWER(TRIM(COALESCE(abpr.status, ''))) = 'in transit'
-         ) src ON src.user_id = u.id
-        WHERE u.email IS NOT NULL AND u.email <> ''
-          AND (u.opt_out_email_notifications IS NULL OR u.opt_out_email_notifications = false)`,
+      CAMPAIGN_UPDATE_RECIPIENT_COUNT_SQL,
       [campaignId]
     );
 
@@ -3411,46 +3884,19 @@ router.post("/:id/updates/:updateId/send-email", async (req: Request, res: Respo
     const senderName = cfg.defaultEmailSenderName || "CataCap Support";
     const fromHeader = `${senderName} <${fromAddress}>`;
 
-    // Recipients are pulled from two sources for this same campaign and then
-    // de-duplicated by user.id:
-    //   1. `user_investments` rows whose backing `recommendations.status` is
-    //      anything other than Rejected (case-insensitive). Pending investors
-    //      *are* included so they receive update emails as soon as they have
-    //      any non-rejected recommendation on the deal.
-    //   2. `asset_based_payment_requests` rows for this campaign whose status
-    //      is exactly "In Transit" (case-insensitive). These investors have
-    //      committed an asset toward the investment but typically have no
-    //      `user_investments` row yet, so without this branch they'd be
-    //      silently skipped on update sends.
-    // In both cases we still require a deliverable email and that the user
-    // hasn't opted out of email notifications.
+    // Recipients mirror the Investors tab on the admin investment page so
+    // every visible investor (with a deliverable, non-opted-out email) gets
+    // the update. Source-of-truth lives in
+    // utils/campaignUpdateRecipients.ts and combines:
+    //   1. `recommendations` with status approved/pending and amount > 0,
+    //      excluding any whose linked pending_grant is Rejected.
+    //   2. Orphan `pending_grants` (no linked rec) in 'Pending' status.
+    //   3. `asset_based_payment_requests` in 'In Transit' status.
+    // Previously the fan-out only looked at `user_investments`, which
+    // silently skipped approved-but-not-yet-funded investors who were
+    // visible on the Investors tab.
     const investorsResult = await pool.query(
-      `SELECT u.id, u.email, COALESCE(u.first_name, '') AS first_name
-         FROM users u
-         JOIN (
-           SELECT ui.user_id
-             FROM user_investments ui
-            WHERE ui.campaign_id = $1
-              AND ui.user_id IS NOT NULL
-              AND (ui.is_deleted IS NULL OR ui.is_deleted = false)
-              AND EXISTS (
-                SELECT 1 FROM recommendations r
-                 WHERE r.campaign_id = ui.campaign_id
-                   AND r.user_id    = ui.user_id
-                   AND (r.is_deleted IS NULL OR r.is_deleted = false)
-                   AND LOWER(COALESCE(r.status, '')) <> 'rejected'
-              )
-           UNION
-           SELECT abpr.user_id
-             FROM asset_based_payment_requests abpr
-            WHERE abpr.campaign_id = $1
-              AND abpr.user_id IS NOT NULL
-              AND (abpr.is_deleted IS NULL OR abpr.is_deleted = false)
-              AND LOWER(TRIM(COALESCE(abpr.status, ''))) = 'in transit'
-         ) src ON src.user_id = u.id
-        WHERE u.email IS NOT NULL
-          AND u.email <> ''
-          AND (u.opt_out_email_notifications IS NULL OR u.opt_out_email_notifications = false)`,
+      CAMPAIGN_UPDATE_RECIPIENT_USERS_SQL,
       [campaignId]
     );
 

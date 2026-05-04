@@ -14,6 +14,7 @@ import GroupReports from "@/pages/GroupReports";
 import EventManagement from "@/pages/EventManagement";
 import EventRegistrationsList from "@/pages/EventRegistrationsList";
 import AdminInvestments from "@/pages/Investments";
+import InvestmentInvestors from "@/pages/InvestmentInvestors";
 import AdminRecommendations from "@/pages/Recommendations";
 import AdminAccountHistory from "@/pages/AccountHistory";
 import AdminOtherAssets from "./pages/OtherAssets";
@@ -44,6 +45,7 @@ import ArchivedRecordsDetail from "./pages/ArchivedRecordsDetail";
 import Schedulers from "./pages/Schedulers";
 import Analytics from "./pages/Analytics";
 import AdminMatching from "./pages/AdminMatching";
+import SchemaChangeLogs from "./pages/SchemaChangeLogs";
 
 
 function Router() {
@@ -68,6 +70,7 @@ function Router() {
         <ProtectedRoute path="/event-registrations" component={EventRegistrationsList} moduleName="event registrations" />
         <Route path="/event-registrations-list" component={() => <Redirect to="/event-registrations" />} />
         <ProtectedRoute path="/investments" component={AdminInvestments} moduleName="all-investments" />
+        <ProtectedRoute path="/investments/:id/investors" component={InvestmentInvestors} moduleName="all-investments" />
         <ProtectedRoute path="/recommendations" component={AdminRecommendations} moduleName="recommendation" />
         <ProtectedRoute path="/account-history" component={AdminAccountHistory} moduleName="account history" />
         <ProtectedRoute path="/other-assets" component={AdminOtherAssets} moduleName="other assets" />
@@ -89,6 +92,7 @@ function Router() {
         <ProtectedRoute path="/analytics" component={Analytics} moduleName="site configuration" />
         <ProtectedRoute path="/archived-records" component={ArchivedRecords} moduleName="site configuration" />
         <ProtectedRoute path="/archived-records/:type" component={ArchivedRecordsDetail} moduleName="site configuration" />
+        <ProtectedRoute path="/db-schema-logs" component={SchemaChangeLogs} moduleName="db schema logs" />
         <ProtectedRoute path="/matching" component={AdminMatching} moduleName="recommendation" />
 
         <ProtectedRoute path="/profile" component={AdminUserProfile} />

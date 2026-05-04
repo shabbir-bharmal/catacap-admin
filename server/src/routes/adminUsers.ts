@@ -395,6 +395,90 @@ router.get("/dropdown", async (_req: Request, res: Response) => {
   }
 });
 
+// Search users by email (typeahead). Returns up to `limit` matches across ALL users
+// (not restricted to admins) so any user can be assigned as an "Investment Owner".
+router.get("/email-search", async (req: Request, res: Response) => {
+  try {
+    const q = ((req.query.q as string) || "").trim().toLowerCase();
+    const limitRaw = parseInt((req.query.limit as string) || "20", 10);
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1), 50);
+
+    if (!q) {
+      res.json({ items: [] });
+      return;
+    }
+
+    const result = await pool.query(
+      `SELECT id, email, first_name, last_name
+       FROM users
+       WHERE (is_deleted IS NULL OR is_deleted = false)
+         AND email IS NOT NULL
+         AND TRIM(email) <> ''
+         AND LOWER(email) LIKE $1
+       ORDER BY
+         CASE WHEN LOWER(email) = $2 THEN 0
+              WHEN LOWER(email) LIKE $3 THEN 1
+              ELSE 2 END,
+         email ASC
+       LIMIT $4`,
+      [`%${q}%`, q, `${q}%`, limit]
+    );
+
+    const items = result.rows.map((r: any) => ({
+      id: r.id,
+      email: r.email,
+      firstName: r.first_name || null,
+      lastName: r.last_name || null,
+      fullName: `${r.first_name || ""} ${r.last_name || ""}`.trim() || null,
+    }));
+
+    res.json({ items });
+  } catch (err) {
+    console.error("Email-search users error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Look up a single user by exact (case-insensitive) email. Used to validate that
+// a stored Investment Owner email still corresponds to a real user.
+router.get("/email-lookup", async (req: Request, res: Response) => {
+  try {
+    const email = ((req.query.email as string) || "").trim().toLowerCase();
+    if (!email) {
+      res.json({ user: null });
+      return;
+    }
+
+    const result = await pool.query(
+      `SELECT id, email, first_name, last_name
+       FROM users
+       WHERE (is_deleted IS NULL OR is_deleted = false)
+         AND LOWER(TRIM(email)) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      res.json({ user: null });
+      return;
+    }
+
+    const r = result.rows[0];
+    res.json({
+      user: {
+        id: r.id,
+        email: r.email,
+        firstName: r.first_name || null,
+        lastName: r.last_name || null,
+        fullName: `${r.first_name || ""} ${r.last_name || ""}`.trim() || null,
+      },
+    });
+  } catch (err) {
+    console.error("Email-lookup user error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
 router.get("/admin-users-dropdown", async (req: Request, res: Response) => {
   try {
     const currentUserId = req.user?.id;

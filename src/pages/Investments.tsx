@@ -11,8 +11,6 @@ import {
   deleteInvestment,
   exportInvestmentRecommendations,
   downloadInvestmentDocument,
-  fetchInvestmentInvestors,
-  type InvestmentInvestorsResponse
 } from "../api/investment/investmentApi";
 import { AdminLayout } from "../components/AdminLayout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -23,7 +21,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { Search, Download, Copy, ClipboardCopy, Pencil, Trash2, ChevronLeft, ChevronRight, ChevronDown, Check, FileText, History } from "lucide-react";
@@ -104,6 +101,8 @@ interface InvestmentData {
   pdfFileName: string;
   originalPdfFileName: string;
   imageFileName: string;
+  ownerFullName: string | null;
+  ownerEmail: string | null;
 }
 
 const stageOptions = ["New", "Compliance Review", "Private", "Public", "Completed - Ongoing", "Closed - Invested", "Closed - Not Invested", "Vetting", "Completed - Ongoing/Private"];
@@ -157,27 +156,6 @@ export default function InvestmentsPage() {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [auditTarget, setAuditTarget] = useState<{ id: string; name: string } | null>(null);
 
-  // Investors drilldown state
-  const [investorsTarget, setInvestorsTarget] = useState<{ id: number; name: string } | null>(null);
-  const [investorsData, setInvestorsData] = useState<InvestmentInvestorsResponse | null>(null);
-  const [investorsLoading, setInvestorsLoading] = useState(false);
-  const [investorsError, setInvestorsError] = useState<string | null>(null);
-
-  const handleOpenInvestors = async (id: number, name: string) => {
-    setInvestorsTarget({ id, name });
-    setInvestorsData(null);
-    setInvestorsError(null);
-    setInvestorsLoading(true);
-    try {
-      const data = await fetchInvestmentInvestors(id);
-      setInvestorsData(data);
-    } catch (err: any) {
-      setInvestorsError(err?.message || "Failed to load investors");
-    } finally {
-      setInvestorsLoading(false);
-    }
-  };
-
   useEffect(() => {
     if (searchQuery !== debouncedSearch) {
       return;
@@ -215,7 +193,9 @@ export default function InvestmentsPage() {
           noteEntries: [],
           pdfFileName: item.pdfFileName,
           originalPdfFileName: item.originalPdfFileName,
-          imageFileName: item.imageFileName || ""
+          imageFileName: item.imageFileName || "",
+          ownerFullName: item.ownerFullName || null,
+          ownerEmail: item.ownerEmail || null,
         }));
         setInvestments(mappedItems);
         setTotalCount(response.totalCount);
@@ -548,6 +528,9 @@ export default function InvestmentsPage() {
                       Name
                     </SortHeader>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">
+                      Owner
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">
                       Stage / Funding Close
                     </th>
                     <SortHeader field="catacapFunding" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
@@ -566,13 +549,13 @@ export default function InvestmentsPage() {
                 <tbody>
                   {isLoading ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                         Loading investments...
                       </td>
                     </tr>
                   ) : paginatedInvestments.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                         No investments found.
                       </td>
                     </tr>
@@ -591,6 +574,20 @@ export default function InvestmentsPage() {
                             </span>
                           </td>
                           <td className="px-4 py-3">
+                            {(inv.ownerFullName || inv.ownerEmail) ? (
+                              <div className="text-sm" data-testid={`text-owner-${inv.id}`}>
+                                {inv.ownerFullName && (
+                                  <div className="font-medium">{inv.ownerFullName}</div>
+                                )}
+                                {inv.ownerEmail && (
+                                  <div className="text-xs text-muted-foreground">{inv.ownerEmail}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-sm text-muted-foreground" data-testid={`text-owner-${inv.id}`}>—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
                             <div className="text-sm" data-testid={`text-stage-${inv.id}`}>
                               <div className="font-medium">{inv.stage}</div>
                               <div className="text-xs text-muted-foreground">
@@ -602,7 +599,7 @@ export default function InvestmentsPage() {
                             {inv.catacapFunding > 0 ? (
                               <button
                                 type="button"
-                                onClick={() => handleOpenInvestors(inv.id, inv.name)}
+                                onClick={() => navigate(`/investments/${inv.id}/investors`)}
                                 className="text-sm text-[#405189] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#405189] rounded-sm"
                                 title="View investors"
                                 data-testid={`button-funding-${inv.id}`}
@@ -616,9 +613,21 @@ export default function InvestmentsPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            <span className="text-sm" data-testid={`text-investors-${inv.id}`}>
-                              {inv.totalInvestors}
-                            </span>
+                            {inv.totalInvestors > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/investments/${inv.id}/investors`)}
+                                className="text-sm text-[#405189] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#405189] rounded-sm"
+                                title="View investor breakdown"
+                                data-testid={`button-investors-${inv.id}`}
+                              >
+                                {inv.totalInvestors}
+                              </button>
+                            ) : (
+                              <span className="text-sm" data-testid={`text-investors-${inv.id}`}>
+                                {inv.totalInvestors}
+                              </span>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <span className="text-sm" data-testid={`text-date-${inv.id}`}>
@@ -761,7 +770,7 @@ export default function InvestmentsPage() {
                         </tr>
                         {expandedRow === inv.id && (
                           <tr className="border-b" data-testid={`row-notes-${inv.id}`}>
-                            <td colSpan={8} className="p-4 bg-muted/30">
+                            <td colSpan={9} className="p-4 bg-muted/30">
                               <div className="overflow-x-auto rounded-lg border shadow-sm">
                                 <table className="w-full" data-testid={`table-notes-${inv.id}`}>
                                   <thead>
@@ -876,102 +885,6 @@ export default function InvestmentsPage() {
         title={`Audit Logs - ${auditTarget?.name}`}
       />
 
-      <Dialog
-        open={investorsTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setInvestorsTarget(null);
-            setInvestorsData(null);
-            setInvestorsError(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl" data-testid="dialog-investors">
-          <DialogHeader>
-            <DialogTitle data-testid="text-investors-title">
-              Investors{investorsTarget ? ` — ${investorsTarget.name}` : ""}
-            </DialogTitle>
-            <DialogDescription>
-              {investorsData
-                ? `${investorsData.totalInvestors.toLocaleString()} ${
-                    investorsData.totalInvestors === 1 ? "investor" : "investors"
-                  } · ${currency_format(investorsData.totalAmount)} total`
-                : "Approved and pending recommendations grouped by investor."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-[60vh] overflow-y-auto">
-            {investorsLoading ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">
-                Loading investors...
-              </div>
-            ) : investorsError ? (
-              <div className="py-8 text-center text-sm text-destructive">
-                {investorsError}
-              </div>
-            ) : !investorsData || investorsData.items.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">
-                No investors found for this investment.
-              </div>
-            ) : (
-              <table className="w-full text-sm" data-testid="table-investors">
-                <thead className="sticky top-0 bg-background">
-                  <tr className="border-b">
-                    <th className="py-2 pr-3 text-left font-medium text-muted-foreground">
-                      Investor
-                    </th>
-                    <th className="py-2 px-3 text-right font-medium text-muted-foreground">
-                      Contributions
-                    </th>
-                    <th className="py-2 pl-3 text-right font-medium text-muted-foreground">
-                      Amount
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {investorsData.items.map((it, idx) => (
-                    <tr
-                      key={`${it.email ?? "anon"}-${idx}`}
-                      className="border-b last:border-b-0"
-                      data-testid={`row-investor-${idx}`}
-                    >
-                      <td className="py-2 pr-3">
-                        <div className="font-medium" data-testid={`text-investor-name-${idx}`}>
-                          {it.name}
-                        </div>
-                        {it.email && (
-                          <div className="text-xs text-muted-foreground">{it.email}</div>
-                        )}
-                      </td>
-                      <td className="py-2 px-3 text-right tabular-nums">
-                        {it.contributions.toLocaleString()}
-                      </td>
-                      <td
-                        className="py-2 pl-3 text-right tabular-nums"
-                        data-testid={`text-investor-amount-${idx}`}
-                      >
-                        {currency_format(it.totalAmount)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2">
-                    <td className="py-2 pr-3 text-right text-muted-foreground" colSpan={2}>
-                      Total
-                    </td>
-                    <td
-                      className="py-2 pl-3 text-right font-bold tabular-nums"
-                      data-testid="text-investors-total"
-                    >
-                      {currency_format(investorsData.totalAmount)}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </AdminLayout>
   );
 }

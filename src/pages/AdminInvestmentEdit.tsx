@@ -36,6 +36,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import BannerCropper from "@/components/BannerCropper";
 import { MultiSelectPopover } from "@/components/MultiSelectPopover";
+import { UserEmailCombobox } from "@/components/UserEmailCombobox";
 import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QRCodeCanvas } from "qrcode.react";
@@ -291,8 +292,6 @@ const THANK_YOU_ALLOWED_EXT_REGEX = /\.(pdf|doc|docx|png|jpe?g|webp)$/i;
 const THANK_YOU_ACCEPT_ATTR =
   ".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp";
 
-const PERSONALIZED_THANK_YOU_MAX_CHARS = 1000;
-
 const EMAIL_PREVIEW_CATEGORIES: { category: number; label: string }[] = [
   { category: 8, label: "Donation Confirmation" },
 ];
@@ -304,21 +303,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function getPlainTextLengthFromHtml(html: string): number {
-  if (!html) return 0;
-  const stripped = html
-    .replace(/<br\s*\/?>(\s*)/gi, "\n")
-    .replace(/<\/(p|div|li|h\d|tr)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-  return stripped.replace(/\u200B/g, "").length;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -503,6 +487,7 @@ export default function AdminInvestmentEdit() {
   const [resolvedNumericId, setResolvedNumericId] = useState<number | null>(null);
   const [formData, setFormData] = useState<FormData>(defaultFormData);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
+  const [investmentOwnerValid, setInvestmentOwnerValid] = useState(true);
   const [propertyError, setPropertyError] = useState("");
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({});
 
@@ -1048,7 +1033,7 @@ export default function AdminInvestmentEdit() {
   const regulatoryIssuesRef = useRef<HTMLDivElement>(null);
   const goodLegalStandingRef = useRef<HTMLDivElement>(null);
 
-  const REQUIRED_FIELDS: (keyof FormData)[] = ["name", "website", "target", "property", "stage", "addedTotalAdminRaised", "minimumInvestment", "hasCorporateBankAccount", "hasPersonalFinancialBenefit", "hasRegulatoryIssues", "isInGoodLegalStanding"];
+  const REQUIRED_FIELDS: (keyof FormData)[] = ["name", "website", "target", "property", "stage", "addedTotalAdminRaised", "minimumInvestment"];
   const FIELD_REFS: Record<string, React.RefObject<HTMLDivElement>> = {
     name: nameRef,
     website: websiteRef,
@@ -1325,8 +1310,17 @@ export default function AdminInvestmentEdit() {
       if (first) {
         scrollToField(first);
       }
+      return false;
     }
-    return valid;
+    if (!investmentOwnerValid) {
+      toast({
+        title: "Invalid Investment Owner",
+        description: "User with such email address does not exist. Please pick an existing user.",
+        variant: "destructive",
+      });
+      return false;
+    }
+    return true;
   };
 
   const uploadLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1533,11 +1527,6 @@ export default function AdminInvestmentEdit() {
     setThankYouPendingFiles((prev) => prev.filter((f) => f.localId !== localId));
     setThankYouAttachmentError("");
   };
-
-  const personalizedThankYouCharCount = useMemo(
-    () => getPlainTextLengthFromHtml(formData.personalizedThankYou || ""),
-    [formData.personalizedThankYou],
-  );
 
   const buildPreviewVariables = useCallback((category: number): Record<string, string> => {
     const investmentLabel = formData.name || investmentName || "this investment";
@@ -2312,27 +2301,25 @@ export default function AdminInvestmentEdit() {
                   </div>
 
                   <div className="space-y-1.5" ref={corporateBankAccountRef}>
-                    <Label className="text-sm">Does your company have a corporate bank account set up? <span className="text-[#f06548]">*</span></Label>
+                    <Label className="text-sm">Does your company have a corporate bank account set up?</Label>
                     <Select value={formData.hasCorporateBankAccount} onValueChange={(val) => upd("hasCorporateBankAccount", val)}>
-                      <SelectTrigger className={fe("hasCorporateBankAccount")} data-testid="select-corporate-bank-account"><SelectValue placeholder="Select…" /></SelectTrigger>
+                      <SelectTrigger data-testid="select-corporate-bank-account"><SelectValue placeholder="Select…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Yes">Yes</SelectItem>
                         <SelectItem value="No">No</SelectItem>
                       </SelectContent>
                     </Select>
-                    {errors.hasCorporateBankAccount && <p className="text-[#f06548] text-xs">Please select Yes or No.</p>}
                   </div>
 
                   <div className="space-y-1.5 sm:col-span-2" ref={personalFinancialBenefitRef}>
-                    <Label className="text-sm">Does any board member, officer, or related party stand to receive personal financial benefit from this investment? <span className="text-[#f06548]">*</span></Label>
+                    <Label className="text-sm">Does any board member, officer, or related party stand to receive personal financial benefit from this investment?</Label>
                     <Select value={formData.hasPersonalFinancialBenefit} onValueChange={(val) => upd("hasPersonalFinancialBenefit", val)}>
-                      <SelectTrigger className={fe("hasPersonalFinancialBenefit")} data-testid="select-personal-financial-benefit"><SelectValue placeholder="Select…" /></SelectTrigger>
+                      <SelectTrigger data-testid="select-personal-financial-benefit"><SelectValue placeholder="Select…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Yes">Yes</SelectItem>
                         <SelectItem value="No">No</SelectItem>
                       </SelectContent>
                     </Select>
-                    {errors.hasPersonalFinancialBenefit && <p className="text-[#f06548] text-xs">Please select Yes or No.</p>}
                   </div>
 
                   {formData.hasPersonalFinancialBenefit === "Yes" && (
@@ -2343,15 +2330,14 @@ export default function AdminInvestmentEdit() {
                   )}
 
                   <div className="space-y-1.5 sm:col-span-2" ref={regulatoryIssuesRef}>
-                    <Label className="text-sm">Has the organization or any of its officers ever been subject to regulatory action, criminal investigation, or sanctions? <span className="text-[#f06548]">*</span></Label>
+                    <Label className="text-sm">Has the organization or any of its officers ever been subject to regulatory action, criminal investigation, or sanctions?</Label>
                     <Select value={formData.hasRegulatoryIssues} onValueChange={(val) => upd("hasRegulatoryIssues", val)}>
-                      <SelectTrigger className={fe("hasRegulatoryIssues")} data-testid="select-regulatory-issues"><SelectValue placeholder="Select…" /></SelectTrigger>
+                      <SelectTrigger data-testid="select-regulatory-issues"><SelectValue placeholder="Select…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Yes">Yes</SelectItem>
                         <SelectItem value="No">No</SelectItem>
                       </SelectContent>
                     </Select>
-                    {errors.hasRegulatoryIssues && <p className="text-[#f06548] text-xs">Please select Yes or No.</p>}
                   </div>
 
                   {formData.hasRegulatoryIssues === "Yes" && (
@@ -2362,15 +2348,14 @@ export default function AdminInvestmentEdit() {
                   )}
 
                   <div className="space-y-1.5" ref={goodLegalStandingRef}>
-                    <Label className="text-sm">Is the organization currently in good legal standing with all relevant regulatory bodies? <span className="text-[#f06548]">*</span></Label>
+                    <Label className="text-sm">Is the organization currently in good legal standing with all relevant regulatory bodies?</Label>
                     <Select value={formData.isInGoodLegalStanding} onValueChange={(val) => upd("isInGoodLegalStanding", val)}>
-                      <SelectTrigger className={fe("isInGoodLegalStanding")} data-testid="select-good-legal-standing"><SelectValue placeholder="Select…" /></SelectTrigger>
+                      <SelectTrigger data-testid="select-good-legal-standing"><SelectValue placeholder="Select…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Yes">Yes</SelectItem>
                         <SelectItem value="No">No</SelectItem>
                       </SelectContent>
                     </Select>
-                    {errors.isInGoodLegalStanding && <p className="text-[#f06548] text-xs">Please select Yes or No.</p>}
                   </div>
 
                   <div className="space-y-1.5">
@@ -2478,7 +2463,7 @@ export default function AdminInvestmentEdit() {
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <Label htmlFor="personalizedThankYou" className="text-sm">Personalized Thank You (Not to exceed 1,000 characters)</Label>
+                    <Label htmlFor="personalizedThankYou" className="text-sm">Personalized Thank You</Label>
                     <Button
                       type="button"
                       variant="outline"
@@ -2496,16 +2481,8 @@ export default function AdminInvestmentEdit() {
                     placeholder="Personalized Thank You"
                     data-testid="input-thank-you"
                   />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <div className="text-xs text-muted-foreground">
                     <span>What would you like your customized thank you message — displayed to users following a donation to your investment — to say?</span>
-                    <span
-                      className={cn(
-                        personalizedThankYouCharCount > PERSONALIZED_THANK_YOU_MAX_CHARS && "text-[#f06548] font-medium"
-                      )}
-                      data-testid="text-thank-you-char-count"
-                    >
-                      {personalizedThankYouCharCount.toLocaleString()} / {PERSONALIZED_THANK_YOU_MAX_CHARS.toLocaleString()} characters
-                    </span>
                   </div>
 
                   <div className="space-y-2 pt-2">
@@ -3044,15 +3021,15 @@ export default function AdminInvestmentEdit() {
               <CardContent className="space-y-5">
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Org email — editable */}
+                  {/* Investment Owner — must match an existing user */}
                   <div className="space-y-1.5">
-                    <Label htmlFor="email" className="text-sm">Organizational email to manage this account</Label>
-                    <Input
-                      id="email"
-                      type="email"
+                    <Label htmlFor="email" className="text-sm">Investment Owner</Label>
+                    <UserEmailCombobox
                       value={formData.email}
-                      onChange={(e) => upd("email", e.target.value)}
-                      data-testid="input-email-admin"
+                      onChange={(email) => upd("email", email)}
+                      onValidityChange={setInvestmentOwnerValid}
+                      placeholder="Search investment owner by email..."
+                      testId="combobox-investment-owner"
                     />
                   </div>
 
@@ -3354,7 +3331,7 @@ export default function AdminInvestmentEdit() {
                     </Select>
                   </div>
 
-                  {/* Owning Group (admin: campaign-owns-group + auto-enrol) */}
+                  {/* Owning Group (admin: campaign-owns-group + auto-enroll) */}
                   <div className="space-y-1.5">
                     <Label className="text-sm">Owning Group</Label>
                     <Select value={formData.ownerGroupId || "null"} onValueChange={(val) => upd("ownerGroupId", val === "null" ? "" : val)}>
@@ -3370,7 +3347,7 @@ export default function AdminInvestmentEdit() {
                   </div>
                 </div>
 
-                {/* Auto-enrol investors into the owning group */}
+                {/* Auto-enroll investors into the owning group */}
                 <div className="flex items-start gap-2">
                   <Checkbox
                     id="autoEnrollInvestors"
@@ -3381,7 +3358,7 @@ export default function AdminInvestmentEdit() {
                   />
                   <div className="space-y-0.5">
                     <Label htmlFor="autoEnrollInvestors" className="text-sm font-normal cursor-pointer">
-                      Auto-enrol investors as members of the owning group
+                      Auto-enroll investors as members of the owning group
                     </Label>
                     <p className="text-xs text-muted-foreground">
                       When enabled, every new investor in this campaign is added to the owning group as an accepted member (existing members are unaffected).

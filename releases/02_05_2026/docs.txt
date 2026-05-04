@@ -1,0 +1,205 @@
+Release: 02_05_2026
+====================
+
+Migrations
+----------
+
+1) 2026_05_02_schema_change_logs.sql
+   Schema:
+     New table public.schema_change_logs:
+         id               uuid PK default gen_random_uuid()
+         operation_type   text NOT NULL    -- 'CREATE TABLE','ADD COLUMN',
+                                           --  'DROP COLUMN','ALTER COLUMN',
+                                           --  'DROP TABLE','CREATE INDEX',
+                                           --  'DROP INDEX','OTHER'
+         table_name       text NOT NULL
+         column_name      text             -- nullable: only for column ops
+         old_definition   jsonb            -- snapshot from information_schema BEFORE EXECUTE
+         new_definition   jsonb            -- snapshot from information_schema AFTER EXECUTE
+         executed_sql     text NOT NULL    -- the DDL that was actually run
+         rollback_sql     text             -- auto-derived if not provided in payload
+         triggered_by     text NOT NULL DEFAULT 'ai_prompt'
+         prompt_reference text             -- short summary of the user request
+         status           text NOT NULL DEFAULT 'applied'
+                                           -- CHECK: 'applied'|'rolled_back'|'failed'
+         created_at       timestamptz NOT NULL DEFAULT now()
+         rolled_back_at   timestamptz      -- set by rollback API
+         rolled_back_by   text             -- admin email/username (from JWT)
+
+     Indexes: created_at DESC, status, table_name.
+
+     New function public.apply_schema_change(payload jsonb) RETURNS jsonb:
+       - Validates required payload fields (operation_type, table_name,
+         executed_sql).
+       - Gates destructive operations (DROP TABLE / DROP COLUMN /
+         DROP INDEX / DROP CONSTRAINT, plus a regex catch-all on the SQL)
+         behind payload.force_destructive = true; raises a NOTICE/WARNING
+         when the gate is opened.
+       - Captures the before-state from information_schema (single column
+         row when column_name is supplied, otherwise the full ordered
+         column list of the table) and stores it in old_definition.
+       - Auto-derives rollback_sql when omitted:
+              CREATE TABLE  -> DROP TABLE IF EXISTS ... CASCADE
+              ADD COLUMN    -> ALTER TABLE ... DROP COLUMN IF EXISTS
+              DROP COLUMN   -> ALTER TABLE ... ADD COLUMN  ...   (using captured old_definition)
+              ALTER COLUMN  -> ALTER COLUMN ... TYPE/NOT NULL/DEFAULT (using captured old_definition)
+              DROP TABLE / DROP INDEX -> NULL (cannot be safely reconstructed; caller must supply rollback_sql)
+       - EXECUTE'd inside the function call -> a single implicit
+         transaction. If EXECUTE raises, no log row is written. If the
+         INSERT into schema_change_logs raises, the EXECUTE is also
+         rolled back. Both directions are covered by the single-txn
+         guarantee, satisfying the spec
+            "If logging fails -> rollback entire transaction"
+            "If SQL fails -> do not log".
+       - Captures after-state and writes the audit row.
+       - Returns
+            { success: true,
+              change_id: <uuid>,
+              rollback_available: <boolean>,
+              warnings: [ { level, message }, ... ] }
+
+   Intent:
+     Introduce a runtime audit + rollback layer for DDL changes that may
+     be requested ad-hoc (e.g. via AI prompts in this admin tool). Every
+     such change goes through the wrapper, which records the SQL, the
+     reverse SQL, and the column shape on either side. Operators can list
+     changes and roll them back from the new admin API
+     (/api/admin/schema-changes, see below).
+
+     This is ADDITIVE to the existing file-based migration policy in
+     replit.md ("Any database schema or data change ... must FIRST be
+     written as a SQL migration file under releases/<DD_MM_YYYY>/migrations/").
+     Release folders + docs.txt remain the source of truth for the
+     committed schema. The schema_change_logs table is a runtime audit
+     layer on top of that, not a replacement. Migrations applied via
+     psql/pgAdmin/Supabase console are not intercepted at the DB layer
+     (Postgres event triggers require superuser privileges that Supabase
+     does not grant); the wrapper is enforced by convention plus the
+     POST /api/admin/schema-changes endpoint.
+
+   Idempotency:
+     - CREATE EXTENSION IF NOT EXISTS pgcrypto
+     - CREATE TABLE IF NOT EXISTS schema_change_logs
+     - CREATE INDEX IF NOT EXISTS (x3)
+     - CREATE OR REPLACE FUNCTION apply_schema_change
+     - Wrapped in BEGIN/COMMIT.
+     - Mirrored at runtime by ensureSchemaChangeLogTable in
+       server/src/db.ts so fresh environments self-heal on first boot.
+
+   Rollback:
+     DROP FUNCTION IF EXISTS public.apply_schema_change(jsonb);
+     DROP TABLE    IF EXISTS public.schema_change_logs;
+
+   Known Limitations (auto-rollback derivation):
+     - Schema is HARDCODED to 'public'. Tables in other schemas are not
+       supported; old_definition / new_definition will be NULL and the
+       rollback derivation will fall back to text. If you need a non-
+       public schema, supply rollback_sql explicitly in the payload.
+     - Single-column scope. ADD COLUMN auto-rollback assumes
+       payload.column_name is the ONE column being added. If
+       executed_sql adds multiple columns (e.g.,
+       ALTER TABLE t ADD COLUMN a int, ADD COLUMN b int), the derived
+       DROP COLUMN only undoes one. Call apply_schema_change once per
+       logical column change, OR provide a complete rollback_sql.
+     - DROP TABLE / DROP INDEX have NO automatic rollback (the dropped
+       object's full DDL — constraints, indexes, defaults, FKs — cannot
+       be safely reconstructed from information_schema after the drop).
+       The function records rollback_sql = NULL and emits a warning.
+       Provide rollback_sql in the payload if rollback is needed.
+     - Column-type fidelity uses pg_catalog.format_type(atttypid,
+       atttypmod) so varchar(50), numeric(10,2), int4[], and
+       USER-DEFINED enums round-trip correctly. CHECK constraints,
+       FOREIGN KEY references, and IDENTITY/GENERATED clauses on a
+       dropped column are NOT captured and will be lost on rollback —
+       supply explicit rollback_sql when those matter.
+
+   Destructive Op Gate:
+     The following always require force_destructive=true in the payload:
+       - operation_type IN (DROP TABLE, DROP COLUMN, DROP INDEX,
+         DROP CONSTRAINT, TRUNCATE, RENAME, or anything starting with 'DROP ')
+       - executed_sql matches a regex sniff for DROP / TRUNCATE /
+         ALTER TABLE ... RENAME / ALTER TABLE ... DROP DEFAULT.
+     The regex is a coarse safety net (it can match the same words inside
+     comments or string literals — false positives are recoverable by
+     opting in with force_destructive). Successful destructive ops emit a
+     PG WARNING and a 'warning'-level entry in the returned warnings
+     array.
+
+API Surface
+-----------
+
+New router mounted at /api/admin/schema-changes
+(server/src/routes/adminSchemaChanges.ts), JWT-admin gated:
+
+  GET  /api/admin/schema-changes
+       Query params (all optional):
+         status      = applied | rolled_back | failed
+         table       = <table_name>
+         operation   = <operation_type>   (case-insensitive)
+         limit       = 1..500   (default 100)
+         offset      = >=0      (default 0)
+       Returns: { items: SchemaChange[], total, limit, offset }
+
+  GET  /api/admin/schema-changes/:id
+       Returns the full row (including old_definition / new_definition).
+
+  POST /api/admin/schema-changes
+       Body: SchemaChangePayload (see migration header). Calls
+       apply_schema_change(payload) and returns its JSON result. This is
+       the canonical entry point for "no direct migrations" — admin
+       tooling and AI-driven changes are expected to call this rather
+       than EXECUTE raw DDL.
+
+  POST /api/admin/schema-changes/rollback/:id
+       Body: { confirm: true } (required — rollback is itself destructive)
+       - Loads the row.
+       - Refuses if status != 'applied' or rollback_sql is empty.
+       - Executes rollback_sql inside an explicit transaction.
+       - On success: updates the row to status='rolled_back',
+         sets rolled_back_at = now(), rolled_back_by = <admin email
+         from JWT>, and returns { success: true, change_id, status }.
+       - On failure: leaves the row unchanged and returns 500 with
+         the Postgres error message.
+
+
+2) 2026_05_02_add_db_schema_logs_module.sql
+   Schema:
+     New row in public.modules:
+         name        = 'db-schema-logs'
+         category    = 'site-config'        (groups under "Site Config" in
+                                             the Roles & Permissions UI)
+         sort_order  = 24                   (next free value after the
+                                             current max of 23)
+         id          = <auto, sequence Module_Id_seq>
+         created_at  = now()
+
+   Intent:
+     Register the new admin page "DB Schema Logs" (route /db-schema-logs)
+     in the RBAC system. Without a row in public.modules, the Roles &
+     Permissions UI cannot grant any role view/manage access to the page,
+     because that UI is driven by SELECT * FROM public.modules. The page
+     is then gated client-side by ProtectedRoute(moduleName="db schema
+     logs") and the sidebar entry's permission key "db-schema-logs"
+     (AuthContext.hasActionPermission normalises hyphens to spaces, so
+     both forms map to the same module).
+
+     Module name was deliberately split out from "site-configuration"
+     because rolling back schema changes is destructive and should be
+     grantable independently of the broader Site Configuration permission
+     set.
+
+   Idempotency:
+     Wrapped in BEGIN/COMMIT. INSERT is guarded by NOT EXISTS on
+     name = 'db-schema-logs'. There is no UNIQUE constraint on
+     public.modules.name in the .NET-managed schema, so ON CONFLICT
+     cannot be used. Re-running the migration is a no-op.
+
+     Mirrored at runtime by ensureDbSchemaLogsModule() in
+     server/src/db.ts so fresh environments (and Supabase branches that
+     skipped this migration) self-heal on first boot.
+
+   Rollback:
+     DELETE FROM public.modules WHERE name = 'db-schema-logs';
+     (Cascades to public.module_access_permissions rows for any role
+      that was granted this module; re-granting requires re-running the
+      migration and re-saving the role from the Roles UI.)

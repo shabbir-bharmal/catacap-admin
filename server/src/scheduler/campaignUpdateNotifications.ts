@@ -1,4 +1,5 @@
 import pool from "../db.js";
+import { CAMPAIGN_UPDATE_RECIPIENT_USER_IDS_SQL } from "../utils/campaignUpdateRecipients.js";
 
 function truncate(s: string | null | undefined, n: number): string {
   if (!s) return "";
@@ -34,12 +35,11 @@ export async function runCampaignUpdateNotifications(): Promise<void> {
 
   for (const u of due.rows) {
     try {
+      // Recipients mirror the Investors tab (recommendations + orphan
+      // pending_grants + In-Transit asset_based_payment_requests). See
+      // utils/campaignUpdateRecipients.ts for the full definition.
       const investors = await pool.query(
-        `SELECT DISTINCT ui.user_id
-           FROM user_investments ui
-          WHERE ui.campaign_id = $1
-            AND ui.user_id IS NOT NULL
-            AND (ui.is_deleted IS NULL OR ui.is_deleted = false)`,
+        CAMPAIGN_UPDATE_RECIPIENT_USER_IDS_SQL,
         [u.campaign_id]
       );
 

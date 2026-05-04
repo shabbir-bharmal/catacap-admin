@@ -7,6 +7,13 @@ import { modulePermission } from "../middleware/jwtAuth.js";
 
 const router = Router();
 
+function noStore(_req: Request, res: Response, next: () => void): void {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+}
+
 const ALLOWED_LINK_TARGET_TYPES = new Set(["investments", "groups", "custom-pages"]);
 
 type EventLinkTargetsByType = {
@@ -192,7 +199,7 @@ function deriveLegacyLinkFields(grouped: EventLinkTargetsByType): {
   return { linkTargetType: null, linkTargetIds: [] };
 }
 
-router.get("/", async (req: Request, res: Response) => {
+router.get("/", noStore, async (req: Request, res: Response) => {
   try {
     const params = parsePagination(req.query as Record<string, unknown>);
     const isAsc = params.sortDirection?.toLowerCase() === "asc";
@@ -376,7 +383,7 @@ router.delete("/registrations/:id", modulePermission("event-registrations", "Del
   }
 });
 
-router.get("/:id", async (req: Request, res: Response) => {
+router.get("/:id", noStore, async (req: Request, res: Response) => {
   try {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ message: "Invalid ID" }); return; }

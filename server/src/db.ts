@@ -712,20 +712,242 @@ export async function testConnection(): Promise<void> {
       );
     }
 
-    await runSoftDeleteMigration(client);
-    await ensureSchedulerTables(client);
-    await ensureNoteAttachmentsTables(client);
-    await ensureCampaignUpdateExtras(client);
-    await ensureInvestmentInstruments(client);
-    await ensureAdminPerformanceIndexes(client);
-    await ensureCampaignsOwnerGroupColumns(client);
-    await ensureInvestmentNotificationRecipientsTable(client);
-    await backfillSchedulerLogIds(client);
-    await backfillSoftDeleteTimestamps(client);
-    await fixIncorrectBackfillDates(client);
-    await backfillOrphanedUserRoles(client);
+    await client.query("SET statement_timeout = '3s'");
+
+    const steps: [string, () => Promise<void>][] = [
+      ["runSoftDeleteMigration", () => runSoftDeleteMigration(client)],
+      ["ensureSchedulerTables", () => ensureSchedulerTables(client)],
+      ["ensureNoteAttachmentsTables", () => ensureNoteAttachmentsTables(client)],
+      ["ensureCampaignUpdateExtras", () => ensureCampaignUpdateExtras(client)],
+      ["ensureInvestmentInstruments", () => ensureInvestmentInstruments(client)],
+      ["ensureAdminPerformanceIndexes", () => ensureAdminPerformanceIndexes(client)],
+      ["ensureCampaignsOwnerGroupColumns", () => ensureCampaignsOwnerGroupColumns(client)],
+      ["ensureInvestmentNotificationRecipientsTable", () => ensureInvestmentNotificationRecipientsTable(client)],
+      ["ensureSchemaChangeLogTable", () => ensureSchemaChangeLogTable(client)],
+      ["ensureDbSchemaLogsModule", () => ensureDbSchemaLogsModule(client)],
+      ["backfillSchedulerLogIds", () => backfillSchedulerLogIds(client)],
+      ["backfillSoftDeleteTimestamps", () => backfillSoftDeleteTimestamps(client)],
+      ["fixIncorrectBackfillDates", () => fixIncorrectBackfillDates(client)],
+      ["backfillOrphanedUserRoles", () => backfillOrphanedUserRoles(client)],
+    ];
+
+    for (const [name, fn] of steps) {
+      try {
+        await fn();
+      } catch (err) {
+        console.warn(`[migration] ${name} failed (non-fatal):`, err);
+      }
+    }
+
+    await client.query("SET statement_timeout = '0'");
   } finally {
     client.release();
+  }
+}
+
+async function ensureSchemaChangeLogTable(client: pg.PoolClient): Promise<void> {
+  // Mirrors releases/02_05_2026/migrations/2026_05_02_schema_change_logs.sql
+  // so fresh environments self-heal on first boot.
+  try {
+    await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.schema_change_logs (
+        id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        operation_type   text        NOT NULL,
+        table_name       text        NOT NULL,
+        column_name      text,
+        old_definition   jsonb,
+        new_definition   jsonb,
+        executed_sql     text        NOT NULL,
+        rollback_sql     text,
+        triggered_by     text        NOT NULL DEFAULT 'ai_prompt',
+        prompt_reference text,
+        status           text        NOT NULL DEFAULT 'applied',
+        created_at       timestamptz NOT NULL DEFAULT now(),
+        rolled_back_at   timestamptz,
+        rolled_back_by   text,
+        CONSTRAINT schema_change_logs_status_chk
+          CHECK (status IN ('applied','rolled_back','failed'))
+      )
+    `);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS schema_change_logs_created_at_idx
+         ON public.schema_change_logs (created_at DESC)`,
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS schema_change_logs_status_idx
+         ON public.schema_change_logs (status)`,
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS schema_change_logs_table_name_idx
+         ON public.schema_change_logs (table_name)`,
+    );
+    await client.query(`
+      CREATE OR REPLACE FUNCTION public.apply_schema_change(payload jsonb)
+      RETURNS jsonb
+      LANGUAGE plpgsql
+      AS $function$
+      DECLARE
+          v_id        uuid := gen_random_uuid();
+          v_op        text;
+          v_table     text;
+          v_column    text;
+          v_sql       text;
+          v_rollback  text;
+          v_trigger   text;
+          v_ref       text;
+          v_force     boolean;
+          v_old_def   jsonb;
+          v_new_def   jsonb;
+          v_warnings  jsonb := '[]'::jsonb;
+      BEGIN
+          IF payload IS NULL THEN
+              RAISE EXCEPTION 'apply_schema_change: payload is required';
+          END IF;
+          v_op       := upper(NULLIF(trim(payload->>'operation_type'), ''));
+          v_table    := NULLIF(trim(payload->>'table_name'), '');
+          v_column   := NULLIF(trim(payload->>'column_name'), '');
+          v_sql      := payload->>'executed_sql';
+          v_rollback := NULLIF(trim(payload->>'rollback_sql'), '');
+          v_trigger  := COALESCE(NULLIF(trim(payload->>'triggered_by'), ''), 'ai_prompt');
+          v_ref      := NULLIF(trim(payload->>'prompt_reference'), '');
+          v_force    := COALESCE((payload->>'force_destructive')::boolean, false);
+          IF v_op    IS NULL THEN RAISE EXCEPTION 'apply_schema_change: operation_type is required'; END IF;
+          IF v_sql   IS NULL OR length(trim(v_sql)) = 0 THEN
+              RAISE EXCEPTION 'apply_schema_change: executed_sql is required';
+          END IF;
+          IF v_table IS NULL THEN RAISE EXCEPTION 'apply_schema_change: table_name is required'; END IF;
+
+          IF v_op IN ('DROP TABLE','DROP COLUMN','DROP INDEX','DROP CONSTRAINT','TRUNCATE','RENAME')
+             OR v_op LIKE 'DROP %'
+             OR v_sql ~* '\\m(drop\\s+(table|column|index|constraint|view|schema|function|trigger))\\M'
+             OR v_sql ~* '\\m(truncate)\\s+(table\\s+)?[A-Za-z_]'
+             OR v_sql ~* '\\malter\\s+table\\s+[^;]+\\s+rename\\M'
+             OR v_sql ~* '\\malter\\s+table\\s+[^;]+\\s+drop\\s+default\\M'
+          THEN
+              IF NOT v_force THEN
+                  RAISE EXCEPTION 'apply_schema_change: destructive operation (%) on % requires force_destructive=true in payload',
+                      v_op, v_table;
+              END IF;
+              v_warnings := v_warnings || jsonb_build_array(
+                  jsonb_build_object('level','warning',
+                    'message', format('Destructive operation %s applied to %s', v_op, v_table)));
+              RAISE WARNING 'apply_schema_change: destructive % on % (change_id=%)', v_op, v_table, v_id;
+          END IF;
+
+          IF v_column IS NOT NULL THEN
+              SELECT to_jsonb(c) || jsonb_build_object('pg_type_def', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                INTO v_old_def
+              FROM information_schema.columns c
+              JOIN pg_catalog.pg_namespace n ON n.nspname=c.table_schema
+              JOIN pg_catalog.pg_class     cl ON cl.relname=c.table_name AND cl.relnamespace=n.oid
+              JOIN pg_catalog.pg_attribute a  ON a.attrelid=cl.oid AND a.attname=c.column_name AND NOT a.attisdropped
+              WHERE c.table_schema='public' AND c.table_name=v_table AND c.column_name=v_column;
+          ELSE
+              SELECT jsonb_agg(
+                       to_jsonb(c) || jsonb_build_object('pg_type_def', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                       ORDER BY c.ordinal_position
+                     )
+                INTO v_old_def
+              FROM information_schema.columns c
+              JOIN pg_catalog.pg_namespace n ON n.nspname=c.table_schema
+              JOIN pg_catalog.pg_class     cl ON cl.relname=c.table_name AND cl.relnamespace=n.oid
+              JOIN pg_catalog.pg_attribute a  ON a.attrelid=cl.oid AND a.attname=c.column_name AND NOT a.attisdropped
+              WHERE c.table_schema='public' AND c.table_name=v_table;
+          END IF;
+
+          IF v_rollback IS NULL THEN
+              IF v_op = 'CREATE TABLE' THEN
+                  v_rollback := format('DROP TABLE IF EXISTS %I.%I CASCADE;', 'public', v_table);
+              ELSIF v_op = 'ADD COLUMN' AND v_column IS NOT NULL THEN
+                  v_rollback := format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I;', 'public', v_table, v_column);
+              ELSIF v_op = 'DROP COLUMN' AND v_column IS NOT NULL AND v_old_def IS NOT NULL THEN
+                  v_rollback := format('ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS %I %s%s%s;',
+                      'public', v_table, v_column,
+                      COALESCE(v_old_def->>'pg_type_def', v_old_def->>'data_type','text'),
+                      CASE WHEN (v_old_def->>'is_nullable')='NO' THEN ' NOT NULL' ELSE '' END,
+                      CASE WHEN v_old_def->>'column_default' IS NOT NULL
+                           THEN ' DEFAULT ' || (v_old_def->>'column_default') ELSE '' END);
+              ELSIF v_op = 'ALTER COLUMN' AND v_column IS NOT NULL AND v_old_def IS NOT NULL THEN
+                  v_rollback := format('ALTER TABLE %I.%I ALTER COLUMN %I TYPE %s%s%s;',
+                      'public', v_table, v_column,
+                      COALESCE(v_old_def->>'pg_type_def', v_old_def->>'data_type','text'),
+                      CASE WHEN (v_old_def->>'is_nullable')='NO'
+                           THEN format(', ALTER COLUMN %I SET NOT NULL', v_column)
+                           ELSE format(', ALTER COLUMN %I DROP NOT NULL', v_column) END,
+                      CASE WHEN v_old_def->>'column_default' IS NOT NULL
+                           THEN format(', ALTER COLUMN %I SET DEFAULT %s', v_column, v_old_def->>'column_default')
+                           ELSE format(', ALTER COLUMN %I DROP DEFAULT', v_column) END);
+              ELSIF v_op IN ('DROP TABLE','DROP INDEX') THEN
+                  v_rollback := NULL;
+                  v_warnings := v_warnings || jsonb_build_array(
+                      jsonb_build_object('level','warning',
+                        'message', format('No automatic rollback for %s. Provide rollback_sql in payload.', v_op)));
+              END IF;
+          END IF;
+
+          EXECUTE v_sql;
+
+          IF v_column IS NOT NULL THEN
+              SELECT to_jsonb(c) || jsonb_build_object('pg_type_def', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                INTO v_new_def
+              FROM information_schema.columns c
+              JOIN pg_catalog.pg_namespace n ON n.nspname=c.table_schema
+              JOIN pg_catalog.pg_class     cl ON cl.relname=c.table_name AND cl.relnamespace=n.oid
+              JOIN pg_catalog.pg_attribute a  ON a.attrelid=cl.oid AND a.attname=c.column_name AND NOT a.attisdropped
+              WHERE c.table_schema='public' AND c.table_name=v_table AND c.column_name=v_column;
+          ELSE
+              SELECT jsonb_agg(
+                       to_jsonb(c) || jsonb_build_object('pg_type_def', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                       ORDER BY c.ordinal_position
+                     )
+                INTO v_new_def
+              FROM information_schema.columns c
+              JOIN pg_catalog.pg_namespace n ON n.nspname=c.table_schema
+              JOIN pg_catalog.pg_class     cl ON cl.relname=c.table_name AND cl.relnamespace=n.oid
+              JOIN pg_catalog.pg_attribute a  ON a.attrelid=cl.oid AND a.attname=c.column_name AND NOT a.attisdropped
+              WHERE c.table_schema='public' AND c.table_name=v_table;
+          END IF;
+
+          INSERT INTO public.schema_change_logs(
+              id, operation_type, table_name, column_name,
+              old_definition, new_definition, executed_sql, rollback_sql,
+              triggered_by, prompt_reference, status)
+          VALUES (v_id, v_op, v_table, v_column,
+              v_old_def, v_new_def, v_sql, v_rollback,
+              v_trigger, v_ref, 'applied');
+
+          RETURN jsonb_build_object(
+              'success', true,
+              'change_id', v_id,
+              'rollback_available', v_rollback IS NOT NULL AND length(trim(v_rollback)) > 0,
+              'warnings', v_warnings);
+      END;
+      $function$
+    `);
+    console.log("[migration] schema_change_logs + apply_schema_change ready.");
+  } catch (e) {
+    console.warn("ensureSchemaChangeLogTable: could not ensure table/function:", e);
+  }
+}
+
+async function ensureDbSchemaLogsModule(client: pg.PoolClient): Promise<void> {
+  // Mirrors releases/02_05_2026/migrations/2026_05_02_add_db_schema_logs_module.sql
+  // so fresh environments self-heal: the /db-schema-logs page cannot be granted
+  // through the Roles & Permissions UI until this row exists in public.modules.
+  try {
+    const exists = await client.query(
+      `SELECT 1 FROM public.modules WHERE name = 'db-schema-logs' LIMIT 1`,
+    );
+    if (exists.rows.length === 0) {
+      await client.query(
+        `INSERT INTO public.modules (name, category, sort_order, created_at)
+         VALUES ('db-schema-logs', 'site-config', 24, now())`,
+      );
+      console.log("[migration] modules: inserted 'db-schema-logs' row.");
+    }
+  } catch (e) {
+    console.warn("ensureDbSchemaLogsModule: could not ensure module row:", e);
   }
 }
 

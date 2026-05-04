@@ -505,7 +505,7 @@ export default function AdminDashboard() {
                             </span>
                             <span className="text-sm text-foreground">{currency_format(cat.totalAmount)}</span>
                           </div>
-                          <div className="h-1.5 w-full bg-muted rounded-full">
+                          <div className="h-1.5 w-full bg-white border border-border rounded-full overflow-hidden">
                             <div className={`h-full rounded-full ${color}`} style={{ width: `${cat.percentage}%` }} />
                           </div>
                         </div>

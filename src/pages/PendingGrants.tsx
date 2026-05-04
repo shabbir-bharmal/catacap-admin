@@ -148,8 +148,8 @@ const getStatusClasses = (status: string) => {
 export default function AdminPendingGrants() {
   const { user: authUser } = useAuth();
   const queryClient = useQueryClient();
-  const [tempSelectedStatuses, setTempSelectedStatuses] = useState<(string | "All")[]>(["Pending"]);
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(["Pending"]);
+  const [tempSelectedStatuses, setTempSelectedStatuses] = useState<(string | "All")[]>(["Pending", "In Transit"]);
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(["Pending", "In Transit"]);
   const [tempSelectedDafProviders, setTempSelectedDafProviders] = useState<(string | "All")[]>(["All"]);
   const [selectedDafProviders, setSelectedDafProviders] = useState<string[]>([]);
   const [dafProviderPopoverOpen, setDafProviderPopoverOpen] = useState(false);

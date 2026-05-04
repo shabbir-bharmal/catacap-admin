@@ -116,18 +116,54 @@ export async function deleteInvestment(investmentId: number): Promise<any> {
     return response.data;
 }
 
+export type InvestmentContributionStatus = "pending" | "in transit" | "received";
+
+export interface InvestmentMatchAsDonor {
+    grantName: string;
+    triggeredRecId: number | null;
+    triggeredName: string | null;
+    triggeredAmount: number | null;
+    matchAmount: number;
+    pending?: boolean;
+}
+
+export interface InvestmentMatchTriggered {
+    grantName: string;
+    donorName: string | null;
+    donorRecId: number | null;
+    matchAmount: number;
+    pending?: boolean;
+}
+
+export interface InvestmentMatchInfo {
+    asMatch: InvestmentMatchAsDonor | null;
+    triggeredMatches: InvestmentMatchTriggered[];
+}
+
+export type InvestmentPaymentMethod = "wallet" | "daf" | "foundation" | "match";
+
 export interface InvestmentInvestor {
+    sourceId: number;
+    sourceType: "recommendation" | "pending_grant" | "projected_match";
     name: string;
     email: string | null;
-    contributions: number;
     totalAmount: number;
-    lastContributionAt: string | null;
+    date: string | null;
+    status: InvestmentContributionStatus;
+    paymentMethod: InvestmentPaymentMethod;
+    dafProvider: string | null;
+    dafName: string | null;
+    match: InvestmentMatchInfo | null;
 }
 
 export interface InvestmentInvestorsResponse {
     campaignId: number;
+    campaignName: string;
     totalInvestors: number;
+    totalContributions: number;
     totalAmount: number;
+    pendingMatchAmount?: number;
+    pendingMatchCount?: number;
     items: InvestmentInvestor[];
 }
 
@@ -138,6 +174,38 @@ export async function fetchInvestmentInvestors(
         `/api/admin/investment/${investmentId}/investors`,
     );
     return response.data;
+}
+
+export async function exportInvestmentInvestors(investmentId: number, investmentName: string): Promise<void> {
+    const response = await axiosInstance.get(`/api/admin/investment/${investmentId}/investors/export`, {
+        responseType: "blob",
+    });
+
+    if (response.headers["content-type"]?.includes("application/json")) {
+        const text = await (response.data as Blob).text();
+        const json = JSON.parse(text);
+        if (json.Success === false || json.success === false) {
+            throw new Error(json.Message || json.message || "There are no investors to export.");
+        }
+    }
+
+    const blob = new Blob([response.data]);
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+
+    const now = new Date();
+    const formattedDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+    const cleanName = (investmentName || `investment_${investmentId}`).replace(/[^a-z0-9]/gi, "_").toLowerCase();
+    const fileName = `Investors_${cleanName}_${formattedDate}.xlsx`;
+
+    link.setAttribute("download", fileName);
+    link.target = "_self";
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
 }
 
 export async function exportInvestmentRecommendations(investmentId: number, investmentName: string): Promise<void> {

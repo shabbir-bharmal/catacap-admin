@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { MoreVertical, Edit, Trash2, ExternalLink, Calendar, Search, Plus, ArrowUpDown, ChevronLeft, ChevronRight, Pencil, Upload, X } from "lucide-react";
+import { MoreVertical, Edit, Trash2, ExternalLink, Calendar, Search, Plus, ArrowUpDown, ChevronLeft, ChevronRight, Pencil, Upload, X, Home, Briefcase, Users, FileText } from "lucide-react";
 import { formatLongDate, formatTime12h, formatDateISO } from "@/helpers/format";
 import { RichTextEditor } from "../components/RichTextEditor";
 import { MultiSelectPopover, type MultiSelectOption } from "@/components/MultiSelectPopover";
@@ -188,23 +188,47 @@ export default function EventManagement() {
   const investmentsListQuery = useQuery({
     queryKey: ["event-link-target", "investments"],
     queryFn: () => fetchAllInvestmentNameList(0, 0),
-    enabled: dialogOpen,
     staleTime: 5 * 60 * 1000,
   });
 
   const groupsListQuery = useQuery({
     queryKey: ["event-link-target", "groups"],
     queryFn: () => fetchAllGroupsIdName(),
-    enabled: dialogOpen,
     staleTime: 5 * 60 * 1000,
   });
 
   const customPagesListQuery = useQuery({
     queryKey: ["event-link-target", "custom-pages"],
     queryFn: () => fetchCustomPages(),
-    enabled: dialogOpen,
     staleTime: 5 * 60 * 1000,
   });
+
+  const investmentNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    (investmentsListQuery.data || []).forEach((it: any) => {
+      const id = Number(it?.id);
+      if (Number.isFinite(id) && id > 0) m.set(id, String(it?.name ?? "").trim());
+    });
+    return m;
+  }, [investmentsListQuery.data]);
+
+  const groupNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    (groupsListQuery.data || []).forEach((g: any) => {
+      const id = Number(g?.id);
+      if (Number.isFinite(id) && id > 0) m.set(id, String(g?.name ?? "").trim());
+    });
+    return m;
+  }, [groupsListQuery.data]);
+
+  const customPageTitleBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    (customPagesListQuery.data || []).forEach((p: any) => {
+      const slug = String(p?.slug ?? "").trim();
+      if (slug) m.set(slug, String(p?.title ?? slug).trim());
+    });
+    return m;
+  }, [customPagesListQuery.data]);
 
   const linkTargetOptionsByType: Record<EventLinkTargetType, MultiSelectOption<number | string>[]> = useMemo(() => {
     const investments: MultiSelectOption<number | string>[] = (investmentsListQuery.data || [])
@@ -455,7 +479,6 @@ export default function EventManagement() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-12">#</th>
                     <SortHeader field="title" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Event Title
                     </SortHeader>
@@ -467,6 +490,7 @@ export default function EventManagement() {
                     <SortHeader field="status" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Status
                     </SortHeader>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Visibility</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Type</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Duration</th>
                     <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Actions</th>
@@ -488,7 +512,6 @@ export default function EventManagement() {
                   ) : (
                     events.map((event, idx) => (
                       <tr key={event.id} className="hover:bg-muted/20 transition-colors" data-testid={`row-event-${event.id}`}>
-                        <td className="px-4 py-3 text-muted-foreground">{startIdx + idx}</td>
                         <td className="px-4 py-3 font-medium text-[#405189]" data-testid={`text-event-title-${event.id}`}>
                           <div className="flex items-center gap-3">
                             <div className="h-10 w-14 flex items-center justify-center shrink-0">
@@ -540,6 +563,85 @@ export default function EventManagement() {
                           >
                             {event.status ? "Active" : "Draft"}
                           </Badge>
+                        </td>
+                        <td className="px-4 py-3" data-testid={`cell-event-visibility-${event.id}`}>
+                          {(() => {
+                            const grouped = (event as any).linkTargetsByType || {};
+                            const invIds: number[] = Array.isArray(grouped.investments)
+                              ? grouped.investments.map((v: any) => Number(v)).filter((n: number) => Number.isFinite(n) && n > 0)
+                              : [];
+                            const grpIds: number[] = Array.isArray(grouped.groups)
+                              ? grouped.groups.map((v: any) => Number(v)).filter((n: number) => Number.isFinite(n) && n > 0)
+                              : [];
+                            const pageSlugs: string[] = Array.isArray(grouped["custom-pages"])
+                              ? grouped["custom-pages"].map((v: any) => String(v).trim()).filter((s: string) => s.length > 0)
+                              : [];
+                            const showsHome = !!event.showOnHome;
+                            const totalLinks = invIds.length + grpIds.length + pageSlugs.length;
+                            if (!showsHome && totalLinks === 0) {
+                              return <span className="text-muted-foreground/30 text-xs">—</span>;
+                            }
+                            const invNames = invIds.map((id) => investmentNameById.get(id) || `#${id}`);
+                            const grpNames = grpIds.map((id) => groupNameById.get(id) || `#${id}`);
+                            const pageNames = pageSlugs.map((s) => customPageTitleBySlug.get(s) || s);
+                            const chip = "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap";
+                            return (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {showsHome && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className={cn(chip, "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300")}>
+                                        <Home className="h-3 w-3" /> Home
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Visible on the public home page</TooltipContent>
+                                  </Tooltip>
+                                )}
+                                {invIds.length > 0 && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className={cn(chip, "bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300")}>
+                                        <Briefcase className="h-3 w-3" /> {invIds.length} Investment{invIds.length === 1 ? "" : "s"}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                      <div className="space-y-0.5">
+                                        {invNames.map((n, i) => <div key={i} className="text-xs">{n}</div>)}
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                                {grpIds.length > 0 && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className={cn(chip, "bg-sky-50 border-sky-200 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300")}>
+                                        <Users className="h-3 w-3" /> {grpIds.length} Group{grpIds.length === 1 ? "" : "s"}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                      <div className="space-y-0.5">
+                                        {grpNames.map((n, i) => <div key={i} className="text-xs">{n}</div>)}
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                                {pageSlugs.length > 0 && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className={cn(chip, "bg-violet-50 border-violet-200 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300")}>
+                                        <FileText className="h-3 w-3" /> {pageSlugs.length} Page{pageSlugs.length === 1 ? "" : "s"}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                      <div className="space-y-0.5">
+                                        {pageNames.map((n, i) => <div key={i} className="text-xs">{n}</div>)}
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-3 text-muted-foreground text-xs">{event.type || "—"}</td>
                         <td className="px-4 py-3 text-muted-foreground text-xs">{event.duration || "—"}</td>

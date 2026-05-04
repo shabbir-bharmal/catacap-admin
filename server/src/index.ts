@@ -38,6 +38,7 @@ import { jwtAuthMiddleware } from "./middleware/jwtAuth.js";
 import { Router } from "express";
 import { initScheduler } from "./scheduler/index.js";
 import adminSchedulerRoutes from "./routes/adminScheduler.js";
+import adminSchemaChangesRoutes from "./routes/adminSchemaChanges.js";
 import analyticsRoutes from "./routes/analytics.js";
 import adminMatchingRoutes from "./routes/adminMatching.js";
 
@@ -82,6 +83,7 @@ app.use("/api/admin/completed-investment", jwtAuthMiddleware, adminCompletedInve
 app.use("/api/admin/investment", jwtAuthMiddleware, adminInvestmentRoutes);
 app.use("/api/admin/recycle-bin", jwtAuthMiddleware, recycleBinRoutes);
 app.use("/api/admin/scheduler", jwtAuthMiddleware, adminSchedulerRoutes);
+app.use("/api/admin/schema-changes", jwtAuthMiddleware, adminSchemaChangesRoutes);
 app.use("/api/admin/analytics", jwtAuthMiddleware, analyticsRoutes);
 app.use("/api/analytics", jwtAuthMiddleware, analyticsRoutes);
 app.use("/api/admin/matching", jwtAuthMiddleware, adminMatchingRoutes);

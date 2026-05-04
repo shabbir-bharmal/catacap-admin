@@ -188,6 +188,12 @@ export const sidebarConfig = [
             url: "/archived-records",
             icon: Archive,
             permission: { module: "site-configuration", action: "view" }
+          },
+          {
+            title: "DB Schema Logs",
+            url: "/db-schema-logs",
+            icon: GitMerge,
+            permission: { module: "db-schema-logs", action: "view" }
           }
           // {
           //   title: "Analytics",

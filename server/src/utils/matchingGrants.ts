@@ -45,6 +45,21 @@ export async function applyMatchGrants(args: ApplyMatchArgs): Promise<void> {
   } = args;
 
   try {
+    // ── Guardrail: never match a recommendation that was itself created by
+    // a match grant. Prevents chain-matching (e.g. FundHer's donor recommendation
+    // being matched by Lily's grant, or vice versa).
+    const isMatchCreated = await pool.query(
+      `SELECT 1 FROM campaign_match_grant_activity
+        WHERE donor_recommendation_id = $1 LIMIT 1`,
+      [triggeringRecommendationId],
+    );
+    if (isMatchCreated.rows.length > 0) {
+      console.log(
+        `applyMatchGrants: skipping rec ${triggeringRecommendationId} on campaign ${campaignId} — created by a match grant (no chain matching).`,
+      );
+      return;
+    }
+
     // Find active, non-expired grants covering this campaign
     const grantsResult = await pool.query(
       `SELECT cmg.id, cmg.donor_user_id, cmg.total_cap, cmg.amount_used,
@@ -86,14 +101,24 @@ export async function applyMatchGrants(args: ApplyMatchArgs): Promise<void> {
   }
 }
 
-async function applySingleGrant(opts: {
+/**
+ * Apply a single match grant to a single triggering recommendation.
+ * Returns the matched amount (0 if skipped).
+ *
+ * Idempotency: relies on the unique index
+ *   campaign_match_grant_activity_grant_rec_uniq
+ * (match_grant_id, triggered_by_recommendation_id). On a duplicate-key
+ * violation we silently roll back — another concurrent path already
+ * recorded the match.
+ */
+export async function applySingleGrant(opts: {
   grant: any;
   campaignId: number;
   investorUserId: string;
   triggeringRecommendationId: number;
   investmentAmount: number;
   campaignName: string;
-}): Promise<void> {
+}): Promise<number> {
   const {
     grant,
     campaignId,
@@ -122,7 +147,7 @@ async function applySingleGrant(opts: {
       availableBudget = Infinity; // unlimited — will be capped by wallet below
     }
 
-    if (availableBudget <= 0) return;
+    if (availableBudget <= 0) return 0;
 
     // ── Compute match amount ──────────────────────────────────────────
     let matchAmount = investmentAmount;
@@ -133,14 +158,16 @@ async function applySingleGrant(opts: {
     matchAmount = Math.min(matchAmount, availableBudget);
     matchAmount = Math.round(matchAmount * 100) / 100;
 
-    if (matchAmount <= 0) return;
+    if (matchAmount <= 0) return 0;
 
     await client.query("BEGIN");
 
-    // Fetch donor row (always needed for recommendation fields)
+    // Fetch donor row with row-level lock so concurrent live-wallet matches
+    // (e.g. retroactive sweep + live trigger on the same donor) cannot both
+    // pass the balance check and overdraw the account.
     const donorResult = await client.query(
       `SELECT id, email, first_name, last_name, user_name, account_balance
-         FROM users WHERE id = $1`,
+         FROM users WHERE id = $1 FOR UPDATE`,
       [grant.donor_user_id],
     );
     if (donorResult.rows.length === 0) {
@@ -148,7 +175,7 @@ async function applySingleGrant(opts: {
       console.warn(
         `applyMatchGrants: donor ${grant.donor_user_id} not found, skipping grant ${grant.id}`,
       );
-      return;
+      return 0;
     }
     const donor = donorResult.rows[0];
     const donorBalance = parseFloat(donor.account_balance) || 0;
@@ -164,7 +191,7 @@ async function applySingleGrant(opts: {
         console.warn(
           `applyMatchGrants: donor ${grant.donor_user_id} has zero balance, skipping grant ${grant.id}`,
         );
-        return;
+        return 0;
       }
       if (donorBalance < matchAmount) {
         matchAmount = Math.round(donorBalance * 100) / 100;
@@ -257,13 +284,146 @@ async function applySingleGrant(opts: {
     console.log(
       `applyMatchGrants: grant ${grant.id} matched $${matchAmount} for campaign ${campaignId} (${isEscrow ? "escrow" : "live-wallet"})`,
     );
+    return matchAmount;
   } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});
+    // 23505 = unique_violation. Another path beat us to recording this match.
+    if (err?.code === "23505") {
+      console.log(
+        `applyMatchGrants: grant ${grant.id} → rec ${triggeringRecommendationId} already recorded (idempotent skip)`,
+      );
+      return 0;
+    }
     console.error(
       `applyMatchGrants: error on grant ${grant.id}:`,
       err?.message || err,
     );
+    return 0;
   } finally {
     client.release();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Retroactive sweep
+// ─────────────────────────────────────────────────────────────────────
+/**
+ * Apply a match grant retroactively to all eligible existing recommendations
+ * dated on/after `fromDate`. Skips:
+ *   • recs that were themselves created by a match grant (no chain matching)
+ *   • recs already matched by THIS grant (dedup via unique index + pre-check)
+ *   • recs by the donor themselves (donors can't match their own investments)
+ *   • recs with non-positive amount or invalid status
+ *
+ * Returns { matched, totalAmount, scanned, skipped } summary.
+ */
+export async function runRetroactiveSweep(grantId: number): Promise<{
+  matched: number;
+  totalAmount: number;
+  scanned: number;
+  skipped: number;
+}> {
+  const summary = { matched: 0, totalAmount: 0, scanned: 0, skipped: 0 };
+
+  try {
+    const grantRes = await pool.query(
+      `SELECT cmg.id, cmg.donor_user_id, cmg.total_cap, cmg.amount_used,
+              cmg.reserved_amount, cmg.match_type, cmg.per_investment_cap,
+              cmg.name, cmg.expires_at, cmg.is_active, cmg.retroactive_from
+         FROM campaign_match_grants cmg
+        WHERE cmg.id = $1`,
+      [grantId],
+    );
+    if (grantRes.rows.length === 0) {
+      console.warn(`runRetroactiveSweep: grant ${grantId} not found`);
+      return summary;
+    }
+    const grant = grantRes.rows[0];
+
+    if (!grant.is_active) {
+      console.log(`runRetroactiveSweep: grant ${grantId} is inactive, skipping`);
+      return summary;
+    }
+    if (!grant.retroactive_from) {
+      console.log(`runRetroactiveSweep: grant ${grantId} has no retroactive_from, skipping`);
+      return summary;
+    }
+    if (grant.expires_at && new Date(grant.expires_at).getTime() <= Date.now()) {
+      console.log(`runRetroactiveSweep: grant ${grantId} is expired, skipping`);
+      return summary;
+    }
+
+    // Find candidate recommendations on the grant's eligible campaigns,
+    // dated on/after retroactive_from, that have not already been matched
+    // by this grant and were not themselves match-created.
+    const recsRes = await pool.query(
+      `SELECT r.id, r.user_id, r.amount, r.campaign_id, r.date_created,
+              r.user_email, c.name AS campaign_name
+         FROM recommendations r
+         JOIN campaign_match_grant_campaigns cmgc
+              ON cmgc.match_grant_id = $1 AND cmgc.campaign_id = r.campaign_id
+         JOIN campaigns c ON c.id = r.campaign_id
+        WHERE (r.is_deleted IS NULL OR r.is_deleted = false)
+          AND (c.is_deleted IS NULL OR c.is_deleted = false)
+          AND LOWER(r.status) IN ('approved', 'pending')
+          AND r.amount > 0
+          AND r.user_id IS NOT NULL
+          AND r.user_id <> $2
+          AND r.date_created >= $3
+          AND NOT EXISTS (
+            SELECT 1 FROM campaign_match_grant_activity a
+             WHERE a.donor_recommendation_id = r.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM campaign_match_grant_activity a
+             WHERE a.match_grant_id = $1
+               AND a.triggered_by_recommendation_id = r.id
+          )
+        ORDER BY r.date_created ASC, r.id ASC`,
+      [grantId, grant.donor_user_id, grant.retroactive_from],
+    );
+
+    summary.scanned = recsRes.rows.length;
+    console.log(
+      `runRetroactiveSweep: grant ${grantId} → ${summary.scanned} candidate recommendation(s) on/after ${grant.retroactive_from}`,
+    );
+
+    for (const rec of recsRes.rows) {
+      // Re-read live grant state each iteration so amount_used / reserved_amount
+      // reflect the most recent applications inside this sweep.
+      const liveGrantRes = await pool.query(
+        `SELECT id, donor_user_id, total_cap, amount_used, reserved_amount,
+                match_type, per_investment_cap, name, expires_at
+           FROM campaign_match_grants WHERE id = $1`,
+        [grantId],
+      );
+      if (liveGrantRes.rows.length === 0) break;
+      const liveGrant = liveGrantRes.rows[0];
+
+      const applied = await applySingleGrant({
+        grant: liveGrant,
+        campaignId: Number(rec.campaign_id),
+        investorUserId: rec.user_id,
+        triggeringRecommendationId: Number(rec.id),
+        investmentAmount: parseFloat(rec.amount) || 0,
+        campaignName: rec.campaign_name || "",
+      });
+
+      if (applied > 0) {
+        summary.matched += 1;
+        summary.totalAmount += applied;
+      } else {
+        summary.skipped += 1;
+      }
+    }
+
+    summary.totalAmount = Math.round(summary.totalAmount * 100) / 100;
+    console.log(
+      `runRetroactiveSweep: grant ${grantId} done — matched ${summary.matched} for $${summary.totalAmount.toFixed(2)} (skipped ${summary.skipped})`,
+    );
+    return summary;
+  } catch (err: any) {
+    console.error(`runRetroactiveSweep: grant ${grantId} error:`, err?.message || err);
+    return summary;
   }
 }

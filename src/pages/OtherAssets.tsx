@@ -734,6 +734,7 @@ export default function AdminOtherAssets() {
         isSubmitting={isSubmitting}
         confirmButtonClass="bg-[#82b64b] text-white"
         dataTestId="dialog-reject"
+        contentClassName="sm:max-w-[640px] sm:w-[640px]"
       >
         <AttachmentsPicker
           attachments={rejectAttachments}
@@ -762,6 +763,7 @@ export default function AdminOtherAssets() {
         isSubmitting={isSubmitting}
         confirmButtonClass="bg-[#2185d0] text-white"
         dataTestId="dialog-transit"
+        contentClassName="sm:max-w-[640px] sm:w-[640px]"
       >
         <AttachmentsPicker
           attachments={transitAttachments}
@@ -791,6 +793,7 @@ export default function AdminOtherAssets() {
         isSubmitting={isSubmitting}
         confirmButtonClass="bg-[#1b4370] text-white"
         dataTestId="dialog-received"
+        contentClassName="sm:max-w-[640px] sm:w-[640px]"
       >
         <div className="space-y-1.5 pt-2">
           <p className="text-sm text-muted-foreground">Final amount after fees deduction (editable)</p>
@@ -826,6 +829,7 @@ export default function AdminOtherAssets() {
         confirmLabel="SAVE"
         confirmButtonClass="bg-[#299cdb] text-white"
         dataTestId="dialog-follow-up"
+        contentClassName="sm:max-w-[640px] sm:w-[640px]"
       >
         <AttachmentsPicker
           attachments={followUpAttachments}

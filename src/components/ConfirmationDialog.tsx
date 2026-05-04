@@ -22,6 +22,7 @@ interface ConfirmationDialogProps {
   confirmButtonClass?: string;
   children?: React.ReactNode;
   dataTestId?: string;
+  contentClassName?: string;
 }
 
 export function ConfirmationDialog({
@@ -41,6 +42,7 @@ export function ConfirmationDialog({
   confirmButtonClass,
   children,
   dataTestId,
+  contentClassName,
 }: ConfirmationDialogProps) {
   return (
     <Dialog
@@ -51,7 +53,7 @@ export function ConfirmationDialog({
         }
       }}
     >
-      <DialogContent className="sm:w-[480px]" data-testid={dataTestId}>
+      <DialogContent className={cn("sm:w-[480px]", contentClassName)} data-testid={dataTestId}>
         <div className="text-base font-semibold py-2">
           {title}
         </div>

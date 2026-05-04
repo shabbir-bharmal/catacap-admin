@@ -540,7 +540,6 @@ export default function AdminRaiseMoney() {
 
       const tyText = stripHtml(formData.thankYouMessage);
       if (!tyText) err("thankYouMessage", "Personalized Thank You is required");
-      else if (tyText.length > 1000) err("thankYouMessage", "Cannot exceed 1,000 characters");
 
       if (formData.investmentThemes.length === 0) err("investmentThemes", "Please select at least one theme");
       if (formData.sdgs.length === 0) err("sdgs", "Please select at least one SDG");
@@ -1574,7 +1573,7 @@ export default function AdminRaiseMoney() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="thankYouMessage" className="text-sm">
-                    Personalized Thank You (Not to exceed 1,000 characters) <span className="text-[#f06548]">*</span>
+                    Personalized Thank You <span className="text-[#f06548]">*</span>
                   </Label>
                   <Textarea
                     id="thankYouMessage"
@@ -1582,12 +1581,10 @@ export default function AdminRaiseMoney() {
                     onChange={(e) => updateField("thankYouMessage", e.target.value)}
                     placeholder="Personalized Thank You"
                     rows={4}
-                    maxLength={1000}
                     className={fieldError("thankYouMessage")}
                     data-testid="input-thank-you"
                   />
                   {fieldErrorMsg("thankYouMessage")}
-                  <p className="text-xs text-muted-foreground text-right">{formData.thankYouMessage.length} / 1,000 characters</p>
                   <p className="text-xs text-muted-foreground">What would you like your customized thank you message - displayed to users following a donation to your Investment - to say?</p>
                 </div>
 
