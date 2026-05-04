@@ -5,9 +5,53 @@ const TIMESTAMPTZ_OID = 1184;
 pg.types.setTypeParser(TIMESTAMP_OID, (val: string) => val);
 pg.types.setTypeParser(TIMESTAMPTZ_OID, (val: string) => val);
 
+// Append `options=-c TimeZone=UTC` to the connection string so Postgres
+// applies the session timezone during the startup handshake — *before* the
+// first query runs on any new connection. The `pool.on("connect")` listener
+// below is fire-and-forget (the pool does not await it), so relying on it
+// alone leaves a small race where the first query on a freshly-created
+// client could execute before the SET TIME ZONE statement. Setting the
+// startup option eliminates that race.
+function buildConnectionString(): string | undefined {
+  const raw = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
+  if (!raw) return raw;
+  const tzOption = "-c TimeZone=UTC";
+  try {
+    const u = new URL(raw);
+    const existing = u.searchParams.get("options");
+    if (existing == null) {
+      u.searchParams.set("options", tzOption);
+    } else if (!/(?:^|\s)-c\s*TimeZone=/i.test(existing)) {
+      u.searchParams.set("options", `${existing} ${tzOption}`.trim());
+    }
+    return u.toString();
+  } catch {
+    // Fall back to naive concatenation for non-URL connection strings.
+    if (/(?:[?&])options=/.test(raw)) {
+      if (/-c\s*TimeZone=/i.test(raw)) return raw;
+      return raw.replace(/(options=)([^&]*)/, (_m, k, v) => `${k}${v}%20${encodeURIComponent(tzOption)}`);
+    }
+    const sep = raw.includes("?") ? "&" : "?";
+    return `${raw}${sep}options=${encodeURIComponent(tzOption)}`;
+  }
+}
+
 const pool = new pg.Pool({
-  connectionString: process.env.SUPABASE_DB_URL || process.env.DATABASE_URL,
+  connectionString: buildConnectionString(),
   ssl: { rejectUnauthorized: false },
+});
+
+// Backstop for any code path that creates a Client outside of `buildConnectionString`'s
+// reach (or if the server ignored the startup `options` for any reason): force every
+// new pooled connection to UTC. The pool emits `connect` once per new client. The
+// custom TIMESTAMP_OID parser returns naive (no-offset) wall-clock strings, and the
+// frontend / server both treat those strings as UTC, so any non-UTC session timezone
+// would silently drift by the session's offset (e.g. 5h30m on an Asia/Kolkata-hosted
+// Postgres) — making scheduler "Run Now" rows show absurd start times and durations.
+pool.on("connect", (client) => {
+  client.query("SET TIME ZONE 'UTC'").catch((err) => {
+    console.error("Failed to SET TIME ZONE 'UTC' on new pool connection:", err);
+  });
 });
 
 pool.on("error", (err) => {

@@ -39,6 +39,23 @@ const WEEKLY_JOBS: Record<string, number> = {
 
 const activeTasks: ScheduledTask[] = [];
 
+// Convert a `pg`-returned timestamp value into millis-since-epoch.
+// `db.ts` registers raw-string parsers for both TIMESTAMP and TIMESTAMPTZ,
+// so `start_time` typically arrives as a string. For naive (no-offset)
+// strings we treat them as UTC, matching the session timezone we force in
+// `db.ts` and the way the frontend renders these values.
+export function parsePgTimestamp(val: string | Date | null | undefined): number {
+  if (val == null) return NaN;
+  if (val instanceof Date) return val.getTime();
+  const trimmed = String(val).trim();
+  if (!trimmed) return NaN;
+  if (/Z$|[+-]\d{2}:?\d{0,2}$/.test(trimmed)) {
+    return new Date(trimmed).getTime();
+  }
+  const isoLike = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  return new Date(`${isoLike}Z`).getTime();
+}
+
 async function withAdvisoryLock(
   lockKey: number,
   jobName: string,
@@ -369,7 +386,7 @@ export async function reconcileOrphanedRunningLogs(
   let reconciled = 0;
   for (const row of orphanRows) {
     const ageMs = row.start_time
-      ? now - new Date(row.start_time).getTime()
+      ? now - parsePgTimestamp(row.start_time)
       : Number.POSITIVE_INFINITY;
     const exceededMaxDuration = ageMs >= MAX_RUN_DURATION_MS;
     const lockKey = LOCK_KEYS[row.job_name];

@@ -194,12 +194,9 @@ export default function SchedulersTab() {
     });
     if (finishedNotifications.length > 0) {
       for (const { jobName, lastRun } of finishedNotifications) {
-        // Only treat the row as failed when the server explicitly says so.
-        // The previous fallback `!status && errorMessage` could misfire on
-        // legacy rows whose error_message column is populated with non-error
-        // text (e.g. an old success/info string), which produced a bogus
-        // "Job Failed" toast for runs that actually succeeded.
-        const failed = lastRun.status === "Failed";
+        const failed =
+          lastRun.status === "Failed" ||
+          (!lastRun.status && !!lastRun.errorMessage);
         const display = JOB_DISPLAY_NAMES[jobName] || jobName;
         const message = failed
           ? `${display} failed: ${lastRun.errorMessage || "Unknown error."}`
@@ -491,15 +488,22 @@ export default function SchedulersTab() {
   };
 
 
+  // Parse a server-provided timestamp string into millis-since-epoch.
+  // Handles both correct TIMESTAMPTZ output (`...+00`, `...Z`) and legacy
+  // TIMESTAMP-without-tz output (`YYYY-MM-DD HH:MM:SS[.ms]`) by treating
+  // the latter as UTC, matching how `formatDateTimeInZone` displays it.
+  const parseServerTime = (val: string): number => {
+    if (!val) return NaN;
+    const hasTz = /Z$|[+-]\d{2}:?\d{0,2}$/.test(val.trim());
+    if (hasTz) return new Date(val).getTime();
+    const isoLike = val.includes("T") ? val : val.replace(" ", "T");
+    return new Date(`${isoLike}Z`).getTime();
+  };
+
   const formatDuration = (start: string, end: string | null): string => {
     if (!end) return "—";
-    const endMs = new Date(end).getTime();
-    const startMs = new Date(start).getTime();
-    if (!Number.isFinite(endMs) || !Number.isFinite(startMs)) return "—";
-    const ms = endMs - startMs;
-    // Defensive: a non-positive duration means the row's end_time is missing
-    // or bogus (e.g. epoch). Don't render misleading negative numbers.
-    if (!Number.isFinite(ms) || ms <= 0) return "—";
+    const ms = parseServerTime(end) - parseServerTime(start);
+    if (!Number.isFinite(ms) || ms < 0) return "—";
     if (ms < 1000) return `${ms}ms`;
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;
@@ -509,7 +513,9 @@ export default function SchedulersTab() {
   };
 
   const formatLiveDuration = (start: string, nowMs: number): string => {
-    const ms = nowMs - new Date(start).getTime();
+    const startMs = parseServerTime(start);
+    if (!Number.isFinite(startMs)) return "0s";
+    const ms = nowMs - startMs;
     if (ms < 1000) return "0s";
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;
@@ -790,7 +796,7 @@ export default function SchedulersTab() {
                                       <Loader2 className="h-3 w-3 animate-spin" />
                                       Running
                                     </Badge>
-                                  ) : log.status === "Failed" ? (
+                                  ) : (log.status === "Failed" || (!log.status && log.errorMessage)) ? (
                                     <Badge variant="destructive">Failed</Badge>
                                   ) : (
                                     <Badge variant="secondary" className="bg-green-100 text-green-800">Success</Badge>
@@ -803,7 +809,9 @@ export default function SchedulersTab() {
                                     : formatDuration(log.startTime, log.endTime)}
                                 </TableCell>
                                 <TableCell className="text-sm max-w-md truncate">
-                                  {log.status === "Failed" && log.errorMessage ? (
+                                  {isRunningRow ? (
+                                    <span className="text-muted-foreground italic">In progress…</span>
+                                  ) : log.errorMessage ? (
                                     <span className="text-red-600" title={log.errorMessage}>
                                       {log.errorMessage}
                                     </span>
@@ -917,7 +925,9 @@ export default function SchedulersTab() {
                                       const hasArtifact =
                                         typeof md.artifactPath === "string" ||
                                         typeof md.storagePath === "string";
-                                      const isFailed = log.status === "Failed";
+                                      const isFailed =
+                                        log.status === "Failed" ||
+                                        (!log.status && !!log.errorMessage);
                                       if (isFailed || !hasArtifact) {
                                         return (
                                           <span className="text-xs text-muted-foreground">
