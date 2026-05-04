@@ -41,6 +41,7 @@ import adminSchedulerRoutes from "./routes/adminScheduler.js";
 import adminSchemaChangesRoutes from "./routes/adminSchemaChanges.js";
 import analyticsRoutes from "./routes/analytics.js";
 import adminMatchingRoutes from "./routes/adminMatching.js";
+import reportingRoutes from "./routes/reporting.js";
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -72,6 +73,7 @@ app.use("/api/admin/user", jwtAuthMiddleware, adminUserRoutes);
 app.use("/api/module-access-permission", jwtAuthMiddleware, moduleAccessPermissionRoutes);
 app.use("/api/admin/transaction-history", jwtAuthMiddleware, transactionHistoryRoutes);
 app.use("/api/admin/finance", jwtAuthMiddleware, financeRoutes);
+app.use("/api/admin/reporting", jwtAuthMiddleware, reportingRoutes);
 app.use("/api/admin/group", jwtAuthMiddleware, adminGroupRoutes);
 app.use("/api/admin/recommendation", jwtAuthMiddleware, adminRecommendationRoutes);
 app.use("/api/admin/pending-grant", jwtAuthMiddleware, adminPendingGrantRoutes);

@@ -319,16 +319,6 @@ export default function GroupsPage() {
             Groups
           </h1>
           <div className="flex items-center gap-2">
-            <Link href="/groups/reporting">
-              <Button
-                variant="outline"
-                className="text-[#405189] hover:text-[#405189] hover:bg-[#405189]/5"
-                data-testid="button-group-reporting"
-              >
-                <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
-                Group Reporting
-              </Button>
-            </Link>
             <Link href="/groups/reports">
               <Button
                 variant="outline"

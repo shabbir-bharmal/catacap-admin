@@ -1,11 +1,10 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
 import { AdminLayout } from "../components/AdminLayout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Search, Download, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Search, Download, TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { fetchGroupReporting, type GroupReportingItem } from "../api/group/groupApi";
 import { currency_format } from "@/helpers/format";
 import { useDebounce } from "../hooks/useDebounce";
@@ -122,24 +121,7 @@ export default function GroupReportingPage() {
   return (
     <AdminLayout title="Group Reporting">
       <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-3">
-            <Link href="/groups">
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-[#405189] hover:text-[#405189] hover:bg-[#405189]/5"
-                data-testid="button-back-to-groups"
-              >
-                <ArrowLeft className="h-4 w-4 mr-1.5" />
-                Back to Groups
-              </Button>
-            </Link>
-            <h1 className="text-2xl font-semibold" data-testid="text-page-heading">
-              Group Reporting
-            </h1>
-          </div>
-        </div>
+        <h1 className="text-2xl font-semibold" data-testid="text-page-heading">Group Reporting</h1>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card data-testid="card-total-cutoff">

@@ -12,6 +12,8 @@ import AdminUsers from "@/pages/Users";
 import AdminGroups from "@/pages/Groups";
 import GroupReports from "@/pages/GroupReports";
 import GroupReporting from "@/pages/GroupReporting";
+import DonorReporting from "@/pages/DonorReporting";
+import InvestmentReporting from "@/pages/InvestmentReporting";
 import EventManagement from "@/pages/EventManagement";
 import EventRegistrationsList from "@/pages/EventRegistrationsList";
 import AdminInvestments from "@/pages/Investments";
@@ -67,6 +69,8 @@ function Router() {
         <ProtectedRoute path="/groups" component={AdminGroups} moduleName="group" />
         <ProtectedRoute path="/groups/reports" component={GroupReports} moduleName="group" />
         <ProtectedRoute path="/groups/reporting" component={GroupReporting} moduleName="group" />
+        <ProtectedRoute path="/donor-reporting" component={DonorReporting} moduleName="user" />
+        <ProtectedRoute path="/investment-reporting" component={InvestmentReporting} moduleName="all-investments" />
         <ProtectedRoute path="/groups/:identifier/edit" component={AdminGroupEdit} moduleName="group" />
         <ProtectedRoute path="/event-management" component={EventManagement} moduleName="event registrations" />
         <ProtectedRoute path="/event-registrations" component={EventRegistrationsList} moduleName="event registrations" />

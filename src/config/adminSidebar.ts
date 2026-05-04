@@ -111,21 +111,10 @@ export const sidebarConfig = [
 
       {
         title: "Groups",
+        url: "/groups",
         icon: UsersRound,
-        children: [
-          {
-            title: "Groups",
-            url: "/groups",
-            icon: UsersRound,
-            permission: { module: "groups", action: "view" }
-          },
-          {
-            title: "Group Reporting",
-            url: "/groups/reporting",
-            icon: BarChart3,
-            permission: { module: "groups", action: "view" }
-          }
-        ]
+        activeFor: ["/groups"],
+        permission: { module: "groups", action: "view" }
       },
 
       {
@@ -143,12 +132,37 @@ export const sidebarConfig = [
             url: "/consolidated-finances",
             icon: DollarSign,
             permission: { module: "consolidated-finances", action: "view" }
-          },
+          }
+        ]
+      },
+
+      {
+        title: "Reporting",
+        icon: BarChart3,
+        children: [
           {
             title: "KPIs",
             url: "/kpis",
             icon: TrendingUp,
             permission: { module: "consolidated-finances", action: "view" }
+          },
+          {
+            title: "Group Reporting",
+            url: "/groups/reporting",
+            icon: UsersRound,
+            permission: { module: "groups", action: "view" }
+          },
+          {
+            title: "Donor Reporting",
+            url: "/donor-reporting",
+            icon: Users,
+            permission: { module: "users", action: "view" }
+          },
+          {
+            title: "Investment Reporting",
+            url: "/investment-reporting",
+            icon: Briefcase,
+            permission: { module: "all-investments", action: "view" }
           }
         ]
       },
