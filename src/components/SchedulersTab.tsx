@@ -194,9 +194,12 @@ export default function SchedulersTab() {
     });
     if (finishedNotifications.length > 0) {
       for (const { jobName, lastRun } of finishedNotifications) {
-        const failed =
-          lastRun.status === "Failed" ||
-          (!lastRun.status && !!lastRun.errorMessage);
+        // Only treat the row as failed when the server explicitly says so.
+        // The previous fallback `!status && errorMessage` could misfire on
+        // legacy rows whose error_message column is populated with non-error
+        // text (e.g. an old success/info string), which produced a bogus
+        // "Job Failed" toast for runs that actually succeeded.
+        const failed = lastRun.status === "Failed";
         const display = JOB_DISPLAY_NAMES[jobName] || jobName;
         const message = failed
           ? `${display} failed: ${lastRun.errorMessage || "Unknown error."}`
@@ -490,7 +493,13 @@ export default function SchedulersTab() {
 
   const formatDuration = (start: string, end: string | null): string => {
     if (!end) return "—";
-    const ms = new Date(end).getTime() - new Date(start).getTime();
+    const endMs = new Date(end).getTime();
+    const startMs = new Date(start).getTime();
+    if (!Number.isFinite(endMs) || !Number.isFinite(startMs)) return "—";
+    const ms = endMs - startMs;
+    // Defensive: a non-positive duration means the row's end_time is missing
+    // or bogus (e.g. epoch). Don't render misleading negative numbers.
+    if (!Number.isFinite(ms) || ms <= 0) return "—";
     if (ms < 1000) return `${ms}ms`;
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;
@@ -781,7 +790,7 @@ export default function SchedulersTab() {
                                       <Loader2 className="h-3 w-3 animate-spin" />
                                       Running
                                     </Badge>
-                                  ) : (log.status === "Failed" || (!log.status && log.errorMessage)) ? (
+                                  ) : log.status === "Failed" ? (
                                     <Badge variant="destructive">Failed</Badge>
                                   ) : (
                                     <Badge variant="secondary" className="bg-green-100 text-green-800">Success</Badge>
@@ -794,7 +803,7 @@ export default function SchedulersTab() {
                                     : formatDuration(log.startTime, log.endTime)}
                                 </TableCell>
                                 <TableCell className="text-sm max-w-md truncate">
-                                  {log.errorMessage ? (
+                                  {log.status === "Failed" && log.errorMessage ? (
                                     <span className="text-red-600" title={log.errorMessage}>
                                       {log.errorMessage}
                                     </span>
@@ -908,9 +917,7 @@ export default function SchedulersTab() {
                                       const hasArtifact =
                                         typeof md.artifactPath === "string" ||
                                         typeof md.storagePath === "string";
-                                      const isFailed =
-                                        log.status === "Failed" ||
-                                        (!log.status && !!log.errorMessage);
+                                      const isFailed = log.status === "Failed";
                                       if (isFailed || !hasArtifact) {
                                         return (
                                           <span className="text-xs text-muted-foreground">
