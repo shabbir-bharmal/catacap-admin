@@ -60,10 +60,17 @@ export default function GroupReportingPage() {
   const totals = useMemo(() => {
     const items = filtered;
     return {
+      membersCutoff: items.reduce((s, g) => s + g.membersCutoff, 0),
+      membersToday: items.reduce((s, g) => s + g.membersToday, 0),
       throughCutoff: items.reduce((s, g) => s + g.throughCutoff, 0),
       throughToday: items.reduce((s, g) => s + g.throughToday, 0),
     };
   }, [filtered]);
+
+  const totalMemberChange = totals.membersToday - totals.membersCutoff;
+  const totalMemberPct = totals.membersCutoff > 0
+    ? Math.round(((totalMemberChange / totals.membersCutoff) * 100) * 100) / 100
+    : totals.membersToday > 0 ? 100 : 0;
 
   const totalIncrease = totals.throughToday - totals.throughCutoff;
   const totalPct = totals.throughCutoff > 0
@@ -77,12 +84,14 @@ export default function GroupReportingPage() {
         const s = val === null || val === undefined ? "" : String(val);
         return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       };
-      const headers = ["Group Name", "Members", `Invested Through ${cutoffLabel}`, "Invested Through Today", "$ Increase", "% Increase"];
+      const headers = ["Group Name", `Members ${cutoffLabel}`, "Members Today", "Member % Change", `Invested Through ${cutoffLabel}`, "Invested Through Today", "$ Increase", "% Increase"];
       const lines = [headers.join(",")];
       for (const g of sorted) {
         lines.push([
           escape(g.name),
-          g.memberCount,
+          g.membersCutoff,
+          g.membersToday,
+          g.memberPctChange.toFixed(2) + "%",
           g.throughCutoff.toFixed(2),
           g.throughToday.toFixed(2),
           g.increase.toFixed(2),
@@ -204,26 +213,34 @@ export default function GroupReportingPage() {
                   <tr className="border-b bg-muted/50">
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-12">#</th>
                     <SortHeader field="name" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Group Name</SortHeader>
-                    <SortHeader field="memberCount" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Members</SortHeader>
-                    <SortHeader field="throughCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Through {cutoffLabel}</SortHeader>
-                    <SortHeader field="throughToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Through Today</SortHeader>
+                    <SortHeader field="membersCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Members {cutoffLabel}</SortHeader>
+                    <SortHeader field="membersToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Members Today</SortHeader>
+                    <SortHeader field="memberPctChange" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Member % Change</SortHeader>
+                    <SortHeader field="throughCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested Through {cutoffLabel}</SortHeader>
+                    <SortHeader field="throughToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested Through Today</SortHeader>
                     <SortHeader field="increase" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>$ Increase</SortHeader>
                     <SortHeader field="pctIncrease" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>% Increase</SortHeader>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {isLoading ? (
-                    <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">Loading...</td></tr>
+                    <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">Loading...</td></tr>
                   ) : sorted.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">{search ? "No groups match your search." : "No groups found."}</td></tr>
+                    <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">{search ? "No groups match your search." : "No groups found."}</td></tr>
                   ) : sorted.map((g, idx) => {
                     const TrendIcon = g.increase > 0 ? TrendingUp : g.increase < 0 ? TrendingDown : Minus;
                     const trendColor = g.increase > 0 ? "text-[#0ab39c]" : g.increase < 0 ? "text-red-500" : "text-muted-foreground";
+                    const memberChange = g.membersToday - g.membersCutoff;
+                    const memberColor = memberChange > 0 ? "text-[#0ab39c]" : memberChange < 0 ? "text-red-500" : "text-muted-foreground";
                     return (
                       <tr key={g.id} className="hover:bg-muted/20 transition-colors" data-testid={`row-group-${g.id}`}>
                         <td className="px-4 py-3 text-muted-foreground">{idx + 1}</td>
                         <td className="px-4 py-3 font-medium" data-testid={`text-group-name-${g.id}`}>{g.name}</td>
-                        <td className="px-4 py-3 text-center" data-testid={`text-members-${g.id}`}>{g.memberCount}</td>
+                        <td className="px-4 py-3 text-center" data-testid={`text-members-cutoff-${g.id}`}>{g.membersCutoff}</td>
+                        <td className="px-4 py-3 text-center" data-testid={`text-members-today-${g.id}`}>{g.membersToday}</td>
+                        <td className={cn("px-4 py-3 text-center tabular-nums", memberColor)} data-testid={`text-member-pct-${g.id}`}>
+                          {g.memberPctChange > 0 ? "+" : ""}{g.memberPctChange}%
+                        </td>
                         <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-cutoff-${g.id}`}>{currency_format(g.throughCutoff, true, 0)}</td>
                         <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-today-${g.id}`}>{currency_format(g.throughToday, true, 0)}</td>
                         <td className={cn("px-4 py-3 text-right tabular-nums", trendColor)} data-testid={`text-increase-${g.id}`}>
@@ -242,7 +259,12 @@ export default function GroupReportingPage() {
                 {!isLoading && sorted.length > 0 && (
                   <tfoot>
                     <tr className="border-t-2 bg-muted/30 font-semibold">
-                      <td className="px-4 py-3" colSpan={3}>Totals</td>
+                      <td className="px-4 py-3" colSpan={2}>Totals</td>
+                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersCutoff}</td>
+                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersToday}</td>
+                      <td className={cn("px-4 py-3 text-center tabular-nums", totalMemberPct > 0 ? "text-[#0ab39c]" : totalMemberPct < 0 ? "text-red-500" : "")}>
+                        {totalMemberPct > 0 ? "+" : ""}{totalMemberPct}%
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.throughCutoff, true, 0)}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.throughToday, true, 0)}</td>
                       <td className={cn("px-4 py-3 text-right tabular-nums", totalIncrease > 0 ? "text-[#0ab39c]" : totalIncrease < 0 ? "text-red-500" : "")}>

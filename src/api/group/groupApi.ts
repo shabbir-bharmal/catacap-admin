@@ -76,7 +76,9 @@ export interface GroupReportingItem {
     id: number;
     name: string;
     identifier: string;
-    memberCount: number;
+    membersCutoff: number;
+    membersToday: number;
+    memberPctChange: number;
     throughCutoff: number;
     throughToday: number;
     increase: number;

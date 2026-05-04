@@ -385,7 +385,7 @@ router.get("/group-reporting", modulePermission("groups", "Manage"), async (_req
     const ph = groupIds.map((_: any, i: number) => `$${i + 1}`).join(", ");
 
     const memberRowsResult = await pool.query(
-      `SELECT group_to_follow_id, request_owner_id
+      `SELECT group_to_follow_id, request_owner_id, created_at
        FROM requests
        WHERE group_to_follow_id IN (${ph})
          AND status = 'accepted'
@@ -393,24 +393,34 @@ router.get("/group-reporting", modulePermission("groups", "Manage"), async (_req
       groupIds
     );
     const memberIdsByGroup: Record<number, Set<string>> = {};
+    const memberIdsByCutoff: Record<number, Set<string>> = {};
     for (const row of memberRowsResult.rows) {
-      if (!memberIdsByGroup[row.group_to_follow_id]) {
-        memberIdsByGroup[row.group_to_follow_id] = new Set();
-      }
+      if (!memberIdsByGroup[row.group_to_follow_id]) memberIdsByGroup[row.group_to_follow_id] = new Set();
+      if (!memberIdsByCutoff[row.group_to_follow_id]) memberIdsByCutoff[row.group_to_follow_id] = new Set();
       if (row.request_owner_id) {
         memberIdsByGroup[row.group_to_follow_id].add(row.request_owner_id);
+        if (row.created_at && new Date(row.created_at) < new Date(CUTOFF)) {
+          memberIdsByCutoff[row.group_to_follow_id].add(row.request_owner_id);
+        }
       }
     }
 
     for (const g of groups) {
       if (!memberIdsByGroup[g.id]) memberIdsByGroup[g.id] = new Set();
-      if (g.owner_id) memberIdsByGroup[g.id].add(g.owner_id);
+      if (!memberIdsByCutoff[g.id]) memberIdsByCutoff[g.id] = new Set();
+      if (g.owner_id) {
+        memberIdsByGroup[g.id].add(g.owner_id);
+        memberIdsByCutoff[g.id].add(g.owner_id);
+      }
       if (g.leaders) {
         try {
           const parsed = JSON.parse(g.leaders);
           for (const l of parsed) {
             const uid = l.UserId || l.userId;
-            if (uid) memberIdsByGroup[g.id].add(uid);
+            if (uid) {
+              memberIdsByGroup[g.id].add(uid);
+              memberIdsByCutoff[g.id].add(uid);
+            }
           }
         } catch {}
       }
@@ -462,11 +472,18 @@ router.get("/group-reporting", modulePermission("groups", "Manage"), async (_req
       const increase = Math.round((throughToday - throughCutoff) * 100) / 100;
       const pctIncrease = throughCutoff > 0 ? (increase / throughCutoff) * 100 : (throughToday > 0 ? 100 : 0);
 
+      const membersCutoff = (memberIdsByCutoff[g.id] || new Set()).size;
+      const membersToday = (memberIdsByGroup[g.id] || new Set()).size;
+      const memberIncrease = membersToday - membersCutoff;
+      const memberPctChange = membersCutoff > 0 ? Math.round(((memberIncrease / membersCutoff) * 100) * 100) / 100 : (membersToday > 0 ? 100 : 0);
+
       return {
         id: g.id,
         name: g.name,
         identifier: g.identifier,
-        memberCount: (memberIdsByGroup[g.id] || new Set()).size,
+        membersCutoff,
+        membersToday,
+        memberPctChange,
         throughCutoff,
         throughToday,
         increase,
