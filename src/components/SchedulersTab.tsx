@@ -526,11 +526,14 @@ export default function SchedulersTab() {
 
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    const hasRunning = Object.values(jobStatuses).some((s) => s?.running);
-    if (!hasRunning) return;
+    const hasRunningStatus = Object.values(jobStatuses).some((s) => s?.running);
+    const hasRunningLogRow = Object.values(jobLogs).some((logs) =>
+      (logs || []).some((log) => log.status === "Running" && !log.endTime),
+    );
+    if (!hasRunningStatus && !hasRunningLogRow) return;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [jobStatuses]);
+  }, [jobStatuses, jobLogs]);
 
   if (loading) {
     return (
