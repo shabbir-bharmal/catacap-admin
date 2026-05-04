@@ -87,18 +87,18 @@ export default function GroupReportingPage() {
         const s = val === null || val === undefined ? "" : String(val);
         return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       };
-      const headers = ["Group Name", `Members ${cutoffLabel}`, "Members Today", "Member % Change", `Invested Through ${cutoffLabel}`, "Invested Through Today", "$ Increase", "% Increase"];
+      const headers = ["Group Name", `Invested ${cutoffLabel}`, "Invested Today", "$ Increase", "% Increase", `Members ${cutoffLabel}`, "Members Today", "Member % Change"];
       const lines = [headers.join(",")];
       for (const g of sorted) {
         lines.push([
           escape(g.name),
-          g.membersCutoff,
-          g.membersToday,
-          g.memberPctChange.toFixed(2) + "%",
           g.throughCutoff.toFixed(2),
           g.throughToday.toFixed(2),
           g.increase.toFixed(2),
           g.pctIncrease.toFixed(2) + "%",
+          g.membersCutoff,
+          g.membersToday,
+          g.memberPctChange.toFixed(2) + "%",
         ].join(","));
       }
       const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -208,13 +208,13 @@ export default function GroupReportingPage() {
                   <tr className="border-b bg-muted/50">
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-12">#</th>
                     <SortHeader field="name" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Group Name</SortHeader>
+                    <SortHeader field="throughCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested {cutoffLabel}</SortHeader>
+                    <SortHeader field="throughToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested Today</SortHeader>
+                    <SortHeader field="increase" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>$ Increase</SortHeader>
+                    <SortHeader field="pctIncrease" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>% Increase</SortHeader>
                     <SortHeader field="membersCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Members {cutoffLabel}</SortHeader>
                     <SortHeader field="membersToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Members Today</SortHeader>
                     <SortHeader field="memberPctChange" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Member % Change</SortHeader>
-                    <SortHeader field="throughCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested Through {cutoffLabel}</SortHeader>
-                    <SortHeader field="throughToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Invested Through Today</SortHeader>
-                    <SortHeader field="increase" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>$ Increase</SortHeader>
-                    <SortHeader field="pctIncrease" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>% Increase</SortHeader>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -231,11 +231,6 @@ export default function GroupReportingPage() {
                       <tr key={g.id} className="hover:bg-muted/20 transition-colors" data-testid={`row-group-${g.id}`}>
                         <td className="px-4 py-3 text-muted-foreground">{idx + 1}</td>
                         <td className="px-4 py-3 font-medium" data-testid={`text-group-name-${g.id}`}>{g.name}</td>
-                        <td className="px-4 py-3 text-center" data-testid={`text-members-cutoff-${g.id}`}>{g.membersCutoff}</td>
-                        <td className="px-4 py-3 text-center" data-testid={`text-members-today-${g.id}`}>{g.membersToday}</td>
-                        <td className={cn("px-4 py-3 text-center tabular-nums", memberColor)} data-testid={`text-member-pct-${g.id}`}>
-                          {g.memberPctChange > 0 ? "+" : ""}{g.memberPctChange}%
-                        </td>
                         <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-cutoff-${g.id}`}>{currency_format(g.throughCutoff, true, 0)}</td>
                         <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-today-${g.id}`}>{currency_format(g.throughToday, true, 0)}</td>
                         <td className={cn("px-4 py-3 text-right tabular-nums", trendColor)} data-testid={`text-increase-${g.id}`}>
@@ -247,6 +242,11 @@ export default function GroupReportingPage() {
                         <td className={cn("px-4 py-3 text-right tabular-nums", trendColor)} data-testid={`text-pct-${g.id}`}>
                           {g.pctIncrease > 0 ? "+" : ""}{g.pctIncrease}%
                         </td>
+                        <td className="px-4 py-3 text-center" data-testid={`text-members-cutoff-${g.id}`}>{g.membersCutoff}</td>
+                        <td className="px-4 py-3 text-center" data-testid={`text-members-today-${g.id}`}>{g.membersToday}</td>
+                        <td className={cn("px-4 py-3 text-center tabular-nums", memberColor)} data-testid={`text-member-pct-${g.id}`}>
+                          {g.memberPctChange > 0 ? "+" : ""}{g.memberPctChange}%
+                        </td>
                       </tr>
                     );
                   })}
@@ -255,11 +255,6 @@ export default function GroupReportingPage() {
                   <tfoot>
                     <tr className="border-t-2 bg-muted/30 font-semibold">
                       <td className="px-4 py-3" colSpan={2}>Totals</td>
-                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersCutoff}</td>
-                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersToday}</td>
-                      <td className={cn("px-4 py-3 text-center tabular-nums", totalMemberPct > 0 ? "text-[#0ab39c]" : totalMemberPct < 0 ? "text-red-500" : "")}>
-                        {totalMemberPct > 0 ? "+" : ""}{totalMemberPct}%
-                      </td>
                       <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.throughCutoff, true, 0)}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.throughToday, true, 0)}</td>
                       <td className={cn("px-4 py-3 text-right tabular-nums", totalIncrease > 0 ? "text-[#0ab39c]" : totalIncrease < 0 ? "text-red-500" : "")}>
@@ -267,6 +262,11 @@ export default function GroupReportingPage() {
                       </td>
                       <td className={cn("px-4 py-3 text-right tabular-nums", totalPct > 0 ? "text-[#0ab39c]" : totalPct < 0 ? "text-red-500" : "")}>
                         {totalPct > 0 ? "+" : ""}{totalPct}%
+                      </td>
+                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersCutoff}</td>
+                      <td className="px-4 py-3 text-center tabular-nums">{totals.membersToday}</td>
+                      <td className={cn("px-4 py-3 text-center tabular-nums", totalMemberPct > 0 ? "text-[#0ab39c]" : totalMemberPct < 0 ? "text-red-500" : "")}>
+                        {totalMemberPct > 0 ? "+" : ""}{totalMemberPct}%
                       </td>
                     </tr>
                   </tfoot>
