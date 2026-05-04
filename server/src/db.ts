@@ -712,20 +712,34 @@ export async function testConnection(): Promise<void> {
       );
     }
 
-    await runSoftDeleteMigration(client);
-    await ensureSchedulerTables(client);
-    await ensureNoteAttachmentsTables(client);
-    await ensureCampaignUpdateExtras(client);
-    await ensureInvestmentInstruments(client);
-    await ensureAdminPerformanceIndexes(client);
-    await ensureCampaignsOwnerGroupColumns(client);
-    await ensureInvestmentNotificationRecipientsTable(client);
-    await ensureSchemaChangeLogTable(client);
-    await ensureDbSchemaLogsModule(client);
-    await backfillSchedulerLogIds(client);
-    await backfillSoftDeleteTimestamps(client);
-    await fixIncorrectBackfillDates(client);
-    await backfillOrphanedUserRoles(client);
+    await client.query("SET statement_timeout = '25s'");
+
+    const steps: [string, () => Promise<void>][] = [
+      ["runSoftDeleteMigration", () => runSoftDeleteMigration(client)],
+      ["ensureSchedulerTables", () => ensureSchedulerTables(client)],
+      ["ensureNoteAttachmentsTables", () => ensureNoteAttachmentsTables(client)],
+      ["ensureCampaignUpdateExtras", () => ensureCampaignUpdateExtras(client)],
+      ["ensureInvestmentInstruments", () => ensureInvestmentInstruments(client)],
+      ["ensureAdminPerformanceIndexes", () => ensureAdminPerformanceIndexes(client)],
+      ["ensureCampaignsOwnerGroupColumns", () => ensureCampaignsOwnerGroupColumns(client)],
+      ["ensureInvestmentNotificationRecipientsTable", () => ensureInvestmentNotificationRecipientsTable(client)],
+      ["ensureSchemaChangeLogTable", () => ensureSchemaChangeLogTable(client)],
+      ["ensureDbSchemaLogsModule", () => ensureDbSchemaLogsModule(client)],
+      ["backfillSchedulerLogIds", () => backfillSchedulerLogIds(client)],
+      ["backfillSoftDeleteTimestamps", () => backfillSoftDeleteTimestamps(client)],
+      ["fixIncorrectBackfillDates", () => fixIncorrectBackfillDates(client)],
+      ["backfillOrphanedUserRoles", () => backfillOrphanedUserRoles(client)],
+    ];
+
+    for (const [name, fn] of steps) {
+      try {
+        await fn();
+      } catch (err) {
+        console.warn(`[migration] ${name} failed (non-fatal):`, err);
+      }
+    }
+
+    await client.query("SET statement_timeout = '0'");
   } finally {
     client.release();
   }
