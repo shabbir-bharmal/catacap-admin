@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import pool from "../db.js";
-import { reloadScheduler, executeJobWithLock } from "../scheduler/index.js";
+import { reloadScheduler, executeJobInBackground } from "../scheduler/index.js";
 import { createBackupDownloadUrl } from "../scheduler/backupDatabase.js";
 
 const router = Router();
@@ -214,36 +214,121 @@ router.post("/:jobName/trigger", async (req: Request, res: Response) => {
       return;
     }
 
-    const startTime = new Date();
     try {
-      const result = await executeJobWithLock(jobName);
-      if (!result.executed) {
+      const result = await executeJobInBackground(jobName);
+      if (result.alreadyRunning) {
         res.json({
-          success: false,
+          started: false,
+          alreadyRunning: true,
           message: `${jobName} is already running. Please try again later.`,
-          startTime: startTime.toISOString(),
-          endTime: new Date().toISOString(),
+          startTime: result.startTime.toISOString(),
+          runningLogId: null,
         });
         return;
       }
       res.json({
-        success: true,
-        message: `${jobName} completed successfully.`,
-        startTime: startTime.toISOString(),
-        endTime: new Date().toISOString(),
+        started: true,
+        alreadyRunning: false,
+        message: `${jobName} started. Results will appear in Recent Logs when the job finishes.`,
+        startTime: result.startTime.toISOString(),
+        runningLogId: result.runningLogId,
       });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      res.json({
-        success: false,
-        message: `${jobName} failed: ${errorMessage}`,
+      console.error(`[SCHEDULER] Failed to start ${jobName}:`, err);
+      res.status(500).json({
+        started: false,
+        alreadyRunning: false,
+        message: `Failed to start ${jobName}: ${errorMessage}`,
         error: errorMessage,
-        startTime: startTime.toISOString(),
-        endTime: new Date().toISOString(),
+        startTime: new Date().toISOString(),
+        runningLogId: null,
       });
     }
   } catch (err) {
     console.error("Scheduler trigger error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.get("/status", async (_req: Request, res: Response) => {
+  try {
+    const tableCheck = await pool.query(
+      `SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = 'scheduler_logs'`,
+    );
+    if (tableCheck.rows.length === 0) {
+      res.json({ statuses: [] });
+      return;
+    }
+
+    const statusColCheck = await pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'status'`,
+    );
+    const hasStatusCol = statusColCheck.rows.length > 0;
+    const metadataColCheck = await pool.query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'metadata'`,
+    );
+    const hasMetadataCol = metadataColCheck.rows.length > 0;
+
+    const statusSelect = hasStatusCol
+      ? `sl.status`
+      : `CASE WHEN sl.error_message IS NOT NULL THEN 'Failed' ELSE 'Success' END AS status`;
+    const metadataSelect = hasMetadataCol ? `sl.metadata` : `NULL::jsonb AS metadata`;
+    const runningPredicate = hasStatusCol
+      ? `sl.status = 'Running' AND sl.end_time IS NULL`
+      : `FALSE`;
+    const completedPredicate = hasStatusCol
+      ? `(sl.status IS NULL OR sl.status <> 'Running') AND sl.end_time IS NOT NULL`
+      : `sl.end_time IS NOT NULL`;
+
+    const configsResult = await pool.query<{
+      jobName: string;
+      timezone: string;
+    }>(
+      `SELECT job_name AS "jobName", timezone FROM scheduler_configurations ORDER BY id`,
+    );
+
+    const statuses = [];
+    for (const cfg of configsResult.rows) {
+      const runningResult = await pool.query(
+        `SELECT sl.id, sl.job_name AS "jobName", sl.start_time AS "startTime",
+                sl.end_time AS "endTime", sl.error_message AS "errorMessage",
+                ${statusSelect}, ${metadataSelect},
+                $2::text AS "timezone"
+         FROM scheduler_logs sl
+         WHERE sl.job_name = $1 AND ${runningPredicate}
+         ORDER BY sl.start_time DESC
+         LIMIT 1`,
+        [cfg.jobName, cfg.timezone],
+      );
+      const lastRunResult = await pool.query(
+        `SELECT sl.id, sl.job_name AS "jobName", sl.start_time AS "startTime",
+                sl.end_time AS "endTime", sl.error_message AS "errorMessage",
+                ${statusSelect}, ${metadataSelect},
+                $2::text AS "timezone"
+         FROM scheduler_logs sl
+         WHERE sl.job_name = $1 AND ${completedPredicate}
+         ORDER BY sl.start_time DESC
+         LIMIT 1`,
+        [cfg.jobName, cfg.timezone],
+      );
+      const runningRow = runningResult.rows[0] || null;
+      const lastRunRow = lastRunResult.rows[0] || null;
+      statuses.push({
+        jobName: cfg.jobName,
+        running: !!runningRow,
+        runningLogId: runningRow ? runningRow.id : null,
+        runningSince: runningRow ? runningRow.startTime : null,
+        lastRun: lastRunRow,
+      });
+    }
+
+    res.json({ statuses });
+  } catch (err) {
+    console.error("Scheduler status error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 });

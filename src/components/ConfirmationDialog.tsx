@@ -65,7 +65,7 @@ export function ConfirmationDialog({
         )}
 
         {onNoteChange && (
-          <div className="space-y-1.5 mb-2">
+          <div className="space-y-1.5">
             {noteLabel && <p className="text-sm text-muted-foreground">{noteLabel}</p>}
             <Textarea
               placeholder={notePlaceholder}
@@ -73,7 +73,10 @@ export function ConfirmationDialog({
               onChange={(e) => {
                 if (e.target.value.length <= maxNoteLength) onNoteChange(e.target.value);
               }}
-              className="min-h-[120px] resize-none"
+              className="block w-full min-h-[120px] max-h-[160px] overflow-y-auto resize-none"
+              data-gramm="false"
+              data-gramm_editor="false"
+              data-enable-grammarly="false"
               data-testid={dataTestId ? `${dataTestId}-note` : undefined}
             />
             {maxNoteLength > 0 && (

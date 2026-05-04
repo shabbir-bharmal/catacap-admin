@@ -18,9 +18,114 @@ const LEGACY_DOUBLE_NESTED_PATTERN =
 
 export { RETENTION_DAYS };
 
+const TRANSIENT_ERROR_PATTERNS: RegExp[] = [
+  /SSL connection has been closed unexpectedly/i,
+  /server closed the connection unexpectedly/i,
+  /connection reset by peer/i,
+  /could not receive data from server/i,
+];
+
+const RETRY_BACKOFF_MS = 5000;
+
 interface BackupStorageConfig {
   client: SupabaseClient;
   bucket: string;
+}
+
+interface ResolvedDumpUrl {
+  url: string;
+  source: "SUPABASE_DB_DIRECT_URL" | "SUPABASE_DB_URL" | "DATABASE_URL";
+  isPooler: boolean;
+  hasDirectFallback: boolean;
+}
+
+export function resolveBackupDumpUrl(
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedDumpUrl {
+  const direct = env.SUPABASE_DB_DIRECT_URL;
+  const supa = env.SUPABASE_DB_URL;
+  const fallback = env.DATABASE_URL;
+
+  let chosen: string | undefined;
+  let source: ResolvedDumpUrl["source"];
+  if (direct) {
+    chosen = direct;
+    source = "SUPABASE_DB_DIRECT_URL";
+  } else if (supa) {
+    chosen = supa;
+    source = "SUPABASE_DB_URL";
+  } else if (fallback) {
+    chosen = fallback;
+    source = "DATABASE_URL";
+  } else {
+    throw new Error(
+      "BackupDatabase: SUPABASE_DB_DIRECT_URL, SUPABASE_DB_URL, or DATABASE_URL must be set. " +
+        "Prefer SUPABASE_DB_DIRECT_URL pointing at a direct (non-pooler) Postgres connection " +
+        "so pg_dump COPY streams aren't terminated by PgBouncer.",
+    );
+  }
+
+  return {
+    url: chosen,
+    source,
+    isPooler: looksLikeSupabasePoolerUrl(chosen),
+    hasDirectFallback: Boolean(direct),
+  };
+}
+
+function looksLikeSupabasePoolerUrl(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    if (u.hostname.includes("pooler.supabase")) return true;
+    if (u.port === "6543") return true;
+    if ((u.searchParams.get("pgbouncer") || "").toLowerCase() === "true")
+      return true;
+    return false;
+  } catch {
+    return /pooler\.supabase|:6543\b|pgbouncer=true/i.test(rawUrl);
+  }
+}
+
+export function withKeepaliveParams(rawUrl: string): string {
+  const desired: Record<string, string> = {
+    keepalives: "1",
+    keepalives_idle: "30",
+    keepalives_interval: "10",
+    keepalives_count: "5",
+    connect_timeout: "30",
+  };
+  try {
+    const u = new URL(rawUrl);
+    for (const [k, v] of Object.entries(desired)) {
+      if (!u.searchParams.has(k)) u.searchParams.set(k, v);
+    }
+    return u.toString();
+  } catch {
+    const sep = rawUrl.includes("?") ? "&" : "?";
+    const existing = rawUrl.includes("?")
+      ? rawUrl.slice(rawUrl.indexOf("?") + 1)
+      : "";
+    const present = new Set(
+      existing
+        .split("&")
+        .filter(Boolean)
+        .map((kv) => kv.split("=")[0]),
+    );
+    const additions = Object.entries(desired)
+      .filter(([k]) => !present.has(k))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+    return additions ? `${rawUrl}${sep}${additions}` : rawUrl;
+  }
+}
+
+function isTransientPgDumpError(stderr: string): boolean {
+  return TRANSIENT_ERROR_PATTERNS.some((re) => re.test(stderr));
+}
+
+function extractFailingTable(stderr: string): string | null {
+  const m = stderr.match(/Dumping the contents of table "([^"]+)" failed/);
+  return m ? m[1] : null;
 }
 
 export function getBackupStorageConfig(): BackupStorageConfig {
@@ -339,36 +444,30 @@ export async function createBackupDownloadUrl(
   };
 }
 
-export async function runBackupDatabase(): Promise<Record<string, unknown>> {
-  const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
-  if (!dbUrl) {
-    throw new Error(
-      "BackupDatabase: SUPABASE_DB_URL or DATABASE_URL must be set.",
-    );
-  }
+interface PgDumpAttemptResult {
+  ok: boolean;
+  buffer: Buffer;
+  stderr: string;
+  exitCode: number;
+  spawnError: Error | null;
+  pipelineError: Error | null;
+}
 
-  const now = new Date();
-  const dateFolder = buildDateFolder(now);
-  const filename = buildBackupFilename(now);
-  const storagePath = `${dateFolder}/${filename}`;
-
-  const { client: supabase, bucket } = getBackupStorageConfig();
-  await assertBucketIsPrivate(supabase, bucket);
-
-  const serverMajor = await getServerMajorVersion();
-  const pgDumpPath = resolvePgDumpPath(serverMajor);
-
-  console.log(
-    `[BackupDatabase] Starting ${pgDumpPath} (v${serverMajor}) -> ${bucket}/${storagePath}`,
-  );
-
-  const child = spawn(pgDumpPath, ["--no-owner", "--no-privileges", dbUrl], {
-    env: {
-      ...process.env,
-      PGSSLMODE: process.env.PGSSLMODE || "require",
+async function runPgDumpOnce(
+  pgDumpPath: string,
+  dumpUrl: string,
+): Promise<PgDumpAttemptResult> {
+  const child = spawn(
+    pgDumpPath,
+    ["--no-owner", "--no-privileges", dumpUrl],
+    {
+      env: {
+        ...process.env,
+        PGSSLMODE: process.env.PGSSLMODE || "require",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  );
 
   const gzip = createGzip();
   const chunks: Buffer[] = [];
@@ -399,30 +498,118 @@ export async function runBackupDatabase(): Promise<Record<string, unknown>> {
   const exitCode = await exitPromise;
   await pipelinePromise;
 
-  if (spawnError) {
-    throw new Error(
-      `BackupDatabase: failed to spawn pg_dump: ${(spawnError as Error).message}. ` +
-        `Confirm pg_dump is installed and on PATH in the runtime environment.`,
-    );
-  }
-
-  if (exitCode !== 0) {
-    const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-    throw new Error(
-      `BackupDatabase: pg_dump exited with code ${exitCode}. ${stderr || "(no stderr output)"}`,
-    );
-  }
-
-  if (pipelineError) {
-    throw new Error(
-      `BackupDatabase: gzip pipeline failed: ${(pipelineError as Error).message}`,
-    );
-  }
-
+  const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
   const buffer = Buffer.concat(chunks);
-  if (buffer.length === 0) {
-    throw new Error("BackupDatabase: pg_dump produced an empty output.");
+  const ok =
+    !spawnError && !pipelineError && exitCode === 0 && buffer.length > 0;
+  return { ok, buffer, stderr, exitCode, spawnError, pipelineError };
+}
+
+export async function runBackupDatabase(): Promise<Record<string, unknown>> {
+  const resolved = resolveBackupDumpUrl();
+  if (resolved.isPooler) {
+    if (resolved.hasDirectFallback) {
+      console.warn(
+        `[BackupDatabase] Resolved dump URL from ${resolved.source} still looks like a Supabase pooler ` +
+          `connection (port 6543 / pooler.supabase / pgbouncer=true). PgBouncer can drop long COPY ` +
+          `streams mid-dump. Point SUPABASE_DB_DIRECT_URL at the direct (port 5432) database URL.`,
+      );
+    } else {
+      console.warn(
+        `[BackupDatabase] ${resolved.source} points at a Supabase pooler connection ` +
+          `(PgBouncer). Long COPY streams can be dropped mid-dump, causing "SSL connection ` +
+          `has been closed unexpectedly" errors. Set SUPABASE_DB_DIRECT_URL to a direct ` +
+          `(non-pooler, port 5432) Postgres URL to avoid this. Proceeding with the pooler URL.`,
+      );
+    }
   }
+  const dumpUrl = withKeepaliveParams(resolved.url);
+
+  const now = new Date();
+  const dateFolder = buildDateFolder(now);
+  const filename = buildBackupFilename(now);
+  const storagePath = `${dateFolder}/${filename}`;
+
+  const { client: supabase, bucket } = getBackupStorageConfig();
+  await assertBucketIsPrivate(supabase, bucket);
+
+  const serverMajor = await getServerMajorVersion();
+  const pgDumpPath = resolvePgDumpPath(serverMajor);
+
+  console.log(
+    `[BackupDatabase] Starting ${pgDumpPath} (v${serverMajor}) -> ${bucket}/${storagePath} ` +
+      `[urlSource=${resolved.source}, pooler=${resolved.isPooler}]`,
+  );
+
+  const formatAttemptError = (
+    attempt: PgDumpAttemptResult,
+    label: string,
+  ): string => {
+    if (attempt.spawnError) {
+      return `${label}: failed to spawn pg_dump: ${attempt.spawnError.message}`;
+    }
+    if (attempt.exitCode !== 0) {
+      return `${label}: pg_dump exited with code ${attempt.exitCode}. ${attempt.stderr || "(no stderr output)"}`;
+    }
+    if (attempt.pipelineError) {
+      return `${label}: gzip pipeline failed: ${attempt.pipelineError.message}. ${attempt.stderr || ""}`.trim();
+    }
+    if (attempt.buffer.length === 0) {
+      return `${label}: pg_dump produced an empty output. ${attempt.stderr || ""}`.trim();
+    }
+    return `${label}: unknown failure. ${attempt.stderr || ""}`.trim();
+  };
+
+  let attempt = await runPgDumpOnce(pgDumpPath, dumpUrl);
+  let retried = false;
+  let firstAttemptStderr = "";
+
+  if (!attempt.ok) {
+    const transient =
+      isTransientPgDumpError(attempt.stderr) ||
+      (attempt.pipelineError !== null &&
+        isTransientPgDumpError(String(attempt.pipelineError.message)));
+    const failingTable = extractFailingTable(attempt.stderr);
+    if (transient) {
+      retried = true;
+      firstAttemptStderr = attempt.stderr;
+      console.warn(
+        `[BackupDatabase] pg_dump server dropped the connection (will retry once after ${RETRY_BACKOFF_MS}ms)` +
+          (failingTable ? ` [table=${failingTable}]` : "") +
+          `. First-attempt stderr: ${attempt.stderr || "(empty)"}`,
+      );
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
+      attempt = await runPgDumpOnce(pgDumpPath, dumpUrl);
+      if (attempt.ok) {
+        console.log(
+          `[BackupDatabase] pg_dump retry succeeded after transient connection drop` +
+            (failingTable ? ` [table=${failingTable}]` : ""),
+        );
+      }
+    }
+
+    if (!attempt.ok) {
+      const secondTransient =
+        isTransientPgDumpError(attempt.stderr) ||
+        (attempt.pipelineError !== null &&
+          isTransientPgDumpError(String(attempt.pipelineError.message)));
+      const failingTableFinal =
+        extractFailingTable(attempt.stderr) || failingTable;
+      const classification = secondTransient || transient ? "yes" : "no";
+      const tableSuffix = failingTableFinal
+        ? ` [failingTable=${failingTableFinal}]`
+        : "";
+      const retrySuffix = retried
+        ? ` First-attempt stderr: ${firstAttemptStderr || "(empty)"}.`
+        : "";
+      throw new Error(
+        `BackupDatabase: ${formatAttemptError(attempt, retried ? "retry attempt" : "pg_dump")}` +
+          ` [transient=${classification}, retried=${retried}]${tableSuffix}.${retrySuffix}`,
+      );
+    }
+  }
+
+  const buffer = attempt.buffer;
 
   console.log(
     `[BackupDatabase] pg_dump+gzip complete (${buffer.length} bytes). Uploading to private bucket "${bucket}"...`,
