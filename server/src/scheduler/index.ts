@@ -397,7 +397,7 @@ export async function reconcileOrphanedRunningLogs(
           `UPDATE scheduler_logs
               SET end_time = NOW(),
                   status = 'Failed',
-                  error_message = 'Auto-cancelled stuck scheduler run: unknown job (no advisory lock key registered).'
+                  error_message = 'Cancelled by system: this scheduled job is no longer recognized.'
             WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
           [row.id],
         );
@@ -503,9 +503,9 @@ export async function reconcileOrphanedRunningLogs(
               WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
             [
               row.id,
-              `Auto-cancelled stuck scheduler run: job ran for over ${Math.round(
+              `Cancelled by system: the run took longer than ${Math.round(
                 MAX_RUN_DURATION_MS / 60000,
-              )} minutes without completing; the stuck backend was terminated to free the advisory lock.`,
+              )} minutes and was stopped so the job could be triggered again.`,
             ],
           );
           if ((updateResult.rowCount ?? 0) > 0) {
@@ -527,8 +527,8 @@ export async function reconcileOrphanedRunningLogs(
       try {
         const reason =
           context === "sweep"
-            ? "Auto-cancelled stuck scheduler run: no live process holds the advisory lock (server likely crashed mid-run)."
-            : "Auto-cancelled stuck scheduler run: detected on server start (server likely restarted before completion).";
+            ? "Cancelled by system: the run was abandoned (the server appears to have crashed mid-run)."
+            : "Cancelled by system: the server restarted before this run finished.";
         const updateResult = await client.query(
           `UPDATE scheduler_logs
               SET end_time = NOW(),

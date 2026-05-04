@@ -151,7 +151,7 @@ export default function SchedulersTab() {
     loadConfigs();
   }, [loadConfigs]);
 
-  const loadLogsRef = useRef<(jobName: string) => void>();
+  const loadLogsRef = useRef<(jobName: string, options?: { silent?: boolean }) => void>();
   const expandedLogsRef = useRef(expandedLogs);
   expandedLogsRef.current = expandedLogs;
   const isInitialStatusFetch = useRef(true);
@@ -187,7 +187,7 @@ export default function SchedulersTab() {
           expandedLogsRef.current[status.jobName] &&
           loadLogsRef.current
         ) {
-          loadLogsRef.current(status.jobName);
+          loadLogsRef.current(status.jobName, { silent: true });
         }
       }
       return next;
@@ -217,21 +217,28 @@ export default function SchedulersTab() {
           setExpandedLogs((prev) => ({ ...prev, [jobName]: true }));
         }
         if (loadLogsRef.current) {
-          loadLogsRef.current(jobName);
+          loadLogsRef.current(jobName, { silent: true });
         }
       }
     }
     isInitialStatusFetch.current = false;
   }, [toast]);
 
+  const hasActiveRun =
+    Object.values(jobStatuses).some((s) => s?.running) ||
+    Object.values(jobLogs).some((logs) =>
+      (logs || []).some((log) => log.status === "Running" && !log.endTime),
+    );
+
   useEffect(() => {
     if (configs.length === 0) return;
     pollStatuses();
+    const intervalMs = hasActiveRun ? 1000 : 5000;
     const interval = setInterval(() => {
       pollStatuses();
-    }, 5000);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [configs.length, pollStatuses]);
+  }, [configs.length, pollStatuses, hasActiveRun]);
 
   const handleEditChange = (jobName: string, field: keyof EditState, value: string | number) => {
     setEditStates((prev) => ({
@@ -355,9 +362,20 @@ export default function SchedulersTab() {
           },
         }));
         toast({ title: "Started", description: `${JOB_DISPLAY_NAMES[jobName] || jobName} is now running.` });
-      }
-      if (expandedLogs[jobName]) {
+        if (!expandedLogs[jobName]) {
+          setExpandedLogs((prev) => ({ ...prev, [jobName]: true }));
+        }
+        // Self-logging jobs (e.g. WelcomeSeries) insert their "Running" row
+        // asynchronously inside the fire-and-forget runner, so the row may
+        // not yet exist when the trigger response returns. Refresh logs a
+        // few times to catch the row regardless of which side wins the race.
         loadLogs(jobName);
+        const retryDelays = [300, 900, 1800];
+        for (const delay of retryDelays) {
+          window.setTimeout(() => {
+            if (loadLogsRef.current) loadLogsRef.current(jobName, { silent: true });
+          }, delay);
+        }
       }
     } catch {
       setTriggerResults((prev) => ({
@@ -388,8 +406,11 @@ export default function SchedulersTab() {
   };
 
   const loadLogs = useCallback(
-    async (jobName: string) => {
-      setLogsLoading((prev) => ({ ...prev, [jobName]: true }));
+    async (jobName: string, options?: { silent?: boolean }) => {
+      const silent = options?.silent === true;
+      if (!silent) {
+        setLogsLoading((prev) => ({ ...prev, [jobName]: true }));
+      }
       try {
         const data = await fetchSchedulerLogs(jobName, 10);
         setJobLogs((prev) => ({ ...prev, [jobName]: data.logs }));
@@ -400,7 +421,9 @@ export default function SchedulersTab() {
           variant: "destructive",
         });
       } finally {
-        setLogsLoading((prev) => ({ ...prev, [jobName]: false }));
+        if (!silent) {
+          setLogsLoading((prev) => ({ ...prev, [jobName]: false }));
+        }
       }
     },
     [toast],
