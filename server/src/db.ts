@@ -712,7 +712,7 @@ export async function testConnection(): Promise<void> {
       );
     }
 
-    await client.query("SET statement_timeout = '25s'");
+    await client.query("SET statement_timeout = '3s'");
 
     const steps: [string, () => Promise<void>][] = [
       ["runSoftDeleteMigration", () => runSoftDeleteMigration(client)],
