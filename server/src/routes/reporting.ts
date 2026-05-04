@@ -25,7 +25,7 @@ router.get("/donor-reporting", async (_req: Request, res: Response) => {
     const ph = userIds.map((_: any, i: number) => `$${i + 1}`).join(", ");
     const phOffset = userIds.map((_: any, i: number) => `$${i + 2}`).join(", ");
 
-    const [balanceChangesResult, invCutoffResult, invTodayResult] = await Promise.all([
+    const [balanceChangesResult, invCutoffResult, invTodayResult, invAmtCutoffResult, invAmtTodayResult] = await Promise.all([
       pool.query(
         `SELECT user_id, COALESCE(SUM(new_value - old_value), 0) AS net_change
          FROM account_balance_change_logs
@@ -52,6 +52,23 @@ router.get("/donor-reporting", async (_req: Request, res: Response) => {
          GROUP BY user_id`,
         userIds
       ),
+      pool.query(
+        `SELECT user_id, COALESCE(SUM(amount), 0) AS total
+         FROM recommendations
+         WHERE user_id IN (${phOffset})
+           AND (is_deleted IS NULL OR is_deleted = false)
+           AND date_created < $1
+         GROUP BY user_id`,
+        [CUTOFF, ...userIds]
+      ),
+      pool.query(
+        `SELECT user_id, COALESCE(SUM(amount), 0) AS total
+         FROM recommendations
+         WHERE user_id IN (${ph})
+           AND (is_deleted IS NULL OR is_deleted = false)
+         GROUP BY user_id`,
+        userIds
+      ),
     ]);
 
     const balanceChanges: Record<string, number> = {};
@@ -69,14 +86,30 @@ router.get("/donor-reporting", async (_req: Request, res: Response) => {
       invTotal[row.user_id] = parseInt(row.cnt) || 0;
     }
 
+    const invAmtBefore: Record<string, number> = {};
+    for (const row of invAmtCutoffResult.rows) {
+      invAmtBefore[row.user_id] = parseFloat(row.total) || 0;
+    }
+
+    const invAmtTotal: Record<string, number> = {};
+    for (const row of invAmtTodayResult.rows) {
+      invAmtTotal[row.user_id] = parseFloat(row.total) || 0;
+    }
+
     const items = users.map((u: any) => {
       const balanceToday = parseFloat(u.account_balance) || 0;
       const netChange = balanceChanges[u.id] || 0;
       const balanceCutoff = Math.round((balanceToday - netChange) * 100) / 100;
-      const balanceIncrease = Math.round(netChange * 100) / 100;
-      const balancePctChange = balanceCutoff > 0
-        ? Math.round(((balanceIncrease / balanceCutoff) * 100) * 100) / 100
-        : (balanceToday > 0 ? 100 : 0);
+
+      const investedCutoff = invAmtBefore[u.id] || 0;
+      const investedToday = invAmtTotal[u.id] || 0;
+
+      const totalAssetsCutoff = Math.round((balanceCutoff + investedCutoff) * 100) / 100;
+      const totalAssetsToday = Math.round((balanceToday + investedToday) * 100) / 100;
+      const totalAssetsIncrease = Math.round((totalAssetsToday - totalAssetsCutoff) * 100) / 100;
+      const totalAssetsPctChange = totalAssetsCutoff > 0
+        ? Math.round(((totalAssetsIncrease / totalAssetsCutoff) * 100) * 100) / 100
+        : (totalAssetsToday > 0 ? 100 : 0);
 
       const investmentsCutoff = invBefore[u.id] || 0;
       const investmentsToday = invTotal[u.id] || 0;
@@ -88,10 +121,10 @@ router.get("/donor-reporting", async (_req: Request, res: Response) => {
         id: u.id,
         name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email,
         email: u.email,
-        balanceCutoff,
-        balanceToday,
-        balanceIncrease,
-        balancePctChange,
+        totalAssetsCutoff,
+        totalAssetsToday,
+        totalAssetsIncrease,
+        totalAssetsPctChange,
         investmentsCutoff,
         investmentsToday,
         investmentPctChange,

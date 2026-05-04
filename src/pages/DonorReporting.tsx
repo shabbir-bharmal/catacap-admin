@@ -17,10 +17,10 @@ interface DonorReportingItem {
   id: string;
   name: string;
   email: string;
-  balanceCutoff: number;
-  balanceToday: number;
-  balanceIncrease: number;
-  balancePctChange: number;
+  totalAssetsCutoff: number;
+  totalAssetsToday: number;
+  totalAssetsIncrease: number;
+  totalAssetsPctChange: number;
   investmentsCutoff: number;
   investmentsToday: number;
   investmentPctChange: number;
@@ -37,7 +37,7 @@ export default function DonorReportingPage() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 500);
-  const { sortField, sortDir, handleSort } = useSort<SortField>("balanceIncrease", "desc");
+  const { sortField, sortDir, handleSort } = useSort<SortField>("totalAssetsIncrease", "desc");
   const [isExporting, setIsExporting] = useState(false);
   const [hideZero, setHideZero] = useState(true);
 
@@ -54,7 +54,7 @@ export default function DonorReportingPage() {
   const filtered = useMemo(() => {
     let items = data?.items || [];
     if (hideZero) {
-      items = items.filter((d) => d.balanceToday > 0 || d.balanceCutoff > 0);
+      items = items.filter((d) => d.totalAssetsToday > 0 || d.totalAssetsCutoff > 0);
     }
     const q = debouncedSearch.trim().toLowerCase();
     if (q.length >= 2) {
@@ -81,17 +81,17 @@ export default function DonorReportingPage() {
 
   const totals = useMemo(() => {
     return {
-      balanceCutoff: filtered.reduce((s, d) => s + d.balanceCutoff, 0),
-      balanceToday: filtered.reduce((s, d) => s + d.balanceToday, 0),
+      totalAssetsCutoff: filtered.reduce((s, d) => s + d.totalAssetsCutoff, 0),
+      totalAssetsToday: filtered.reduce((s, d) => s + d.totalAssetsToday, 0),
       investmentsCutoff: filtered.reduce((s, d) => s + d.investmentsCutoff, 0),
       investmentsToday: filtered.reduce((s, d) => s + d.investmentsToday, 0),
     };
   }, [filtered]);
 
-  const totalBalIncrease = totals.balanceToday - totals.balanceCutoff;
-  const totalBalPct = totals.balanceCutoff > 0
-    ? Math.round(((totalBalIncrease / totals.balanceCutoff) * 100) * 100) / 100
-    : totals.balanceToday > 0 ? 100 : 0;
+  const totalAssetsIncrease = totals.totalAssetsToday - totals.totalAssetsCutoff;
+  const totalAssetsPct = totals.totalAssetsCutoff > 0
+    ? Math.round(((totalAssetsIncrease / totals.totalAssetsCutoff) * 100) * 100) / 100
+    : totals.totalAssetsToday > 0 ? 100 : 0;
 
   const totalInvChange = totals.investmentsToday - totals.investmentsCutoff;
   const totalInvPct = totals.investmentsCutoff > 0
@@ -105,16 +105,16 @@ export default function DonorReportingPage() {
         const s = val === null || val === undefined ? "" : String(val);
         return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       };
-      const headers = ["Donor Name", "Email", `Balance ${cutoffLabel}`, "Balance Today", "$ Increase", "% Increase", `Investments ${cutoffLabel}`, "Investments Today", "Inv % Change"];
+      const headers = ["Donor Name", "Email", `Total Assets ${cutoffLabel}`, "Total Assets Today", "$ Increase", "% Increase", `Investments ${cutoffLabel}`, "Investments Today", "Inv % Change"];
       const lines = [headers.join(",")];
       for (const d of sorted) {
         lines.push([
           escape(d.name),
           escape(d.email),
-          d.balanceCutoff.toFixed(2),
-          d.balanceToday.toFixed(2),
-          d.balanceIncrease.toFixed(2),
-          d.balancePctChange.toFixed(2) + "%",
+          d.totalAssetsCutoff.toFixed(2),
+          d.totalAssetsToday.toFixed(2),
+          d.totalAssetsIncrease.toFixed(2),
+          d.totalAssetsPctChange.toFixed(2) + "%",
           d.investmentsCutoff,
           d.investmentsToday,
           d.investmentPctChange.toFixed(2) + "%",
@@ -143,38 +143,38 @@ export default function DonorReportingPage() {
         <h1 className="text-2xl font-semibold" data-testid="text-page-heading">Donor Reporting</h1>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card data-testid="card-balance-cutoff">
+          <Card data-testid="card-assets-cutoff">
             <CardHeader className="pb-2">
-              <p className="text-sm font-medium text-muted-foreground">Total Balances {cutoffLabel}</p>
+              <p className="text-sm font-medium text-muted-foreground">Total Assets {cutoffLabel}</p>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-semibold" data-testid="text-balance-cutoff">
-                {isLoading ? "—" : currency_format(totals.balanceCutoff, true, 0)}
+              <div className="text-2xl font-semibold" data-testid="text-assets-cutoff">
+                {isLoading ? "—" : currency_format(totals.totalAssetsCutoff, true, 0)}
               </div>
             </CardContent>
           </Card>
-          <Card data-testid="card-balance-today">
+          <Card data-testid="card-assets-today">
             <CardHeader className="pb-2">
-              <p className="text-sm font-medium text-muted-foreground">Total Balances Today</p>
+              <p className="text-sm font-medium text-muted-foreground">Total Assets Today</p>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-semibold" data-testid="text-balance-today">
-                {isLoading ? "—" : currency_format(totals.balanceToday, true, 0)}
+              <div className="text-2xl font-semibold" data-testid="text-assets-today">
+                {isLoading ? "—" : currency_format(totals.totalAssetsToday, true, 0)}
               </div>
             </CardContent>
           </Card>
-          <Card data-testid="card-balance-increase">
+          <Card data-testid="card-assets-increase">
             <CardHeader className="pb-2">
-              <p className="text-sm font-medium text-muted-foreground">Overall Balance Increase</p>
+              <p className="text-sm font-medium text-muted-foreground">Overall Assets Increase</p>
             </CardHeader>
             <CardContent>
               <div className="flex items-baseline gap-2">
-                <span className={cn("text-2xl font-semibold", totalBalIncrease > 0 ? "text-[#0ab39c]" : totalBalIncrease < 0 ? "text-red-500" : "")} data-testid="text-balance-increase">
-                  {isLoading ? "—" : currency_format(totalBalIncrease, true, 0)}
+                <span className={cn("text-2xl font-semibold", totalAssetsIncrease > 0 ? "text-[#0ab39c]" : totalAssetsIncrease < 0 ? "text-red-500" : "")} data-testid="text-assets-increase">
+                  {isLoading ? "—" : currency_format(totalAssetsIncrease, true, 0)}
                 </span>
                 {!isLoading && (
-                  <span className={cn("text-sm font-medium", totalBalPct > 0 ? "text-[#0ab39c]" : totalBalPct < 0 ? "text-red-500" : "text-muted-foreground")}>
-                    ({totalBalPct > 0 ? "+" : ""}{totalBalPct}%)
+                  <span className={cn("text-sm font-medium", totalAssetsPct > 0 ? "text-[#0ab39c]" : totalAssetsPct < 0 ? "text-red-500" : "text-muted-foreground")}>
+                    ({totalAssetsPct > 0 ? "+" : ""}{totalAssetsPct}%)
                   </span>
                 )}
               </div>
@@ -222,10 +222,10 @@ export default function DonorReportingPage() {
                   <tr className="border-b bg-muted/50">
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-12">#</th>
                     <SortHeader field="name" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Donor Name</SortHeader>
-                    <SortHeader field="balanceCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Balance {cutoffLabel}</SortHeader>
-                    <SortHeader field="balanceToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Balance Today</SortHeader>
-                    <SortHeader field="balanceIncrease" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>$ Increase</SortHeader>
-                    <SortHeader field="balancePctChange" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>% Increase</SortHeader>
+                    <SortHeader field="totalAssetsCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Total Assets {cutoffLabel}</SortHeader>
+                    <SortHeader field="totalAssetsToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Total Assets Today</SortHeader>
+                    <SortHeader field="totalAssetsIncrease" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>$ Increase</SortHeader>
+                    <SortHeader field="totalAssetsPctChange" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>% Increase</SortHeader>
                     <SortHeader field="investmentsCutoff" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Investments {cutoffLabel}</SortHeader>
                     <SortHeader field="investmentsToday" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Investments Today</SortHeader>
                     <SortHeader field="investmentPctChange" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>Inv % Change</SortHeader>
@@ -237,8 +237,8 @@ export default function DonorReportingPage() {
                   ) : sorted.length === 0 ? (
                     <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">{search ? "No donors match your search." : "No donors found."}</td></tr>
                   ) : sorted.map((d, idx) => {
-                    const balColor = d.balanceIncrease > 0 ? "text-[#0ab39c]" : d.balanceIncrease < 0 ? "text-red-500" : "text-muted-foreground";
-                    const BalIcon = d.balanceIncrease > 0 ? TrendingUp : d.balanceIncrease < 0 ? TrendingDown : Minus;
+                    const assetColor = d.totalAssetsIncrease > 0 ? "text-[#0ab39c]" : d.totalAssetsIncrease < 0 ? "text-red-500" : "text-muted-foreground";
+                    const AssetIcon = d.totalAssetsIncrease > 0 ? TrendingUp : d.totalAssetsIncrease < 0 ? TrendingDown : Minus;
                     const invChange = d.investmentsToday - d.investmentsCutoff;
                     const invColor = invChange > 0 ? "text-[#0ab39c]" : invChange < 0 ? "text-red-500" : "text-muted-foreground";
                     return (
@@ -248,16 +248,16 @@ export default function DonorReportingPage() {
                           <div className="font-medium" data-testid={`text-donor-name-${d.id}`}>{d.name}</div>
                           <div className="text-xs text-muted-foreground">{d.email}</div>
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-bal-cutoff-${d.id}`}>{currency_format(d.balanceCutoff, true, 2)}</td>
-                        <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-bal-today-${d.id}`}>{currency_format(d.balanceToday, true, 2)}</td>
-                        <td className={cn("px-4 py-3 text-right tabular-nums", balColor)} data-testid={`text-bal-increase-${d.id}`}>
+                        <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-assets-cutoff-${d.id}`}>{currency_format(d.totalAssetsCutoff, true, 2)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums" data-testid={`text-assets-today-${d.id}`}>{currency_format(d.totalAssetsToday, true, 2)}</td>
+                        <td className={cn("px-4 py-3 text-right tabular-nums", assetColor)} data-testid={`text-assets-increase-${d.id}`}>
                           <span className="inline-flex items-center gap-1">
-                            <BalIcon className="h-3.5 w-3.5" />
-                            {currency_format(Math.abs(d.balanceIncrease), true, 2)}
+                            <AssetIcon className="h-3.5 w-3.5" />
+                            {currency_format(Math.abs(d.totalAssetsIncrease), true, 2)}
                           </span>
                         </td>
-                        <td className={cn("px-4 py-3 text-right tabular-nums", balColor)} data-testid={`text-bal-pct-${d.id}`}>
-                          {d.balancePctChange > 0 ? "+" : ""}{d.balancePctChange}%
+                        <td className={cn("px-4 py-3 text-right tabular-nums", assetColor)} data-testid={`text-assets-pct-${d.id}`}>
+                          {d.totalAssetsPctChange > 0 ? "+" : ""}{d.totalAssetsPctChange}%
                         </td>
                         <td className="px-4 py-3 text-center tabular-nums" data-testid={`text-inv-cutoff-${d.id}`}>{d.investmentsCutoff}</td>
                         <td className="px-4 py-3 text-center tabular-nums" data-testid={`text-inv-today-${d.id}`}>{d.investmentsToday}</td>
@@ -272,13 +272,13 @@ export default function DonorReportingPage() {
                   <tfoot>
                     <tr className="border-t-2 bg-muted/30 font-semibold">
                       <td className="px-4 py-3" colSpan={2}>Totals</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.balanceCutoff, true, 0)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.balanceToday, true, 0)}</td>
-                      <td className={cn("px-4 py-3 text-right tabular-nums", totalBalIncrease > 0 ? "text-[#0ab39c]" : totalBalIncrease < 0 ? "text-red-500" : "")}>
-                        {currency_format(Math.abs(totalBalIncrease), true, 0)}
+                      <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.totalAssetsCutoff, true, 0)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{currency_format(totals.totalAssetsToday, true, 0)}</td>
+                      <td className={cn("px-4 py-3 text-right tabular-nums", totalAssetsIncrease > 0 ? "text-[#0ab39c]" : totalAssetsIncrease < 0 ? "text-red-500" : "")}>
+                        {currency_format(Math.abs(totalAssetsIncrease), true, 0)}
                       </td>
-                      <td className={cn("px-4 py-3 text-right tabular-nums", totalBalPct > 0 ? "text-[#0ab39c]" : totalBalPct < 0 ? "text-red-500" : "")}>
-                        {totalBalPct > 0 ? "+" : ""}{totalBalPct}%
+                      <td className={cn("px-4 py-3 text-right tabular-nums", totalAssetsPct > 0 ? "text-[#0ab39c]" : totalAssetsPct < 0 ? "text-red-500" : "")}>
+                        {totalAssetsPct > 0 ? "+" : ""}{totalAssetsPct}%
                       </td>
                       <td className="px-4 py-3 text-center tabular-nums">{totals.investmentsCutoff}</td>
                       <td className="px-4 py-3 text-center tabular-nums">{totals.investmentsToday}</td>
