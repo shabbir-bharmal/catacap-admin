@@ -328,11 +328,27 @@ export async function executeJobInBackground(
   return { started: true, alreadyRunning: false, startTime, runningLogId };
 }
 
-export async function reconcileOrphanedRunningLogs(): Promise<number> {
-  let orphanRows: Array<{ id: number; job_name: string }> = [];
+// Max duration a job may stay in "Running" before it is treated as stuck and
+// force-failed even if an advisory lock is still held. Backups and welcome
+// series can take a while, so allow a generous window.
+const MAX_RUN_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// How often the periodic sweep wakes up to look for orphaned Running rows.
+const ORPHAN_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+let orphanSweepTimer: NodeJS.Timeout | null = null;
+
+export async function reconcileOrphanedRunningLogs(
+  context: "startup" | "sweep" = "startup",
+): Promise<number> {
+  let orphanRows: Array<{ id: number; job_name: string; start_time: Date }> = [];
   try {
-    const result = await pool.query<{ id: number; job_name: string }>(
-      `SELECT id, job_name FROM scheduler_logs
+    const result = await pool.query<{
+      id: number;
+      job_name: string;
+      start_time: Date;
+    }>(
+      `SELECT id, job_name, start_time FROM scheduler_logs
         WHERE status = 'Running' AND end_time IS NULL
         ORDER BY id`,
     );
@@ -349,16 +365,22 @@ export async function reconcileOrphanedRunningLogs(): Promise<number> {
     return 0;
   }
 
+  const now = Date.now();
   let reconciled = 0;
   for (const row of orphanRows) {
+    const ageMs = row.start_time
+      ? now - new Date(row.start_time).getTime()
+      : Number.POSITIVE_INFINITY;
+    const exceededMaxDuration = ageMs >= MAX_RUN_DURATION_MS;
     const lockKey = LOCK_KEYS[row.job_name];
+
     if (lockKey == null) {
       try {
         await pool.query(
           `UPDATE scheduler_logs
               SET end_time = NOW(),
                   status = 'Failed',
-                  error_message = 'Orphaned Running log reconciled on server start (unknown job).'
+                  error_message = 'Auto-cancelled stuck scheduler run: unknown job (no advisory lock key registered).'
             WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
           [row.id],
         );
@@ -379,18 +401,124 @@ export async function reconcileOrphanedRunningLogs(): Promise<number> {
         [lockKey],
       );
       const acquired = !!lockResult.rows[0]?.acquired;
+
       if (!acquired) {
-        // Another process is actively running this job — leave the row alone.
+        // Lock still held by an active session. Only force-fail the row if it
+        // has clearly exceeded the maximum allowed duration.
+        if (!exceededMaxDuration) {
+          continue;
+        }
+
+        // Terminate the backend(s) holding the advisory lock so the lock is
+        // released and the Run Now button actually becomes available again.
+        // Without this, marking the row Failed would leave the job appearing
+        // not-running while manual triggers still report "alreadyRunning".
+        let terminatedAny = false;
+        try {
+          const holders = await client.query<{ pid: number }>(
+            `SELECT l.pid
+               FROM pg_locks l
+              WHERE l.locktype = 'advisory'
+                AND ((l.classid::bigint << 32) | (l.objid::bigint & x'FFFFFFFF'::bigint))
+                    = $1::bigint
+                AND l.granted = true`,
+            [lockKey],
+          );
+          for (const holder of holders.rows) {
+            try {
+              const term = await client.query<{ terminated: boolean }>(
+                `SELECT pg_terminate_backend($1) AS terminated`,
+                [holder.pid],
+              );
+              if (term.rows[0]?.terminated) {
+                terminatedAny = true;
+                console.warn(
+                  `[SCHEDULER] Terminated stuck backend pid=${holder.pid} holding lock for ${row.job_name}.`,
+                );
+              }
+            } catch (termErr) {
+              console.error(
+                `[SCHEDULER] Failed to terminate backend pid=${holder.pid} for ${row.job_name}:`,
+                termErr,
+              );
+            }
+          }
+        } catch (err) {
+          console.error(
+            `[SCHEDULER] Failed to look up advisory lock holders for ${row.job_name}:`,
+            err,
+          );
+        }
+
+        // Re-check that the lock is now free before declaring the row Failed.
+        // If termination didn't release it (e.g. insufficient privilege), keep
+        // the row in Running so we don't desync with the actual lock state.
+        let lockNowFree = false;
+        try {
+          const recheck = await client.query(
+            `SELECT pg_try_advisory_lock($1) AS acquired`,
+            [lockKey],
+          );
+          lockNowFree = !!recheck.rows[0]?.acquired;
+          if (lockNowFree) {
+            await client.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+          }
+        } catch (err) {
+          console.error(
+            `[SCHEDULER] Failed to re-check advisory lock for ${row.job_name}:`,
+            err,
+          );
+        }
+
+        if (!lockNowFree) {
+          console.warn(
+            `[SCHEDULER] Stuck Running row ${row.id} for ${row.job_name} exceeded max duration but advisory lock could not be released; leaving row as Running (terminatedBackend=${terminatedAny}).`,
+          );
+          continue;
+        }
+
+        try {
+          const updateResult = await pool.query(
+            `UPDATE scheduler_logs
+                SET end_time = NOW(),
+                    status = 'Failed',
+                    error_message = $2
+              WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
+            [
+              row.id,
+              `Auto-cancelled stuck scheduler run: job ran for over ${Math.round(
+                MAX_RUN_DURATION_MS / 60000,
+              )} minutes without completing; the stuck backend was terminated to free the advisory lock.`,
+            ],
+          );
+          if ((updateResult.rowCount ?? 0) > 0) {
+            reconciled += 1;
+            console.warn(
+              `[SCHEDULER] Force-failed stuck Running row ${row.id} for ${row.job_name} (age ${Math.round(ageMs / 1000)}s).`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[SCHEDULER] Failed to force-fail stuck log ${row.id} for ${row.job_name}:`,
+            err,
+          );
+        }
         continue;
       }
+
+      // Lock acquired => no live process owns this row; treat as orphaned.
       try {
+        const reason =
+          context === "sweep"
+            ? "Auto-cancelled stuck scheduler run: no live process holds the advisory lock (server likely crashed mid-run)."
+            : "Auto-cancelled stuck scheduler run: detected on server start (server likely restarted before completion).";
         const updateResult = await client.query(
           `UPDATE scheduler_logs
               SET end_time = NOW(),
                   status = 'Failed',
-                  error_message = 'Orphaned Running log reconciled on server start (server likely restarted before completion).'
+                  error_message = $2
             WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
-          [row.id],
+          [row.id, reason],
         );
         if ((updateResult.rowCount ?? 0) > 0) {
           reconciled += 1;
@@ -410,10 +538,29 @@ export async function reconcileOrphanedRunningLogs(): Promise<number> {
 
   if (reconciled > 0) {
     console.log(
-      `[SCHEDULER] Reconciled ${reconciled} orphaned Running scheduler_logs row(s) as Failed.`,
+      `[SCHEDULER] Reconciled ${reconciled} orphaned Running scheduler_logs row(s) as Failed (${context}).`,
     );
   }
   return reconciled;
+}
+
+function startOrphanSweep(): void {
+  if (orphanSweepTimer) return;
+  orphanSweepTimer = setInterval(() => {
+    reconcileOrphanedRunningLogs("sweep").catch((err) => {
+      console.error("[SCHEDULER] Orphan sweep failed:", err);
+    });
+  }, ORPHAN_SWEEP_INTERVAL_MS);
+  if (typeof orphanSweepTimer.unref === "function") {
+    orphanSweepTimer.unref();
+  }
+}
+
+function stopOrphanSweep(): void {
+  if (orphanSweepTimer) {
+    clearInterval(orphanSweepTimer);
+    orphanSweepTimer = null;
+  }
 }
 
 function stopAllTasks(): void {
@@ -427,7 +574,8 @@ export async function reloadScheduler(): Promise<void> {
   console.log("[SCHEDULER] Reloading scheduler configurations...");
   stopAllTasks();
 
-  await reconcileOrphanedRunningLogs();
+  await reconcileOrphanedRunningLogs("startup");
+  startOrphanSweep();
 
   let configs = await loadConfigsFromDb();
   if (configs.length === 0) {
