@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { formatDateTimeInZone } from "@/helpers/format";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,7 +26,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
-import { Play, Save, ChevronDown, ChevronUp, Loader2, Clock, AlertCircle, CheckCircle2, Download } from "lucide-react";
+import { Play, Save, ChevronDown, ChevronUp, Loader2, Clock, AlertCircle, CheckCircle2, Download, Activity } from "lucide-react";
 import {
   fetchSchedulerConfigs,
   updateSchedulerConfig,
@@ -36,11 +36,19 @@ import {
   fetchSentReminderEmails,
   fetchSentWelcomeEmails,
   fetchBackupDownloadUrl,
+  fetchSchedulerStatuses,
   SchedulerConfig,
   SchedulerLog,
+  SchedulerJobStatus,
   SentEmailEntry,
   SentWelcomeEmailEntry,
 } from "@/api/scheduler/schedulerApi";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -103,7 +111,10 @@ export default function SchedulersTab() {
   const [savingJobs, setSavingJobs] = useState<Record<string, boolean>>({});
   const [triggeringJobs, setTriggeringJobs] = useState<Record<string, boolean>>({});
   const [togglingJobs, setTogglingJobs] = useState<Record<string, boolean>>({});
-  const [triggerResults, setTriggerResults] = useState<Record<string, { success: boolean; message: string }>>({});
+  const [triggerResults, setTriggerResults] = useState<
+    Record<string, { variant: "success" | "error" | "info"; message: string }>
+  >({});
+  const [jobStatuses, setJobStatuses] = useState<Record<string, SchedulerJobStatus>>({});
   const [expandedLogs, setExpandedLogs] = useState<Record<string, boolean>>({});
   const [jobLogs, setJobLogs] = useState<Record<string, SchedulerLog[]>>({});
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
@@ -114,7 +125,7 @@ export default function SchedulersTab() {
   const [sentEmailsLoading, setSentEmailsLoading] = useState(false);
   const [sentEmailsContext, setSentEmailsContext] = useState<{
     startTime: string;
-    endTime: string;
+    endTime: string | null;
     timezone: string;
     jobName: string;
   } | null>(null);
@@ -139,6 +150,88 @@ export default function SchedulersTab() {
   useEffect(() => {
     loadConfigs();
   }, [loadConfigs]);
+
+  const loadLogsRef = useRef<(jobName: string) => void>();
+  const expandedLogsRef = useRef(expandedLogs);
+  expandedLogsRef.current = expandedLogs;
+  const isInitialStatusFetch = useRef(true);
+
+  const pollStatuses = useCallback(async () => {
+    let statuses: SchedulerJobStatus[];
+    try {
+      statuses = await fetchSchedulerStatuses();
+    } catch {
+      return;
+    }
+    const finishedNotifications: Array<{ jobName: string; lastRun: SchedulerLog }> = [];
+    setJobStatuses((prev) => {
+      const next: Record<string, SchedulerJobStatus> = { ...prev };
+      for (const status of statuses) {
+        const previous = prev[status.jobName];
+        next[status.jobName] = status;
+        if (
+          !isInitialStatusFetch.current &&
+          previous?.running &&
+          !status.running &&
+          status.lastRun &&
+          (!previous.lastRun || status.lastRun.id !== previous.lastRun.id)
+        ) {
+          finishedNotifications.push({
+            jobName: status.jobName,
+            lastRun: status.lastRun,
+          });
+        } else if (
+          !isInitialStatusFetch.current &&
+          !previous?.running &&
+          status.running &&
+          expandedLogsRef.current[status.jobName] &&
+          loadLogsRef.current
+        ) {
+          loadLogsRef.current(status.jobName);
+        }
+      }
+      return next;
+    });
+    if (finishedNotifications.length > 0) {
+      for (const { jobName, lastRun } of finishedNotifications) {
+        const failed =
+          lastRun.status === "Failed" ||
+          (!lastRun.status && !!lastRun.errorMessage);
+        const display = JOB_DISPLAY_NAMES[jobName] || jobName;
+        const message = failed
+          ? `${display} failed: ${lastRun.errorMessage || "Unknown error."}`
+          : `${display} completed successfully.`;
+        setTriggerResults((prev) => ({
+          ...prev,
+          [jobName]: {
+            variant: failed ? "error" : "success",
+            message,
+          },
+        }));
+        toast({
+          title: failed ? "Job Failed" : "Success",
+          description: message,
+          variant: failed ? "destructive" : "default",
+        });
+        if (!expandedLogsRef.current[jobName]) {
+          setExpandedLogs((prev) => ({ ...prev, [jobName]: true }));
+        }
+        if (loadLogsRef.current) {
+          loadLogsRef.current(jobName);
+        }
+      }
+    }
+    isInitialStatusFetch.current = false;
+  }, [toast]);
+
+  useEffect(() => {
+    if (configs.length === 0) return;
+    pollStatuses();
+    const interval = setInterval(() => {
+      pollStatuses();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [configs.length, pollStatuses]);
 
   const handleEditChange = (jobName: string, field: keyof EditState, value: string | number) => {
     setEditStates((prev) => ({
@@ -229,14 +322,39 @@ export default function SchedulersTab() {
 
     try {
       const result = await triggerSchedulerJob(jobName);
-      setTriggerResults((prev) => ({
-        ...prev,
-        [jobName]: { success: result.success, message: result.message },
-      }));
-      if (result.success) {
-        toast({ title: "Success", description: result.message });
-      } else {
-        toast({ title: "Job Failed", description: result.message, variant: "destructive" });
+      if (result.alreadyRunning) {
+        setTriggerResults((prev) => ({
+          ...prev,
+          [jobName]: { variant: "error", message: result.message },
+        }));
+        toast({
+          title: "Already Running",
+          description: result.message,
+          variant: "destructive",
+        });
+      } else if (result.started) {
+        const startedAt = new Date(result.startTime);
+        const startedLabel = startedAt.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const message = `Started at ${startedLabel} — this may take a few minutes. You can leave this page; results will appear in Recent Logs.`;
+        setTriggerResults((prev) => ({
+          ...prev,
+          [jobName]: { variant: "info", message },
+        }));
+        // Optimistically mark as running until the next poll confirms.
+        setJobStatuses((prev) => ({
+          ...prev,
+          [jobName]: {
+            jobName,
+            running: true,
+            runningLogId: result.runningLogId,
+            runningSince: result.startTime,
+            lastRun: prev[jobName]?.lastRun ?? null,
+          },
+        }));
+        toast({ title: "Started", description: `${JOB_DISPLAY_NAMES[jobName] || jobName} is now running.` });
       }
       if (expandedLogs[jobName]) {
         loadLogs(jobName);
@@ -244,7 +362,7 @@ export default function SchedulersTab() {
     } catch {
       setTriggerResults((prev) => ({
         ...prev,
-        [jobName]: { success: false, message: "Failed to trigger job." },
+        [jobName]: { variant: "error", message: "Failed to trigger job." },
       }));
       toast({ title: "Error", description: `Failed to trigger ${JOB_DISPLAY_NAMES[jobName] || jobName}.`, variant: "destructive" });
     } finally {
@@ -269,17 +387,28 @@ export default function SchedulersTab() {
     }
   };
 
-  const loadLogs = async (jobName: string) => {
-    setLogsLoading((prev) => ({ ...prev, [jobName]: true }));
-    try {
-      const data = await fetchSchedulerLogs(jobName, 10);
-      setJobLogs((prev) => ({ ...prev, [jobName]: data.logs }));
-    } catch {
-      toast({ title: "Error", description: `Failed to load logs for ${JOB_DISPLAY_NAMES[jobName] || jobName}.`, variant: "destructive" });
-    } finally {
-      setLogsLoading((prev) => ({ ...prev, [jobName]: false }));
-    }
-  };
+  const loadLogs = useCallback(
+    async (jobName: string) => {
+      setLogsLoading((prev) => ({ ...prev, [jobName]: true }));
+      try {
+        const data = await fetchSchedulerLogs(jobName, 10);
+        setJobLogs((prev) => ({ ...prev, [jobName]: data.logs }));
+      } catch {
+        toast({
+          title: "Error",
+          description: `Failed to load logs for ${JOB_DISPLAY_NAMES[jobName] || jobName}.`,
+          variant: "destructive",
+        });
+      } finally {
+        setLogsLoading((prev) => ({ ...prev, [jobName]: false }));
+      }
+    },
+    [toast],
+  );
+
+  useEffect(() => {
+    loadLogsRef.current = loadLogs;
+  }, [loadLogs]);
 
   const openSentEmails = async (log: SchedulerLog, jobTimezone: string, jobName: string) => {
     setSentEmailsContext({
@@ -294,10 +423,10 @@ export default function SchedulersTab() {
     setSentEmailsLoading(true);
     try {
       if (jobName === "WelcomeSeries") {
-        const data = await fetchSentWelcomeEmails(log.startTime, log.endTime, log.id);
+        const data = await fetchSentWelcomeEmails(log.startTime, log.endTime ?? undefined, log.id);
         setSentWelcomeEmails(data.emails);
       } else {
-        const data = await fetchSentReminderEmails(log.startTime, log.endTime, log.id);
+        const data = await fetchSentReminderEmails(log.startTime, log.endTime ?? undefined, log.id);
         setSentEmails(data.emails);
       }
     } catch {
@@ -359,7 +488,8 @@ export default function SchedulersTab() {
   };
 
 
-  const formatDuration = (start: string, end: string): string => {
+  const formatDuration = (start: string, end: string | null): string => {
+    if (!end) return "—";
     const ms = new Date(end).getTime() - new Date(start).getTime();
     if (ms < 1000) return `${ms}ms`;
     const seconds = Math.floor(ms / 1000);
@@ -368,6 +498,24 @@ export default function SchedulersTab() {
     const remainingSec = seconds % 60;
     return `${minutes}m ${remainingSec}s`;
   };
+
+  const formatLiveDuration = (start: string, nowMs: number): string => {
+    const ms = nowMs - new Date(start).getTime();
+    if (ms < 1000) return "0s";
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSec = seconds % 60;
+    return `${minutes}m ${remainingSec}s`;
+  };
+
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const hasRunning = Object.values(jobStatuses).some((s) => s?.running);
+    if (!hasRunning) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [jobStatuses]);
 
   if (loading) {
     return (
@@ -390,6 +538,7 @@ export default function SchedulersTab() {
 
   return (
     <div className="space-y-4">
+      <TooltipProvider delayDuration={150}>
       {configs.map((config) => {
         const edit = editStates[config.jobName];
         const isSaving = savingJobs[config.jobName];
@@ -400,6 +549,16 @@ export default function SchedulersTab() {
         const logs = jobLogs[config.jobName] || [];
         const isLogsLoading = logsLoading[config.jobName];
         const changed = hasChanges(config);
+        const status = jobStatuses[config.jobName];
+        const isRunning = !!status?.running;
+        const runningSinceLabel = status?.runningSince
+          ? formatDateTimeInZone(status.runningSince, config.timezone)
+          : null;
+        const runDisabledReason = !config.isEnabled
+          ? "This job is disabled."
+          : isRunning
+          ? "This job is already running."
+          : null;
 
         return (
           <Card key={config.id}>
@@ -411,6 +570,15 @@ export default function SchedulersTab() {
                       <h3 className="text-lg font-semibold">{JOB_DISPLAY_NAMES[config.jobName] || config.jobName}</h3>
                       {!config.isEnabled && (
                         <Badge variant="secondary" className="text-xs">Disabled</Badge>
+                      )}
+                      {isRunning && (
+                        <Badge
+                          variant="secondary"
+                          className="text-xs bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1"
+                        >
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Running…
+                        </Badge>
                       )}
                     </div>
                     {(JOB_DESCRIPTIONS[config.jobName] || config.description) && (
@@ -434,32 +602,64 @@ export default function SchedulersTab() {
                         disabled={isToggling}
                       />
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleTrigger(config.jobName)}
-                      disabled={isTriggering || !config.isEnabled}
-                    >
-                      {isTriggering ? (
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      ) : (
-                        <Play className="h-4 w-4 mr-2" />
-                      )}
-                      Run Now
-                    </Button>
+                    {(() => {
+                      const runDisabled =
+                        isTriggering || !config.isEnabled || isRunning;
+                      const button = (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleTrigger(config.jobName)}
+                          disabled={runDisabled}
+                        >
+                          {isTriggering || isRunning ? (
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          ) : (
+                            <Play className="h-4 w-4 mr-2" />
+                          )}
+                          Run Now
+                        </Button>
+                      );
+                      if (runDisabled && runDisabledReason) {
+                        return (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span tabIndex={0}>{button}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{runDisabledReason}</TooltipContent>
+                          </Tooltip>
+                        );
+                      }
+                      return button;
+                    })()}
                   </div>
                 </div>
 
-                {result && (
+                {isRunning && (
+                  <div className="flex items-start gap-2 p-3 rounded-md text-sm bg-blue-50 text-blue-800 border border-blue-200">
+                    <Activity className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>
+                      {runningSinceLabel
+                        ? `Started at ${runningSinceLabel} — this may take a few minutes. You can leave this page; results will appear in Recent Logs.`
+                        : `This job is currently running. Results will appear in Recent Logs when it finishes.`}
+                    </span>
+                  </div>
+                )}
+
+                {result && !isRunning && (
                   <div
                     className={`flex items-start gap-2 p-3 rounded-md text-sm ${
-                      result.success
+                      result.variant === "success"
                         ? "bg-green-50 text-green-800 border border-green-200"
+                        : result.variant === "info"
+                        ? "bg-blue-50 text-blue-800 border border-blue-200"
                         : "bg-red-50 text-red-800 border border-red-200"
                     }`}
                   >
-                    {result.success ? (
+                    {result.variant === "success" ? (
                       <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+                    ) : result.variant === "info" ? (
+                      <Activity className="h-4 w-4 mt-0.5 shrink-0" />
                     ) : (
                       <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
                     )}
@@ -567,17 +767,32 @@ export default function SchedulersTab() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {logs.map((log) => (
+                            {logs.map((log) => {
+                              const isRunningRow =
+                                log.status === "Running" && !log.endTime;
+                              return (
                               <TableRow key={log.id}>
                                 <TableCell>
-                                  {(log.status === "Failed" || (!log.status && log.errorMessage)) ? (
+                                  {isRunningRow ? (
+                                    <Badge
+                                      variant="secondary"
+                                      className="bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1 w-fit"
+                                    >
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                      Running
+                                    </Badge>
+                                  ) : (log.status === "Failed" || (!log.status && log.errorMessage)) ? (
                                     <Badge variant="destructive">Failed</Badge>
                                   ) : (
                                     <Badge variant="secondary" className="bg-green-100 text-green-800">Success</Badge>
                                   )}
                                 </TableCell>
                                 <TableCell className="text-sm">{formatDateTimeInZone(log.startTime, log.timezone || config.timezone)}</TableCell>
-                                <TableCell className="text-sm">{formatDuration(log.startTime, log.endTime)}</TableCell>
+                                <TableCell className="text-sm">
+                                  {isRunningRow
+                                    ? formatLiveDuration(log.startTime, nowTick)
+                                    : formatDuration(log.startTime, log.endTime)}
+                                </TableCell>
                                 <TableCell className="text-sm max-w-md truncate">
                                   {log.errorMessage ? (
                                     <span className="text-red-600" title={log.errorMessage}>
@@ -723,7 +938,8 @@ export default function SchedulersTab() {
                                   </TableCell>
                                 )}
                               </TableRow>
-                            ))}
+                              );
+                            })}
                           </TableBody>
                         </Table>
                       </div>
@@ -735,6 +951,7 @@ export default function SchedulersTab() {
           </Card>
         );
       })}
+      </TooltipProvider>
 
       <Dialog open={sentEmailsOpen} onOpenChange={setSentEmailsOpen}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">

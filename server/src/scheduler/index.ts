@@ -93,48 +93,48 @@ function extractSchedulerErrorMessage(err: unknown): string {
   return String(err);
 }
 
-async function logJobRun(
+const SELF_LOGGING_JOBS = new Set(["SendReminderEmail", "WelcomeSeries"]);
+
+async function insertRunningLog(
   jobName: string,
   startTime: Date,
+): Promise<number | null> {
+  try {
+    const result = await pool.query<{ id: number }>(
+      `INSERT INTO scheduler_logs (start_time, job_name, status)
+       VALUES ($1, $2, 'Running') RETURNING id`,
+      [startTime, jobName],
+    );
+    return result.rows[0]?.id ?? null;
+  } catch (err) {
+    console.error(
+      `[SCHEDULER] Failed to insert running log for ${jobName}:`,
+      err,
+    );
+    return null;
+  }
+}
+
+async function finalizeLog(
+  logId: number,
   status: "Success" | "Failed",
   errorMessage: string | null,
-  metadata?: Record<string, unknown> | null
+  metadata: Record<string, unknown> | null,
 ): Promise<void> {
   try {
-    const hasStatusCol = await pool.query(
-      `SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'status'`
+    const metadataValue =
+      metadata && Object.keys(metadata).length > 0 ? metadata : null;
+    await pool.query(
+      `UPDATE scheduler_logs
+         SET end_time = $1, status = $2, error_message = $3, metadata = $4
+       WHERE id = $5`,
+      [new Date(), status, errorMessage, metadataValue, logId],
     );
-    const hasMetadataCol = await pool.query(
-      `SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'metadata'`
-    );
-    const metadataValue = metadata && Object.keys(metadata).length > 0 ? metadata : null;
-
-    if (hasStatusCol.rows.length > 0 && hasMetadataCol.rows.length > 0) {
-      await pool.query(
-        `INSERT INTO scheduler_logs
-          (start_time, end_time, error_message, job_name, status, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [startTime, new Date(), errorMessage, jobName, status, metadataValue]
-      );
-    } else if (hasStatusCol.rows.length > 0) {
-      await pool.query(
-        `INSERT INTO scheduler_logs
-          (start_time, end_time, error_message, job_name, status)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [startTime, new Date(), errorMessage, jobName, status]
-      );
-    } else {
-      await pool.query(
-        `INSERT INTO scheduler_logs
-          (start_time, end_time, error_message, job_name)
-         VALUES ($1, $2, $3, $4)`,
-        [startTime, new Date(), errorMessage, jobName]
-      );
-    }
   } catch (err) {
-    console.error(`[SCHEDULER] Failed to log job run for ${jobName}:`, err);
+    console.error(
+      `[SCHEDULER] Failed to finalize scheduler_logs row ${logId}:`,
+      err,
+    );
   }
 }
 
@@ -196,16 +196,19 @@ function scheduleJob(config: SchedulerConfigRow): void {
   const task = cron.schedule(
     cronExpression,
     async () => {
-      const startTime = new Date();
       console.log(`[SCHEDULER] Running ${job_name} job...`);
       await withAdvisoryLock(lockKey, job_name, async () => {
+        const startTime = new Date();
+        let runningLogId: number | null = null;
+        if (!SELF_LOGGING_JOBS.has(job_name)) {
+          runningLogId = await insertRunningLog(job_name, startTime);
+        }
         try {
           const result = await runner();
           console.log(`[SCHEDULER] ${job_name} completed successfully.`);
-          if (job_name !== "SendReminderEmail" && job_name !== "WelcomeSeries") {
-            await logJobRun(
-              job_name,
-              startTime,
+          if (runningLogId !== null) {
+            await finalizeLog(
+              runningLogId,
               "Success",
               null,
               (result && typeof result === "object" ? result : null) as
@@ -216,8 +219,8 @@ function scheduleJob(config: SchedulerConfigRow): void {
         } catch (err: unknown) {
           const message = extractSchedulerErrorMessage(err);
           console.error(`[SCHEDULER] ${job_name} failed:`, err);
-          if (job_name !== "SendReminderEmail" && job_name !== "WelcomeSeries") {
-            await logJobRun(job_name, startTime, "Failed", message);
+          if (runningLogId !== null) {
+            await finalizeLog(runningLogId, "Failed", message, null);
           }
         }
       });
@@ -238,7 +241,14 @@ function scheduleJob(config: SchedulerConfigRow): void {
   }
 }
 
-export async function executeJobWithLock(jobName: string): Promise<{ executed: boolean }> {
+export async function executeJobInBackground(
+  jobName: string,
+): Promise<{
+  started: boolean;
+  alreadyRunning: boolean;
+  startTime: Date;
+  runningLogId: number | null;
+}> {
   const runner = JOB_RUNNERS[jobName];
   const lockKey = LOCK_KEYS[jobName];
 
@@ -250,26 +260,44 @@ export async function executeJobWithLock(jobName: string): Promise<{ executed: b
   console.log(`[SCHEDULER] Manually triggering ${jobName} job...`);
 
   const client = await pool.connect();
+  let acquired = false;
   try {
     const lockResult = await client.query(
       `SELECT pg_try_advisory_lock($1) AS acquired`,
-      [lockKey]
+      [lockKey],
     );
+    acquired = !!lockResult.rows[0].acquired;
+  } catch (err) {
+    client.release();
+    throw err;
+  }
 
-    if (!lockResult.rows[0].acquired) {
-      console.log(
-        `[SCHEDULER] ${jobName} already running (advisory lock not acquired). Skipping manual trigger.`
-      );
-      return { executed: false };
-    }
+  if (!acquired) {
+    client.release();
+    console.log(
+      `[SCHEDULER] ${jobName} already running (advisory lock not acquired). Skipping manual trigger.`,
+    );
+    return {
+      started: false,
+      alreadyRunning: true,
+      startTime,
+      runningLogId: null,
+    };
+  }
 
+  let runningLogId: number | null = null;
+  if (!SELF_LOGGING_JOBS.has(jobName)) {
+    runningLogId = await insertRunningLog(jobName, startTime);
+  }
+
+  // Fire-and-forget: run the job asynchronously and release the lock when done.
+  (async () => {
     try {
       const result = await runner();
       console.log(`[SCHEDULER] ${jobName} completed successfully.`);
-      if (jobName !== "SendReminderEmail" && jobName !== "WelcomeSeries") {
-        await logJobRun(
-          jobName,
-          startTime,
+      if (runningLogId !== null) {
+        await finalizeLog(
+          runningLogId,
           "Success",
           null,
           (result && typeof result === "object" ? result : null) as
@@ -280,18 +308,112 @@ export async function executeJobWithLock(jobName: string): Promise<{ executed: b
     } catch (err: unknown) {
       const message = extractSchedulerErrorMessage(err);
       console.error(`[SCHEDULER] ${jobName} failed:`, err);
-      if (jobName !== "SendReminderEmail" && jobName !== "WelcomeSeries") {
-        await logJobRun(jobName, startTime, "Failed", message);
+      if (runningLogId !== null) {
+        await finalizeLog(runningLogId, "Failed", message, null);
       }
-      throw err;
     } finally {
-      await client.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+      try {
+        await client.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+      } catch (e) {
+        console.error(
+          `[SCHEDULER] Failed to release advisory lock for ${jobName}:`,
+          e,
+        );
+      } finally {
+        client.release();
+      }
     }
-  } finally {
-    client.release();
+  })();
+
+  return { started: true, alreadyRunning: false, startTime, runningLogId };
+}
+
+export async function reconcileOrphanedRunningLogs(): Promise<number> {
+  let orphanRows: Array<{ id: number; job_name: string }> = [];
+  try {
+    const result = await pool.query<{ id: number; job_name: string }>(
+      `SELECT id, job_name FROM scheduler_logs
+        WHERE status = 'Running' AND end_time IS NULL
+        ORDER BY id`,
+    );
+    orphanRows = result.rows;
+  } catch (err) {
+    console.error(
+      "[SCHEDULER] Failed to query for orphaned Running logs:",
+      err,
+    );
+    return 0;
   }
 
-  return { executed: true };
+  if (orphanRows.length === 0) {
+    return 0;
+  }
+
+  let reconciled = 0;
+  for (const row of orphanRows) {
+    const lockKey = LOCK_KEYS[row.job_name];
+    if (lockKey == null) {
+      try {
+        await pool.query(
+          `UPDATE scheduler_logs
+              SET end_time = NOW(),
+                  status = 'Failed',
+                  error_message = 'Orphaned Running log reconciled on server start (unknown job).'
+            WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
+          [row.id],
+        );
+        reconciled += 1;
+      } catch (err) {
+        console.error(
+          `[SCHEDULER] Failed to reconcile orphan log ${row.id}:`,
+          err,
+        );
+      }
+      continue;
+    }
+
+    const client = await pool.connect();
+    try {
+      const lockResult = await client.query(
+        `SELECT pg_try_advisory_lock($1) AS acquired`,
+        [lockKey],
+      );
+      const acquired = !!lockResult.rows[0]?.acquired;
+      if (!acquired) {
+        // Another process is actively running this job — leave the row alone.
+        continue;
+      }
+      try {
+        const updateResult = await client.query(
+          `UPDATE scheduler_logs
+              SET end_time = NOW(),
+                  status = 'Failed',
+                  error_message = 'Orphaned Running log reconciled on server start (server likely restarted before completion).'
+            WHERE id = $1 AND status = 'Running' AND end_time IS NULL`,
+          [row.id],
+        );
+        if ((updateResult.rowCount ?? 0) > 0) {
+          reconciled += 1;
+        }
+      } finally {
+        await client.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+      }
+    } catch (err) {
+      console.error(
+        `[SCHEDULER] Failed to reconcile orphan log ${row.id} for ${row.job_name}:`,
+        err,
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  if (reconciled > 0) {
+    console.log(
+      `[SCHEDULER] Reconciled ${reconciled} orphaned Running scheduler_logs row(s) as Failed.`,
+    );
+  }
+  return reconciled;
 }
 
 function stopAllTasks(): void {
@@ -304,6 +426,8 @@ function stopAllTasks(): void {
 export async function reloadScheduler(): Promise<void> {
   console.log("[SCHEDULER] Reloading scheduler configurations...");
   stopAllTasks();
+
+  await reconcileOrphanedRunningLogs();
 
   let configs = await loadConfigsFromDb();
   if (configs.length === 0) {

@@ -16,7 +16,7 @@ export interface SchedulerLog {
   id: number;
   jobName: string;
   startTime: string;
-  endTime: string;
+  endTime: string | null;
   errorMessage: string | null;
   status: string | null;
   timezone: string | null;
@@ -100,11 +100,31 @@ export async function fetchSentReminderEmails(
 }
 
 export interface TriggerResult {
-  success: boolean;
+  started: boolean;
+  alreadyRunning: boolean;
   message: string;
   error?: string;
   startTime: string;
-  endTime: string;
+  runningLogId: number | null;
+}
+
+export interface SchedulerJobStatus {
+  jobName: string;
+  running: boolean;
+  runningLogId: number | null;
+  runningSince: string | null;
+  lastRun: SchedulerLog | null;
+}
+
+export interface SchedulerStatusResponse {
+  statuses: SchedulerJobStatus[];
+}
+
+export async function fetchSchedulerStatuses(): Promise<SchedulerJobStatus[]> {
+  const response = await axiosInstance.get<SchedulerStatusResponse>(
+    "/api/admin/scheduler/status",
+  );
+  return response.data.statuses || [];
 }
 
 export async function fetchSchedulerConfigs(): Promise<SchedulerConfig[]> {
