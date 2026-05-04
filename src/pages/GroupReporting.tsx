@@ -20,8 +20,9 @@ export default function GroupReportingPage() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 500);
-  const { sortField, sortDir, handleSort } = useSort<SortField>("name", "asc");
+  const { sortField, sortDir, handleSort } = useSort<SortField>("increase", "desc");
   const [isExporting, setIsExporting] = useState(false);
+  const [hideZero, setHideZero] = useState(true);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["/api/admin/group/group-reporting"],
@@ -32,12 +33,15 @@ export default function GroupReportingPage() {
 
   const filtered = useMemo(() => {
     let items = data?.items || [];
+    if (hideZero) {
+      items = items.filter((g) => g.throughToday > 0 || g.throughCutoff > 0);
+    }
     const q = debouncedSearch.trim().toLowerCase();
     if (q.length >= 2) {
       items = items.filter((g) => g.name.toLowerCase().includes(q));
     }
     return items;
-  }, [data, debouncedSearch]);
+  }, [data, debouncedSearch, hideZero]);
 
   const sorted = useMemo(() => {
     if (!sortField) return filtered;
@@ -198,7 +202,16 @@ export default function GroupReportingPage() {
                 data-testid="input-search-groups"
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer select-none" data-testid="filter-hide-zero">
+                <input
+                  type="checkbox"
+                  checked={hideZero}
+                  onChange={(e) => setHideZero(e.target.checked)}
+                  className="accent-[#405189] h-3.5 w-3.5"
+                />
+                Hide $0 groups
+              </label>
               <span className="text-sm text-muted-foreground">{sorted.length} group{sorted.length !== 1 ? "s" : ""}</span>
               <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting || isLoading || sorted.length === 0} data-testid="button-export-csv">
                 <Download className="h-3.5 w-3.5 mr-1.5" />
