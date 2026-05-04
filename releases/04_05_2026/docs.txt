@@ -1,0 +1,19 @@
+Release 04_05_2026
+==================
+
+Migration: 2026_05_04_add_event_registrations_to_user_role.sql
+--------------------------------------------------------------
+Purpose: Grant the "User" role (id: 5df890a0-aadf-433d-8b28-2f7067107c28)
+         manage + delete access to the "event-registrations" module (id: 15).
+
+This allows all users with the "User" role to view and manage event
+registrations at /event-registrations in the admin tool.
+
+The migration is idempotent (uses WHERE NOT EXISTS) and transactional.
+
+Impact: All users assigned the "User" role will gain access to the
+        Event Registrations page. Currently affected users include
+        jenny@catacap.org and any other accounts with the "User" role.
+
+Note: Affected users must log out and back in (or wait for token refresh)
+      for the new permission to appear in their JWT.
