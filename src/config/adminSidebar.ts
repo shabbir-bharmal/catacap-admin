@@ -111,10 +111,21 @@ export const sidebarConfig = [
 
       {
         title: "Groups",
-        url: "/groups",
         icon: UsersRound,
-        activeFor: ["/groups"],
-        permission: { module: "groups", action: "view" }
+        children: [
+          {
+            title: "Groups",
+            url: "/groups",
+            icon: UsersRound,
+            permission: { module: "groups", action: "view" }
+          },
+          {
+            title: "Group Reporting",
+            url: "/groups/reporting",
+            icon: BarChart3,
+            permission: { module: "groups", action: "view" }
+          }
+        ]
       },
 
       {
