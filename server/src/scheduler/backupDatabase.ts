@@ -23,9 +23,15 @@ const TRANSIENT_ERROR_PATTERNS: RegExp[] = [
   /server closed the connection unexpectedly/i,
   /connection reset by peer/i,
   /could not receive data from server/i,
+  /SSL SYSCALL error/i,
+  /EOF detected/i,
+  /unexpected EOF/i,
+  /PQgetCopyData\(\) failed/i,
+  /Dumping the contents of table "[^"]+" failed/i,
 ];
 
 const RETRY_BACKOFF_MS = 5000;
+const MAX_PG_DUMP_ATTEMPTS = 3;
 
 interface BackupStorageConfig {
   client: SupabaseClient;
@@ -560,53 +566,71 @@ export async function runBackupDatabase(): Promise<Record<string, unknown>> {
     return `${label}: unknown failure. ${attempt.stderr || ""}`.trim();
   };
 
+  const attemptIsTransient = (a: PgDumpAttemptResult): boolean =>
+    isTransientPgDumpError(a.stderr) ||
+    (a.pipelineError !== null &&
+      isTransientPgDumpError(String(a.pipelineError.message)));
+
+  const priorStderrs: string[] = [];
   let attempt = await runPgDumpOnce(pgDumpPath, dumpUrl);
-  let retried = false;
-  let firstAttemptStderr = "";
+  let attemptNumber = 1;
+  let lastTransient = false;
+  let failingTable: string | null = extractFailingTable(attempt.stderr);
+
+  while (!attempt.ok && attemptNumber < MAX_PG_DUMP_ATTEMPTS) {
+    const transient = attemptIsTransient(attempt);
+    lastTransient = transient;
+    if (!transient) break;
+
+    priorStderrs.push(attempt.stderr || "(empty)");
+    const backoffMs = RETRY_BACKOFF_MS * Math.pow(2, attemptNumber - 1);
+    console.warn(
+      `[BackupDatabase] pg_dump attempt ${attemptNumber}/${MAX_PG_DUMP_ATTEMPTS} hit a transient ` +
+        `connection drop (will retry after ${backoffMs}ms)` +
+        (failingTable ? ` [table=${failingTable}]` : "") +
+        `. Stderr: ${attempt.stderr || "(empty)"}` +
+        (attempt.pipelineError
+          ? ` Pipeline: ${attempt.pipelineError.message}`
+          : ""),
+    );
+    await new Promise((r) => setTimeout(r, backoffMs));
+    attempt = await runPgDumpOnce(pgDumpPath, dumpUrl);
+    attemptNumber += 1;
+    failingTable = extractFailingTable(attempt.stderr) || failingTable;
+
+    if (attempt.ok) {
+      console.log(
+        `[BackupDatabase] pg_dump succeeded on attempt ${attemptNumber}/${MAX_PG_DUMP_ATTEMPTS}` +
+          (failingTable ? ` [previousFailingTable=${failingTable}]` : ""),
+      );
+      break;
+    }
+  }
 
   if (!attempt.ok) {
-    const transient =
-      isTransientPgDumpError(attempt.stderr) ||
-      (attempt.pipelineError !== null &&
-        isTransientPgDumpError(String(attempt.pipelineError.message)));
-    const failingTable = extractFailingTable(attempt.stderr);
-    if (transient) {
-      retried = true;
-      firstAttemptStderr = attempt.stderr;
-      console.warn(
-        `[BackupDatabase] pg_dump server dropped the connection (will retry once after ${RETRY_BACKOFF_MS}ms)` +
-          (failingTable ? ` [table=${failingTable}]` : "") +
-          `. First-attempt stderr: ${attempt.stderr || "(empty)"}`,
-      );
-      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
-      attempt = await runPgDumpOnce(pgDumpPath, dumpUrl);
-      if (attempt.ok) {
-        console.log(
-          `[BackupDatabase] pg_dump retry succeeded after transient connection drop` +
-            (failingTable ? ` [table=${failingTable}]` : ""),
-        );
-      }
-    }
-
-    if (!attempt.ok) {
-      const secondTransient =
-        isTransientPgDumpError(attempt.stderr) ||
-        (attempt.pipelineError !== null &&
-          isTransientPgDumpError(String(attempt.pipelineError.message)));
-      const failingTableFinal =
-        extractFailingTable(attempt.stderr) || failingTable;
-      const classification = secondTransient || transient ? "yes" : "no";
-      const tableSuffix = failingTableFinal
-        ? ` [failingTable=${failingTableFinal}]`
+    const finalTransient = attemptIsTransient(attempt);
+    void lastTransient;
+    const retried = attemptNumber > 1;
+    const classification = finalTransient ? "yes" : "no";
+    const tableSuffix = failingTable
+      ? ` [failingTable=${failingTable}]`
+      : "";
+    const retrySuffix =
+      priorStderrs.length > 0
+        ? ` Prior attempt stderr: ${priorStderrs
+            .map((s, i) => `#${i + 1}=${s}`)
+            .join(" | ")}.`
         : "";
-      const retrySuffix = retried
-        ? ` First-attempt stderr: ${firstAttemptStderr || "(empty)"}.`
+    const poolerHint =
+      finalTransient && resolved.isPooler
+        ? ` Hint: resolved dump URL from ${resolved.source} looks like a Supabase pooler ` +
+          `(PgBouncer) connection — set SUPABASE_DB_DIRECT_URL to the direct port-5432 ` +
+          `Postgres URL so long COPY streams aren't dropped mid-dump.`
         : "";
-      throw new Error(
-        `BackupDatabase: ${formatAttemptError(attempt, retried ? "retry attempt" : "pg_dump")}` +
-          ` [transient=${classification}, retried=${retried}]${tableSuffix}.${retrySuffix}`,
-      );
-    }
+    throw new Error(
+      `BackupDatabase: ${formatAttemptError(attempt, retried ? `attempt ${attemptNumber}/${MAX_PG_DUMP_ATTEMPTS}` : "pg_dump")}` +
+        ` [transient=${classification}, retried=${retried}, attempts=${attemptNumber}/${MAX_PG_DUMP_ATTEMPTS}]${tableSuffix}.${retrySuffix}${poolerHint}`,
+    );
   }
 
   const buffer = attempt.buffer;
