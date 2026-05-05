@@ -6,6 +6,7 @@ import crypto from "crypto";
 import ExcelJS from "exceljs";
 import { uploadBase64Image, resolveFileUrl, extractStoragePath } from "../utils/uploadBase64Image.js";
 import { logAudit } from "../utils/auditLog.js";
+import { modulePermission } from "../middleware/jwtAuth.js";
 import { sendTemplateEmail } from "../utils/emailService.js";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
@@ -359,6 +360,140 @@ router.get("/reports", async (_req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("Get group reports error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.get("/group-reporting", modulePermission("groups", "Manage"), async (_req: Request, res: Response) => {
+  try {
+    const CUTOFF = '2026-01-01';
+
+    const groupsResult = await pool.query(
+      `SELECT g.id, g.name, g.identifier, g.owner_id, g.leaders
+       FROM groups g
+       WHERE (g.is_deleted IS NULL OR g.is_deleted = false)
+       ORDER BY g.name ASC`
+    );
+
+    const groups = groupsResult.rows;
+    if (groups.length === 0) {
+      res.json({ items: [] });
+      return;
+    }
+
+    const groupIds = groups.map((g: any) => g.id);
+    const ph = groupIds.map((_: any, i: number) => `$${i + 1}`).join(", ");
+
+    const memberRowsResult = await pool.query(
+      `SELECT group_to_follow_id, request_owner_id, created_at
+       FROM requests
+       WHERE group_to_follow_id IN (${ph})
+         AND status = 'accepted'
+         AND (is_deleted IS NULL OR is_deleted = false)`,
+      groupIds
+    );
+    const memberIdsByGroup: Record<number, Set<string>> = {};
+    const memberIdsByCutoff: Record<number, Set<string>> = {};
+    for (const row of memberRowsResult.rows) {
+      if (!memberIdsByGroup[row.group_to_follow_id]) memberIdsByGroup[row.group_to_follow_id] = new Set();
+      if (!memberIdsByCutoff[row.group_to_follow_id]) memberIdsByCutoff[row.group_to_follow_id] = new Set();
+      if (row.request_owner_id) {
+        memberIdsByGroup[row.group_to_follow_id].add(row.request_owner_id);
+        if (row.created_at && new Date(row.created_at) < new Date(CUTOFF)) {
+          memberIdsByCutoff[row.group_to_follow_id].add(row.request_owner_id);
+        }
+      }
+    }
+
+    for (const g of groups) {
+      if (!memberIdsByGroup[g.id]) memberIdsByGroup[g.id] = new Set();
+      if (!memberIdsByCutoff[g.id]) memberIdsByCutoff[g.id] = new Set();
+      if (g.owner_id) {
+        memberIdsByGroup[g.id].add(g.owner_id);
+        memberIdsByCutoff[g.id].add(g.owner_id);
+      }
+      if (g.leaders) {
+        try {
+          const parsed = JSON.parse(g.leaders);
+          for (const l of parsed) {
+            const uid = l.UserId || l.userId;
+            if (uid) {
+              memberIdsByGroup[g.id].add(uid);
+              memberIdsByCutoff[g.id].add(uid);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const phOffset = groupIds.map((_: any, i: number) => `$${i + 2}`).join(", ");
+
+    const [throughCutoffResult, throughTodayResult] = await Promise.all([
+      pool.query(
+        `SELECT req.group_to_follow_id, COALESCE(SUM(r.amount), 0) AS total
+         FROM requests req
+         JOIN recommendations r
+           ON r.user_id = req.request_owner_id
+          AND (r.is_deleted IS NULL OR r.is_deleted = false)
+          AND r.date_created < $1
+         WHERE req.group_to_follow_id IN (${phOffset})
+           AND req.status = 'accepted'
+           AND (req.is_deleted IS NULL OR req.is_deleted = false)
+         GROUP BY req.group_to_follow_id`,
+        [CUTOFF, ...groupIds]
+      ),
+      pool.query(
+        `SELECT req.group_to_follow_id, COALESCE(SUM(r.amount), 0) AS total
+         FROM requests req
+         JOIN recommendations r
+           ON r.user_id = req.request_owner_id
+          AND (r.is_deleted IS NULL OR r.is_deleted = false)
+         WHERE req.group_to_follow_id IN (${ph})
+           AND req.status = 'accepted'
+           AND (req.is_deleted IS NULL OR req.is_deleted = false)
+         GROUP BY req.group_to_follow_id`,
+        groupIds
+      ),
+    ]);
+
+    const cutoffTotals: Record<number, number> = {};
+    for (const row of throughCutoffResult.rows) {
+      cutoffTotals[row.group_to_follow_id] = parseFloat(row.total) || 0;
+    }
+
+    const todayTotals: Record<number, number> = {};
+    for (const row of throughTodayResult.rows) {
+      todayTotals[row.group_to_follow_id] = parseFloat(row.total) || 0;
+    }
+
+    const items = groups.map((g: any) => {
+      const throughCutoff = cutoffTotals[g.id] || 0;
+      const throughToday = todayTotals[g.id] || 0;
+      const increase = Math.round((throughToday - throughCutoff) * 100) / 100;
+      const pctIncrease = throughCutoff > 0 ? (increase / throughCutoff) * 100 : (throughToday > 0 ? 100 : 0);
+
+      const membersCutoff = (memberIdsByCutoff[g.id] || new Set()).size;
+      const membersToday = (memberIdsByGroup[g.id] || new Set()).size;
+      const memberIncrease = membersToday - membersCutoff;
+      const memberPctChange = membersCutoff > 0 ? Math.round(((memberIncrease / membersCutoff) * 100) * 100) / 100 : (membersToday > 0 ? 100 : 0);
+
+      return {
+        id: g.id,
+        name: g.name,
+        identifier: g.identifier,
+        membersCutoff,
+        membersToday,
+        memberPctChange,
+        throughCutoff,
+        throughToday,
+        increase,
+        pctIncrease: Math.round(pctIncrease * 100) / 100,
+      };
+    });
+
+    res.json({ items, cutoffLabel: "12/31/2025" });
+  } catch (err) {
+    console.error("Group reporting error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 });

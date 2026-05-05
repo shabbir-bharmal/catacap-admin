@@ -72,6 +72,29 @@ export async function fetchGroupReports(): Promise<GroupReportsResponse> {
     return response.data;
 }
 
+export interface GroupReportingItem {
+    id: number;
+    name: string;
+    identifier: string;
+    membersCutoff: number;
+    membersToday: number;
+    memberPctChange: number;
+    throughCutoff: number;
+    throughToday: number;
+    increase: number;
+    pctIncrease: number;
+}
+
+export interface GroupReportingResponse {
+    items: GroupReportingItem[];
+    cutoffLabel: string;
+}
+
+export async function fetchGroupReporting(): Promise<GroupReportingResponse> {
+    const response = await axiosInstance.get<GroupReportingResponse>("/api/admin/group/group-reporting");
+    return response.data;
+}
+
 export async function fetchAllGroups(): Promise<GroupUpdatePayload[]> {
     const response = await axiosInstance.get<GroupUpdatePayload[]>("/api/Group");
     return response.data;
