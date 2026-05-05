@@ -3,6 +3,7 @@ import axiosInstance, { getToken } from "../axios";
 export enum DisbursalRequestStatus {
   Pending = 1,
   Completed = 2,
+  Cancelled = 3,
 }
 
 export interface DisbursalRequestParams {
