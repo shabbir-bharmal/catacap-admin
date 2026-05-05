@@ -198,6 +198,18 @@ export default function InvestmentInvestors() {
   const totalAmount = data?.totalAmount || 0;
   const items = data?.items || [];
 
+  const statusTotals = items.reduce(
+    (acc, it) => {
+      const amt = it.totalAmount || 0;
+      if (it.status === "received") acc.received += amt;
+      else if (it.status === "in transit") acc.inTransit += amt;
+      else if (it.status === "pending") acc.pending += amt;
+      return acc;
+    },
+    { received: 0, inTransit: 0, pending: 0 },
+  );
+  const summaryTotal = statusTotals.received + statusTotals.inTransit + statusTotals.pending;
+
   return (
     <AdminLayout>
       <div className="container mx-auto px-4 py-6 max-w-6xl">
@@ -212,6 +224,43 @@ export default function InvestmentInvestors() {
             Back to Investments
           </Button>
         </div>
+
+        {!loading && !error && data && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <Card data-testid="card-summary-received">
+              <CardContent className="py-3 px-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Received</p>
+                <p className="text-xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-400" data-testid="text-summary-received">
+                  {currency_format(statusTotals.received)}
+                </p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-summary-in-transit">
+              <CardContent className="py-3 px-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">In Transit</p>
+                <p className="text-xl font-semibold tabular-nums text-blue-700 dark:text-blue-400" data-testid="text-summary-in-transit">
+                  {currency_format(statusTotals.inTransit)}
+                </p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-summary-pending">
+              <CardContent className="py-3 px-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Pending</p>
+                <p className="text-xl font-semibold tabular-nums text-amber-700 dark:text-amber-400" data-testid="text-summary-pending">
+                  {currency_format(statusTotals.pending)}
+                </p>
+              </CardContent>
+            </Card>
+            <Card data-testid="card-summary-total" className="border-[#405189]/40">
+              <CardContent className="py-3 px-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Total</p>
+                <p className="text-xl font-semibold tabular-nums text-[#405189] dark:text-[#7c8ec9]" data-testid="text-summary-total">
+                  {currency_format(summaryTotal)}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         <Card>
           <CardHeader>
