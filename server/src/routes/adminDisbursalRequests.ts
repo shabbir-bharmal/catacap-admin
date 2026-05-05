@@ -14,6 +14,7 @@ const router = Router();
 const DisbursalRequestStatusMap: Record<number, string> = {
   1: "Pending",
   2: "Completed",
+  3: "Cancelled",
 };
 
 function getStatusName(status: number): string {
@@ -414,7 +415,7 @@ router.put("/:id/status", async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10);
     const status = parseInt(String(req.query.status || req.body?.status), 10);
 
-    if (![1, 2].includes(status)) {
+    if (![1, 2, 3].includes(status)) {
       res.json({ success: false, message: "Invalid status value." });
       return;
     }

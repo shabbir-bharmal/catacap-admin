@@ -12,7 +12,7 @@ export interface GroupParams {
     stages?: string;
     investmentStatus?: boolean;
     isDeleted?: boolean;
-    activeFilter?: string;
+    activeFilter?: string | null;
 }
 
 // Raw shape returned by the API

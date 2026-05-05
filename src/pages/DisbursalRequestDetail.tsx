@@ -143,11 +143,19 @@ export default function DisbursalRequestDetail() {
                             <span
                                 className={cn(
                                     "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider",
-                                    detail.status === DisbursalRequestStatus.Pending ? "bg-[#f7b84b]/10 text-[#f7b84b] border border-[#f7b84b]/20" : "bg-[#0ab39c]/10 text-[#0ab39c] border border-[#0ab39c]/20"
+                                    detail.status === DisbursalRequestStatus.Pending
+                                        ? "bg-[#f7b84b]/10 text-[#f7b84b] border border-[#f7b84b]/20"
+                                        : detail.status === DisbursalRequestStatus.Cancelled
+                                            ? "bg-[#f06548]/10 text-[#f06548] border border-[#f06548]/20"
+                                            : "bg-[#0ab39c]/10 text-[#0ab39c] border border-[#0ab39c]/20"
                                 )}
                                 data-testid="text-detail-status"
                             >
-                                {detail.status === DisbursalRequestStatus.Completed ? "Completed" : "Pending"}
+                                {detail.status === DisbursalRequestStatus.Completed
+                                    ? "Completed"
+                                    : detail.status === DisbursalRequestStatus.Cancelled
+                                        ? "Cancelled"
+                                        : "Pending"}
                             </span>
                         </div>
                     </div>

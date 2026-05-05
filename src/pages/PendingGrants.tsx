@@ -150,14 +150,10 @@ export default function AdminPendingGrants() {
   const queryClient = useQueryClient();
   const [tempSelectedStatuses, setTempSelectedStatuses] = useState<(string | "All")[]>(["Pending", "In Transit"]);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>(["Pending", "In Transit"]);
-  const [tempSelectedDafProviders, setTempSelectedDafProviders] = useState<(string | "All")[]>(["All"]);
   const [selectedDafProviders, setSelectedDafProviders] = useState<string[]>([]);
   const [dafProviderPopoverOpen, setDafProviderPopoverOpen] = useState(false);
   const [foundationGrantsOnly, setFoundationGrantsOnly] = useState(false);
-  const [savedDafProviderSelection, setSavedDafProviderSelection] = useState<{
-    temp: (string | "All")[];
-    selected: string[];
-  } | null>(null);
+  const [savedDafProviderSelection, setSavedDafProviderSelection] = useState<string[] | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const { data: dafProviders = [] } = useQuery({
     queryKey: ["daf-providers"],
@@ -264,38 +260,12 @@ export default function AdminPendingGrants() {
   };
 
   const sortedDafProviders = useMemo(() => {
-    return [...dafProviders].sort((a, b) => a.value.localeCompare(b.value));
+    return [...dafProviders]
+      .filter((p) => p.isActive !== false)
+      .sort((a, b) => a.value.localeCompare(b.value));
   }, [dafProviders]);
 
   const dafProviderFilterValue = selectedDafProviders.length === sortedDafProviders.length || selectedDafProviders.length === 0 ? "All" : selectedDafProviders.join(",");
-
-  const toggleDafProvider = (value: string) => {
-    let newTempDaf: (string | "All")[];
-
-    if (value === "All") {
-      if (tempSelectedDafProviders.includes("All")) {
-        return;
-      }
-      newTempDaf = ["All"];
-    } else {
-      const current = tempSelectedDafProviders.filter((d) => d !== "All");
-      const isSelected = current.includes(value);
-      let parsed: string[];
-      if (isSelected) {
-        parsed = current.filter((d) => d !== value);
-      } else {
-        parsed = [...current, value];
-      }
-      newTempDaf = parsed.length === sortedDafProviders.length ? ["All"] : parsed.length > 0 ? parsed : ["All"];
-    }
-
-    setTempSelectedDafProviders(newTempDaf);
-
-    const newDaf = newTempDaf.includes("All") ? [] : (newTempDaf as string[]);
-
-    setSelectedDafProviders(newDaf);
-    setCurrentPage(1);
-  };
 
   const {
     data: queryData,
@@ -447,12 +417,12 @@ export default function AdminPendingGrants() {
                       disabled={foundationGrantsOnly}
                       className={cn(
                         "flex h-9 w-[300px] items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-normal",
-                        tempSelectedDafProviders.includes("All") && "text-muted-foreground"
+                        selectedDafProviders.length === 0 && "text-muted-foreground"
                       )}
                       data-testid="select-daf-provider-filter"
                     >
                       <span className="truncate">
-                        {tempSelectedDafProviders.includes("All") ? "All Providers" : tempSelectedDafProviders.join(", ")}
+                        {selectedDafProviders.length === 0 ? "All Providers" : selectedDafProviders.join(", ")}
                       </span>
                       <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
@@ -465,26 +435,34 @@ export default function AdminPendingGrants() {
                         <CommandGroup>
                           <CommandItem
                             onSelect={() => {
-                              toggleDafProvider("All");
+                              setSelectedDafProviders([]);
+                              setCurrentPage(1);
                             }}
                           >
-                            <Check className={`h-4 w-4 ${tempSelectedDafProviders.includes("All") ? "opacity-100" : "opacity-0"}`} />
+                            <Check className={`h-4 w-4 ${selectedDafProviders.length === 0 ? "opacity-100" : "opacity-0"}`} />
                             All Providers
                           </CommandItem>
                           {sortedDafProviders.map((provider) => (
                             <CommandItem
                               key={provider.id}
                               onSelect={() => {
-                                toggleDafProvider(provider.value);
+                                setSelectedDafProviders((prev) => {
+                                  const isSelected = prev.includes(provider.value);
+                                  let next: string[];
+                                  if (isSelected) {
+                                    next = prev.filter((v) => v !== provider.value);
+                                  } else {
+                                    next = [...prev, provider.value];
+                                  }
+                                  if (next.length === sortedDafProviders.length) {
+                                    return [];
+                                  }
+                                  return next;
+                                });
+                                setCurrentPage(1);
                               }}
                             >
-                              <Check
-                                className={`h-4 w-4 ${
-                                  tempSelectedDafProviders.includes("All") || tempSelectedDafProviders.includes(provider.value)
-                                    ? "opacity-100"
-                                    : "opacity-0"
-                                }`}
-                              />
+                              <Check className={`h-4 w-4 ${selectedDafProviders.includes(provider.value) ? "opacity-100" : "opacity-0"}`} />
                               {provider.value}
                             </CommandItem>
                           ))}
@@ -504,16 +482,11 @@ export default function AdminPendingGrants() {
                     onCheckedChange={(checked) => {
                       const next = checked === true;
                       if (next) {
-                        setSavedDafProviderSelection({
-                          temp: tempSelectedDafProviders,
-                          selected: selectedDafProviders,
-                        });
-                        setTempSelectedDafProviders(["All"]);
+                        setSavedDafProviderSelection(selectedDafProviders);
                         setSelectedDafProviders([]);
                         setDafProviderPopoverOpen(false);
                       } else if (savedDafProviderSelection) {
-                        setTempSelectedDafProviders(savedDafProviderSelection.temp);
-                        setSelectedDafProviders(savedDafProviderSelection.selected);
+                        setSelectedDafProviders(savedDafProviderSelection);
                         setSavedDafProviderSelection(null);
                       }
                       setFoundationGrantsOnly(next);

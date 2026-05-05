@@ -139,10 +139,18 @@ export default function AdminDisbursalRequest() {
   const updateStatusMutation = useMutation({
     mutationFn: ({ id, status }: { id: number; status: DisbursalRequestStatus }) =>
       updateDisbursalRequestStatus(id, status),
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       if (res.success) {
+        const successMessage =
+          variables.status === DisbursalRequestStatus.Cancelled
+            ? "Disbursal request cancelled successfully"
+            : variables.status === DisbursalRequestStatus.Completed
+              ? "Disbursal request marked as completed successfully"
+              : variables.status === DisbursalRequestStatus.Pending
+                ? "Disbursal request marked as pending successfully"
+                : res.message || "Status updated successfully";
         toast({
-          title: res.message || "Status updated successfully",
+          title: successMessage,
           duration: 4000
         });
         queryClient.invalidateQueries({ queryKey: ["disbursalRequests"] });
@@ -323,11 +331,19 @@ export default function AdminDisbursalRequest() {
                             <span
                               className={cn(
                                 "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-                                entry.status === DisbursalRequestStatus.Pending ? "bg-[#f7b84b]/10 text-[#f7b84b]" : "bg-[#0ab39c]/10 text-[#0ab39c]"
+                                entry.status === DisbursalRequestStatus.Pending
+                                  ? "bg-[#f7b84b]/10 text-[#f7b84b]"
+                                  : entry.status === DisbursalRequestStatus.Cancelled
+                                    ? "bg-[#f06548]/10 text-[#f06548]"
+                                    : "bg-[#0ab39c]/10 text-[#0ab39c]"
                               )}
                               data-testid={`text-disbursal-status-${entry.id}`}
                             >
-                              {entry.status === DisbursalRequestStatus.Completed ? "Completed" : "Pending"}
+                              {entry.status === DisbursalRequestStatus.Completed
+                                ? "Completed"
+                                : entry.status === DisbursalRequestStatus.Cancelled
+                                  ? "Cancelled"
+                                  : "Pending"}
                             </span>
                           </td>
                           <td className="px-4 py-3">
@@ -376,7 +392,7 @@ export default function AdminDisbursalRequest() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center justify-end gap-1.5">
-                              {entry.status !== DisbursalRequestStatus.Completed ? (
+                              {entry.status === DisbursalRequestStatus.Pending && (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <Button
@@ -393,7 +409,8 @@ export default function AdminDisbursalRequest() {
                                   </TooltipTrigger>
                                   <TooltipContent>Mark as Completed</TooltipContent>
                                 </Tooltip>
-                              ) : (
+                              )}
+                              {(entry.status === DisbursalRequestStatus.Completed || entry.status === DisbursalRequestStatus.Cancelled) && (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <Button
@@ -409,6 +426,24 @@ export default function AdminDisbursalRequest() {
                                     </Button>
                                   </TooltipTrigger>
                                   <TooltipContent>Mark as Pending</TooltipContent>
+                                </Tooltip>
+                              )}
+                              {entry.status !== DisbursalRequestStatus.Cancelled && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-8 px-2 text-[#f06548] border-[#f06548] hover:bg-[#f06548]/5 text-[11px] font-bold uppercase transition-colors"
+                                      onClick={() => {
+                                        setStatusUpdate({ entry, nextStatus: DisbursalRequestStatus.Cancelled });
+                                      }}
+                                      data-testid={`button-cancel-${entry.id}`}
+                                    >
+                                      CANCEL
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Cancel disbursal request</TooltipContent>
                                 </Tooltip>
                               )}
                               <div className="inline-flex rounded-md shadow-sm">
@@ -504,12 +539,32 @@ export default function AdminDisbursalRequest() {
         onOpenChange={(open) => {
           if (!open) setStatusUpdate(null);
         }}
-        title={`Mark Disbursal Request as ${statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "Completed" : "Pending"}?`}
-        description={`Are you sure you want to mark this request as ${statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "completed" : "pending"}?`}
+        title={
+          statusUpdate?.nextStatus === DisbursalRequestStatus.Cancelled
+            ? "Cancel Disbursal Request?"
+            : `Mark Disbursal Request as ${statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "Completed" : "Pending"}?`
+        }
+        description={
+          statusUpdate?.nextStatus === DisbursalRequestStatus.Cancelled
+            ? "Are you sure you want to cancel this disbursal request?"
+            : `Are you sure you want to mark this request as ${statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "completed" : "pending"}?`
+        }
         onConfirm={handleUpdateStatus}
         isSubmitting={updateStatusMutation.isPending}
-        confirmLabel={statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "COMPLETE" : "PENDING"}
-        confirmButtonClass={statusUpdate?.nextStatus === DisbursalRequestStatus.Completed ? "bg-[#0ab39c] text-white" : "bg-[#f7b84b] text-white"}
+        confirmLabel={
+          statusUpdate?.nextStatus === DisbursalRequestStatus.Cancelled
+            ? "CANCEL REQUEST"
+            : statusUpdate?.nextStatus === DisbursalRequestStatus.Completed
+              ? "COMPLETE"
+              : "PENDING"
+        }
+        confirmButtonClass={
+          statusUpdate?.nextStatus === DisbursalRequestStatus.Cancelled
+            ? "bg-[#f06548] text-white hover:bg-[#d0543c]"
+            : statusUpdate?.nextStatus === DisbursalRequestStatus.Completed
+              ? "bg-[#0ab39c] text-white"
+              : "bg-[#f7b84b] text-white"
+        }
         dataTestId="dialog-status-update"
       />
 
