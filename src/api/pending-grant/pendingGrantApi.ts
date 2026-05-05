@@ -150,6 +150,7 @@ export interface DafProviderEntry {
   id: number;
   value: string;
   link: string;
+  isActive?: boolean;
 }
 
 export async function fetchDafProviders(): Promise<DafProviderEntry[]> {

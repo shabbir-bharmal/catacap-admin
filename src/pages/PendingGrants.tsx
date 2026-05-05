@@ -264,7 +264,9 @@ export default function AdminPendingGrants() {
   };
 
   const sortedDafProviders = useMemo(() => {
-    return [...dafProviders].sort((a, b) => a.value.localeCompare(b.value));
+    return [...dafProviders]
+      .filter((p) => p.isActive !== false)
+      .sort((a, b) => a.value.localeCompare(b.value));
   }, [dafProviders]);
 
   const dafProviderFilterValue = selectedDafProviders.length === sortedDafProviders.length || selectedDafProviders.length === 0 ? "All" : selectedDafProviders.join(",");
