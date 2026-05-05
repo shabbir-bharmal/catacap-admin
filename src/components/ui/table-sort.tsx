@@ -10,12 +10,12 @@ export interface SortIconProps {
 
 export const SortIcon = ({ field, sortField, sortDir }: SortIconProps) => {
     if (sortField === field && sortDir === "asc") {
-        return <ArrowUp className="h-3 w-3 text-foreground" />;
+        return <ArrowUp className="h-3 w-3 shrink-0 text-foreground" />;
     }
     if (sortField === field && sortDir === "desc") {
-        return <ArrowDown className="h-3 w-3 text-foreground" />;
+        return <ArrowDown className="h-3 w-3 shrink-0 text-foreground" />;
     }
-    return <ArrowUpDown className="h-3 w-3 text-muted-foreground/50" />;
+    return <ArrowUpDown className="h-3 w-3 shrink-0 text-muted-foreground/50" />;
 };
 
 export interface SortHeaderProps {

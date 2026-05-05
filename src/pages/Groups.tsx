@@ -49,7 +49,7 @@ export default function GroupsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearch = useDebounce(searchQuery, 500);
   const effectiveSearch = debouncedSearch.length >= 3 || debouncedSearch.length === 0 ? debouncedSearch : "";
-  const { sortField, sortDir, handleSort: originalHandleSort } = useSort<SortField>("memberInvestedTotal", "desc");
+  const { sortField, sortDir, handleSort: originalHandleSort } = useSort<SortField>(null);
   const [activeFilter, setActiveFilter] = useState<"active" | "inactive" | "all">("active");
 
   const handleSort = (field: SortField) => {
@@ -172,7 +172,7 @@ export default function GroupsPage() {
         sortField: sortField || undefined,
         sortDirection: sortDir || undefined,
         searchValue: effectiveSearch || undefined,
-        activeFilter: activeFilter === "all" ? undefined : activeFilter
+        activeFilter: activeFilter === "all" ? null : activeFilter
       });
 
       if (response && response.items) {
