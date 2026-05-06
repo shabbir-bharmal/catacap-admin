@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import pool from "../db.js";
 import { parsePagination, softDeleteFilter, buildSortClause, handleMissingTableError } from "../utils/softDelete.js";
-import { resolveFileUrl, uploadBase64Image, extractStoragePath, ensureFolderPrefix } from "../utils/uploadBase64Image.js";
+import { resolveFileUrl, uploadBase64Image, extractStoragePath, ensureFolderPrefix, getSupabaseConfig } from "../utils/uploadBase64Image.js";
 import { modulePermission } from "../middleware/jwtAuth.js";
 
 const router = Router();
@@ -379,6 +379,77 @@ router.delete("/registrations/:id", modulePermission("event-registrations", "Del
     res.json({ success: true, message: "Event registration deleted successfully." });
   } catch (err) {
     console.error("Event Registration Delete error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.get("/library/images", noStore, async (_req: Request, res: Response) => {
+  try {
+    const { client: supabase, bucket } = getSupabaseConfig();
+
+    const { data: entries, error: listErr } = await supabase.storage
+      .from(bucket)
+      .list("events", { limit: 1000, sortBy: { column: "created_at", order: "desc" } });
+
+    if (listErr) {
+      console.error("Events Library list error:", listErr);
+      res.status(500).json({ message: "Failed to list event images." });
+      return;
+    }
+
+    const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff)$/i;
+    const files = (entries ?? []).filter((e) => e.id !== null && IMAGE_EXT.test(e.name));
+
+    const titleByPath = new Map<string, { eventId: number; eventTitle: string }>();
+    try {
+      const rows = await pool.query(
+        `SELECT id, title, image_file_name, image
+           FROM events
+          WHERE (image_file_name IS NOT NULL AND TRIM(image_file_name) <> '')
+             OR (image IS NOT NULL AND TRIM(image) <> '')`
+      );
+      for (const r of rows.rows as Array<{
+        id: number;
+        title: string;
+        image_file_name: string | null;
+        image: string | null;
+      }>) {
+        const raw = (r.image_file_name && r.image_file_name.trim()) ||
+          (r.image && r.image.trim()) || "";
+        if (!raw) continue;
+        const normalized = ensureFolderPrefix(extractStoragePath(raw) || raw, "events");
+        if (!titleByPath.has(normalized)) {
+          titleByPath.set(normalized, { eventId: r.id, eventTitle: r.title });
+        }
+      }
+    } catch (err) {
+      console.error("Events Library title lookup error:", err);
+    }
+
+    const items = files
+      .map((f) => {
+        const normalized = `/events/${f.name}`;
+        const url = resolveFileUrl(normalized, "events");
+        if (!url) return null;
+        const meta = titleByPath.get(normalized);
+        return {
+          eventId: meta?.eventId ?? null,
+          eventTitle: meta?.eventTitle ?? f.name,
+          imageFileName: normalized,
+          url,
+        };
+      })
+      .filter((v): v is {
+        eventId: number | null;
+        eventTitle: string;
+        imageFileName: string;
+        url: string;
+      } => v !== null);
+
+    res.json({ items });
+  } catch (err: any) {
+    if (handleMissingTableError(err, res)) return;
+    console.error("Events Library error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 });

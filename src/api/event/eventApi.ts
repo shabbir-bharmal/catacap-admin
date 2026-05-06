@@ -163,6 +163,20 @@ export async function fetchEventRegistrations(params?: {
     return response.data;
 }
 
+export interface EventLibraryImage {
+    eventId: number | null;
+    eventTitle: string;
+    imageFileName: string;
+    url: string;
+}
+
+export async function fetchEventImageLibrary(): Promise<EventLibraryImage[]> {
+    const response = await axiosInstance.get<{ items: EventLibraryImage[] }>(
+        "/api/admin/event/library/images"
+    );
+    return response.data?.items ?? [];
+}
+
 export async function deleteEventRegistration(id: number): Promise<ApiResponse> {
     const response = await axiosInstance.delete<ApiResponse>(`/api/admin/event/registrations/${id}`);
     return response.data;

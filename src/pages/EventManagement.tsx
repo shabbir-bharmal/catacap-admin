@@ -28,7 +28,8 @@ import { SortHeader } from "../components/ui/table-sort";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
-import { Loader2 } from "lucide-react";
+import { EventLibraryDialog } from "../components/EventLibraryDialog";
+import { Images, Loader2 } from "lucide-react";
 import { useDebounce } from "../hooks/useDebounce";
 import { getUrlBlobContainerImage } from "@/lib/image-utils";
 import { PaginationControls } from "../components/ui/pagination-controls";
@@ -117,6 +118,7 @@ export default function EventManagement() {
   const [pendingLinkTypeSwitch, setPendingLinkTypeSwitch] = useState<EventLinkTargetType | null>(null);
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({});
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [libraryDialogOpen, setLibraryDialogOpen] = useState(false);
 
   const debouncedSearch = useDebounce(search, 500);
 
@@ -997,7 +999,20 @@ export default function EventManagement() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Image <span className="text-destructive">*</span></Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>Image <span className="text-destructive">*</span></Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5"
+                  onClick={() => setLibraryDialogOpen(true)}
+                  data-testid="button-event-library-open"
+                >
+                  <Images className="h-4 w-4" />
+                  Event Library
+                </Button>
+              </div>
               <input
                 type="file"
                 accept=".jpg,.jpeg,.png,.gif"
@@ -1157,6 +1172,20 @@ export default function EventManagement() {
         onConfirm={confirmLinkTargetTypeSwitch}
         confirmButtonClass="bg-[#405189] text-white hover:bg-[#405189]/90"
         dataTestId="dialog-link-type-switch-confirm"
+      />
+
+      <EventLibraryDialog
+        open={libraryDialogOpen}
+        onOpenChange={setLibraryDialogOpen}
+        onSelect={(img) => {
+          setForm((f) => ({
+            ...f,
+            image: img.url,
+            imageFileName: img.imageFileName,
+          }));
+          if (imageInputRef.current) imageInputRef.current.value = "";
+          setErrors((prev) => ({ ...prev, image: undefined }));
+        }}
       />
     </AdminLayout>
   );

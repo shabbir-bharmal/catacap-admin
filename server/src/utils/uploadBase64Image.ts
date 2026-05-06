@@ -6,6 +6,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET;
 
 export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+export const MAX_PITCH_DECK_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
 const FOLDER_PATTERN = /^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/;
 
@@ -47,7 +48,12 @@ const MIME_TO_EXT: Record<string, string> = {
 export async function uploadBase64Image(
   base64String: string,
   folder: string,
+  options?: { maxFileSizeBytes?: number },
 ): Promise<{ filePath: string; publicUrl: string; mimeType: string; sizeBytes: number }> {
+  const effectiveMaxFileSizeBytes =
+    options?.maxFileSizeBytes && options.maxFileSizeBytes > 0
+      ? options.maxFileSizeBytes
+      : MAX_FILE_SIZE_BYTES;
   if (!folder || !FOLDER_PATTERN.test(folder)) {
     throw new Error(
       "Invalid folder name. Must be non-empty, must not start or end with '/', and must contain only alphanumeric characters, underscores, and hyphens between slashes.",
@@ -77,9 +83,9 @@ export async function uploadBase64Image(
     throw new Error("Decoded file buffer is empty.");
   }
 
-  if (buffer.length > MAX_FILE_SIZE_BYTES) {
+  if (buffer.length > effectiveMaxFileSizeBytes) {
     throw new Error(
-      `File exceeds maximum allowed size of ${MAX_FILE_SIZE_BYTES / (1024 * 1024)}MB.`,
+      `File exceeds maximum allowed size of ${effectiveMaxFileSizeBytes / (1024 * 1024)}MB.`,
     );
   }
 

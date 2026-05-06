@@ -7,7 +7,7 @@ import { parsePagination, softDeleteFilter, buildSortClause, handleMissingTableE
 import { sendTemplateEmail } from "../utils/emailService.js";
 import { Resend } from "resend";
 import ExcelJS from "exceljs";
-import { uploadBase64Image, resolveFileUrl, extractStoragePath, getSupabaseConfig, deleteStorageFile } from "../utils/uploadBase64Image.js";
+import { uploadBase64Image, resolveFileUrl, extractStoragePath, getSupabaseConfig, deleteStorageFile, MAX_PITCH_DECK_FILE_SIZE_BYTES } from "../utils/uploadBase64Image.js";
 import { logAudit } from "../utils/auditLog.js";
 import { restoreOwningUsersForRecordsInTx } from "../utils/userRestore.js";
 import { findOrCreateAnonymousUser } from "../utils/anonymousUser.js";
@@ -1473,6 +1473,26 @@ router.get("/:id", async (req: Request, res: Response) => {
 
     const investmentNotificationRecipients = await getInvestmentNotificationRecipients(id);
 
+    // `campaign_soft_circle_donors.raise_money_application_id` is the only
+    // relational key on the donor table; campaigns have no FK to
+    // `raise_money_applications`, so resolve the application via contact email
+    // + investment name (verified by FK constraint listing on both tables).
+    const donorResult = await pool.query(
+      `SELECT cscd.first_name, cscd.last_name, cscd.amount
+       FROM campaign_soft_circle_donors cscd
+       JOIN raise_money_applications rma ON rma.id = cscd.raise_money_application_id
+       WHERE LOWER(TRIM(COALESCE(rma.contact_email, ''))) = LOWER(TRIM(COALESCE($1, '')))
+         AND LOWER(TRIM(COALESCE(rma.investment_name, ''))) = LOWER(TRIM(COALESCE($2, '')))
+         AND COALESCE(rma.contact_email, '') <> ''
+         AND COALESCE(rma.investment_name, '') <> ''
+       ORDER BY cscd.id ASC`,
+      [c.contact_info_email_address || "", c.name || ""]
+    );
+    const softCircleDonors: { donorName: string; amount: number }[] = donorResult.rows.map((d: any) => ({
+      donorName: `${d.first_name || ""} ${d.last_name || ""}`.trim(),
+      amount: d.amount != null ? parseFloat(d.amount) : 0,
+    }));
+
     let terms = c.terms || "";
     if (terms) terms = normalizeMentionFormat(terms);
 
@@ -1552,6 +1572,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       ownerGroupId: c.owner_group_id,
       autoEnrollInvestors: c.auto_enroll_investors ?? false,
       investmentNotificationRecipients,
+      softCircleDonors,
     };
 
     res.json(campaign);
@@ -1745,7 +1766,7 @@ router.post("/", async (req: Request, res: Response) => {
     let logoFileName = extractStoragePath(campaign.logoFileName) || null;
 
     if (campaign.pdfPresentation || campaign.PDFPresentation) {
-      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns");
+      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pdfFileName = result.filePath;
     }
     if (campaign.image) {
@@ -2141,7 +2162,7 @@ router.put("/:id", async (req: Request, res: Response) => {
     let logoFileName = extractStoragePath(campaign.logoFileName) || null;
 
     if (campaign.pdfPresentation || campaign.PDFPresentation) {
-      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns");
+      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pdfFileName = result.filePath;
     }
     if (campaign.image) {

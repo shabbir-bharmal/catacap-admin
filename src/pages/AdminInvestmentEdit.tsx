@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import dayjs from "dayjs";
-import { formatDate, formatDateISO } from "@/helpers/format";
+import { formatDate, formatDateISO, formatUSD } from "@/helpers/format";
 import { useParams, useLocation, useSearch } from "wouter";
 import { AdminLayout } from "../components/AdminLayout";
 import { RichTextEditor } from "../components/RichTextEditor";
@@ -502,6 +502,7 @@ export default function AdminInvestmentEdit() {
   const [approvedByOptions, setApprovedByOptions] = useState<ApprovedByItem[]>([]);
   const [investmentOptions, setInvestmentOptions] = useState<any[]>([]);
   const [investmentNotes, setInvestmentNotes] = useState<InvestmentNote[]>([]);
+  const [softCircleDonors, setSoftCircleDonors] = useState<{ donorName: string; amount: number }[]>([]);
   const [staticTerms, setStaticTerms] = useState<StaticValueItem[]>([]);
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -1170,6 +1171,15 @@ export default function AdminInvestmentEdit() {
         date: n.date || formatDate(n.createdAt),
       })));
     }
+
+    setSoftCircleDonors(
+      Array.isArray(data.softCircleDonors)
+        ? data.softCircleDonors.map((d: any) => ({
+            donorName: String(d?.donorName ?? "").trim(),
+            amount: typeof d?.amount === "number" ? d.amount : parseFloat(d?.amount ?? 0) || 0,
+          }))
+        : []
+    );
 
     setFormData({
       id: data.id,
@@ -2458,6 +2468,43 @@ export default function AdminInvestmentEdit() {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                       <Input id="expectedTotal" type="number" min={0} value={formData.expectedTotal} onChange={(e) => upd("expectedTotal", e.target.value.replace(/[^0-9]/g, ""))} onWheel={(e) => e.currentTarget.blur()} onKeyDown={(e) => { if (["e", "E", "+", "-", "."].includes(e.key)) e.preventDefault(); }} placeholder="e.g., 300" className="pl-7" data-testid="input-expected-total" />
                     </div>
+                    <Card className="mt-3" data-testid="card-soft-circle-donors">
+                      <CardHeader className="pb-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <CardTitle className="text-sm font-semibold">Soft-Circled Donor Commitments</CardTitle>
+                            <p className="text-xs text-muted-foreground mt-1">Per-donor breakdown the founder entered when committing the soft-circled total. Read-only.</p>
+                          </div>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap" data-testid="text-soft-circle-donor-count">
+                            {softCircleDonors.length} {softCircleDonors.length === 1 ? "donor" : "donors"}
+                          </span>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        {softCircleDonors.length === 0 ? (
+                          <p className="text-xs text-muted-foreground" data-testid="text-soft-circle-empty">No donor commitments recorded.</p>
+                        ) : (
+                          <div className="border rounded-md divide-y">
+                            <div className="grid grid-cols-2 px-3 py-2 text-xs font-medium text-muted-foreground bg-muted/40">
+                              <span>Donor</span>
+                              <span className="text-right">Amount</span>
+                            </div>
+                            {softCircleDonors.map((d, i) => (
+                              <div key={i} className="grid grid-cols-2 px-3 py-2 text-sm" data-testid={`row-soft-circle-donor-${i}`}>
+                                <span className="truncate">{d.donorName || "—"}</span>
+                                <span className="text-right tabular-nums">{formatUSD(d.amount)}</span>
+                              </div>
+                            ))}
+                            <div className="grid grid-cols-2 px-3 py-2 text-sm font-bold bg-muted/40">
+                              <span>TOTAL</span>
+                              <span className="text-right tabular-nums" data-testid="text-soft-circle-total">
+                                {formatUSD(softCircleDonors.reduce((s, d) => s + (d.amount || 0), 0))}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
                   </div>
                 </div>
 
