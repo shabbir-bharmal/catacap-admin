@@ -396,20 +396,19 @@ export default function GroupsPage() {
                       Active
                     </SortHeader>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Featured</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Corporate</th>
                     <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {isLoading ? (
                     <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                         Loading groups...
                       </td>
                     </tr>
                   ) : groups.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                         No groups found.
                       </td>
                     </tr>
@@ -482,15 +481,6 @@ export default function GroupsPage() {
                             <Checkbox
                               checked={group.featuredGroup}
                               onCheckedChange={() => handleToggleStatus(group.id, "featuredGroup", group.featuredGroup)}
-                              className="data-[state=checked]:bg-[#405189] data-[state=checked]:border-[#405189]"
-                            />
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-center" data-testid={`checkbox-corporate-${group.id}`}>
-                          <div className="flex items-center justify-center">
-                            <Checkbox
-                              checked={group.corporateGroup}
-                              onCheckedChange={() => handleToggleStatus(group.id, "corporateGroup", group.corporateGroup)}
                               className="data-[state=checked]:bg-[#405189] data-[state=checked]:border-[#405189]"
                             />
                           </div>
