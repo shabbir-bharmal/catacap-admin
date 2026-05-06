@@ -65,6 +65,12 @@ export function formatTime12h(timeVal: string): string {
   return d.isValid() ? d.format("h:mm A") : timeVal;
 }
 
+export const formatUSD = (digit: number | string | null | undefined, decimals: number = 2): string => {
+  const num = typeof digit === 'string' ? parseFloat(digit) : (digit ?? 0);
+  const safe = isNaN(num as number) ? 0 : (num as number);
+  return '$' + safe.toFixed(decimals).replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1,');
+};
+
 export const currency_format = (digit: number | string | null | undefined, abbreviate: boolean = false, decimals: number = 2, defaultValue: any = '$0.00') => {
   if (digit === null || digit === undefined || digit === '') {
     return defaultValue;
