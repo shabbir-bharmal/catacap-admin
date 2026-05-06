@@ -7,7 +7,7 @@ import { parsePagination, softDeleteFilter, buildSortClause, handleMissingTableE
 import { sendTemplateEmail } from "../utils/emailService.js";
 import { Resend } from "resend";
 import ExcelJS from "exceljs";
-import { uploadBase64Image, resolveFileUrl, extractStoragePath, getSupabaseConfig, deleteStorageFile } from "../utils/uploadBase64Image.js";
+import { uploadBase64Image, resolveFileUrl, extractStoragePath, getSupabaseConfig, deleteStorageFile, MAX_PITCH_DECK_FILE_SIZE_BYTES } from "../utils/uploadBase64Image.js";
 import { logAudit } from "../utils/auditLog.js";
 import { restoreOwningUsersForRecordsInTx } from "../utils/userRestore.js";
 import { findOrCreateAnonymousUser } from "../utils/anonymousUser.js";
@@ -1745,7 +1745,7 @@ router.post("/", async (req: Request, res: Response) => {
     let logoFileName = extractStoragePath(campaign.logoFileName) || null;
 
     if (campaign.pdfPresentation || campaign.PDFPresentation) {
-      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns");
+      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pdfFileName = result.filePath;
     }
     if (campaign.image) {
@@ -2141,7 +2141,7 @@ router.put("/:id", async (req: Request, res: Response) => {
     let logoFileName = extractStoragePath(campaign.logoFileName) || null;
 
     if (campaign.pdfPresentation || campaign.PDFPresentation) {
-      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns");
+      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pdfFileName = result.filePath;
     }
     if (campaign.image) {

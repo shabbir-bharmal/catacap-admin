@@ -11,7 +11,7 @@ import QRCode from "qrcode";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
-import { uploadBase64Image, resolveFileUrl, extractStoragePath } from "../utils/uploadBase64Image.js";
+import { uploadBase64Image, resolveFileUrl, extractStoragePath, MAX_PITCH_DECK_FILE_SIZE_BYTES } from "../utils/uploadBase64Image.js";
 
 const router = Router();
 
@@ -233,7 +233,7 @@ router.post("/save-disbursal", jwtUserAuthMiddleware, async (req: Request, res: 
     let investmentDocFile = "";
 
     if (dto.pitchDeck) {
-      const result = await uploadBase64Image(dto.pitchDeck, "disbursal-requests");
+      const result = await uploadBase64Image(dto.pitchDeck, "disbursal-requests", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pitchDeckFile = result.filePath;
     }
 
@@ -887,7 +887,7 @@ router.post("/raisemoney", async (req: Request, res: Response) => {
     let logoFileName = extractStoragePath(campaign.logoFileName) || null;
 
     if (campaign.pdfPresentation || campaign.PDFPresentation) {
-      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns");
+      const result = await uploadBase64Image(campaign.pdfPresentation || campaign.PDFPresentation, "campaigns", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pdfFileName = result.filePath;
     }
     if (campaign.image) {
@@ -1118,7 +1118,7 @@ router.post("/investment-request", async (req: Request, res: Response) => {
       heroImagePath = result.filePath;
     }
     if (dto.pitchDeck) {
-      const result = await uploadBase64Image(dto.pitchDeck, "investment-requests");
+      const result = await uploadBase64Image(dto.pitchDeck, "investment-requests", { maxFileSizeBytes: MAX_PITCH_DECK_FILE_SIZE_BYTES });
       pitchDeckPath = result.filePath;
     }
 
