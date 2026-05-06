@@ -155,6 +155,9 @@ export default function RecommendationsPage() {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<RecommendationEntry | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [rejectDetailsTarget, setRejectDetailsTarget] = useState<RecommendationEntry | null>(null);
+
+  const REJECT_REASON_PREVIEW_LENGTH = 100;
   const { toast } = useToast();
 
   const openApproveDialog = (rec: RecommendationEntry) => {
@@ -566,7 +569,23 @@ export default function RecommendationsPage() {
                               <div className="max-w-[280px] text-xs text-muted-foreground mx-auto" data-testid={`text-reject-info-${rec.id}`}>
                                 {rec.rejectionMemo && (
                                   <p>
-                                    <strong>Reason:</strong> {rec.rejectionMemo.length > 100 ? rec.rejectionMemo.substring(0, 100) + "..." : rec.rejectionMemo}
+                                    <strong>Reason:</strong>{" "}
+                                    {rec.rejectionMemo.length > REJECT_REASON_PREVIEW_LENGTH
+                                      ? rec.rejectionMemo.substring(0, REJECT_REASON_PREVIEW_LENGTH) + "..."
+                                      : rec.rejectionMemo}
+                                    {rec.rejectionMemo.length > REJECT_REASON_PREVIEW_LENGTH && (
+                                      <>
+                                        {" "}
+                                        <button
+                                          type="button"
+                                          onClick={() => setRejectDetailsTarget(rec)}
+                                          className="text-[#405189] underline hover:no-underline"
+                                          data-testid={`button-show-more-reject-${rec.id}`}
+                                        >
+                                          Show More
+                                        </button>
+                                      </>
+                                    )}
                                   </p>
                                 )}
                                 {rec.rejectedBy && (
@@ -651,6 +670,57 @@ export default function RecommendationsPage() {
         confirmButtonClass="bg-[#405189] text-white"
         dataTestId="dialog-reject"
       />
+
+      <Dialog
+        open={!!rejectDetailsTarget}
+        onOpenChange={(open) => {
+          if (!open) setRejectDetailsTarget(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-[560px]"
+          data-testid={rejectDetailsTarget ? `dialog-reject-details-${rejectDetailsTarget.id}` : undefined}
+        >
+          <div className="text-base font-semibold py-2">Rejection Details</div>
+          {rejectDetailsTarget && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-[120px_1fr] gap-2">
+                <span className="text-muted-foreground">User:</span>
+                <span data-testid="text-reject-details-user">
+                  {rejectDetailsTarget.userFullName}
+                  {rejectDetailsTarget.userEmail ? ` (${rejectDetailsTarget.userEmail})` : ""}
+                </span>
+                <span className="text-muted-foreground">Investment:</span>
+                <span data-testid="text-reject-details-investment">{rejectDetailsTarget.campaignName}</span>
+                {rejectDetailsTarget.rejectedBy && (
+                  <>
+                    <span className="text-muted-foreground">Rejected by:</span>
+                    <span data-testid="text-reject-details-by">{rejectDetailsTarget.rejectedBy}</span>
+                  </>
+                )}
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Reason:</p>
+                <div
+                  className="max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm"
+                  data-testid="text-reject-details-reason"
+                >
+                  {rejectDetailsTarget.rejectionMemo}
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setRejectDetailsTarget(null)}
+              data-testid="button-reject-details-close"
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmationDialog
         open={isDeleteDialogOpen}
