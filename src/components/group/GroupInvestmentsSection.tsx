@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Plus, X, Save, ChevronLeft, ChevronRight, ImageIcon, Lock } from "lucide-react";
+import { Loader2, Plus, X, Save, ChevronLeft, ChevronRight, ImageIcon, Lock, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
     fetchGroupInvestments,
@@ -25,6 +26,7 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
     const [initialIds, setInitialIds] = useState<Set<number>>(new Set());
+    const [searchTerm, setSearchTerm] = useState("");
 
     const loadData = useCallback(async () => {
         if (!apiGroupId) return;
@@ -80,12 +82,34 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
         }
     };
 
-    const totalAvailable = availableCampaigns.length;
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const matchesSearch = useCallback(
+        (c: GroupInvestmentCampaign) =>
+            normalizedSearch === "" ||
+            (c.name || "").toLowerCase().includes(normalizedSearch),
+        [normalizedSearch]
+    );
+
+    const filteredSelected = useMemo(
+        () => selectedCampaigns.filter(matchesSearch),
+        [selectedCampaigns, matchesSearch]
+    );
+    const filteredAvailable = useMemo(
+        () => availableCampaigns.filter(matchesSearch),
+        [availableCampaigns, matchesSearch]
+    );
+
+    const totalAvailable = filteredAvailable.length;
+    const totalAvailableAll = availableCampaigns.length;
     const totalPages = Math.max(1, Math.ceil(totalAvailable / pageSize));
-    const paginatedAvailable = availableCampaigns.slice(
+    const paginatedAvailable = filteredAvailable.slice(
         (currentPage - 1) * pageSize,
         currentPage * pageSize
     );
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [normalizedSearch]);
 
     useEffect(() => {
         if (currentPage > totalPages) {
@@ -111,18 +135,42 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
     return (
         <Card className={cardClassName}>
             <CardContent className="p-5 sm:p-6 space-y-6">
+                <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    <Input
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Search investments by name..."
+                        className="pl-9 pr-9"
+                        data-testid="input-search-investments"
+                    />
+                    {searchTerm && (
+                        <button
+                            type="button"
+                            onClick={() => setSearchTerm("")}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+                            aria-label="Clear search"
+                            data-testid="button-clear-search-investments"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                    )}
+                </div>
+
                 <div>
                     <h5 className="text-base font-semibold" data-testid="text-selected-investments-heading">
-                        Selected Investments ({selectedCampaigns.length})
+                        Selected Investments ({filteredSelected.length}
+                        {normalizedSearch ? ` of ${selectedCampaigns.length}` : ""})
                     </h5>
                     <p className="text-xs text-muted-foreground mt-0.5">
                         These investments are currently assigned to this group.
                     </p>
                 </div>
 
-                {selectedCampaigns.length > 0 ? (
+                {filteredSelected.length > 0 ? (
                     <div className="space-y-2">
-                        {selectedCampaigns.map((campaign) => (
+                        {filteredSelected.map((campaign) => (
                             <CampaignRow
                                 key={campaign.id}
                                 campaign={campaign}
@@ -134,7 +182,11 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
                 ) : (
                     <div className="text-center py-8 text-muted-foreground">
                         <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                        <p className="text-sm">No investments selected yet.</p>
+                        <p className="text-sm">
+                            {normalizedSearch
+                                ? "No selected investments match your search."
+                                : "No investments selected yet."}
+                        </p>
                     </div>
                 )}
 
@@ -142,7 +194,8 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
                     <div className="flex items-center justify-between gap-4 mb-3">
                         <div>
                             <h5 className="text-base font-semibold" data-testid="text-available-investments-heading">
-                                Available Investments ({totalAvailable})
+                                Available Investments ({totalAvailable}
+                                {normalizedSearch ? ` of ${totalAvailableAll}` : ""})
                             </h5>
                             <p className="text-xs text-muted-foreground mt-0.5">
                                 Add investments to this group from the list below.
@@ -163,7 +216,11 @@ export function GroupInvestmentsSection({ apiGroupId, cardClassName }: GroupInve
                         </div>
                     ) : (
                         <div className="text-center py-8 text-muted-foreground">
-                            <p className="text-sm">No available investments.</p>
+                            <p className="text-sm">
+                                {normalizedSearch
+                                    ? "No available investments match your search."
+                                    : "No available investments."}
+                            </p>
                         </div>
                     )}
 
