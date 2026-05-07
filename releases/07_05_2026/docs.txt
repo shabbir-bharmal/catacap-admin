@@ -1,0 +1,111 @@
+Release 07_05_2026
+==================
+
+Migration: 2026_05_07_backfill_fundher_match_activity.sql
+---------------------------------------------------------
+Purpose: Backfill historical FundHer match contributions into the
+         campaign_match_grant_activity log so they appear in the
+         existing match reporting (admin matching dashboard, FundHer
+         totals, per-campaign breakdown).
+
+Background:
+  Before the campaign-match-grant tool went live on 2026-04-30, FundHer
+  matches were operated manually via a dedicated pre-funded user account
+  (fundher@catacap.org, id d3737961-7cf8-426c-8ba2-74196026f040). That
+  account submitted real `recommendations` rows alongside investor
+  donations on FundHer-eligible campaigns, so the funds moved correctly
+  but no `campaign_match_grant_activity` row was ever written to link
+  the donor recommendation to a triggering investor recommendation. As a
+  result, ~$9,600 of historical FundHer matches were missing from the
+  matching reports.
+
+What it does:
+  - Finds every recommendation owned by the FundHer donor account that
+    has NO existing campaign_match_grant_activity row tied to grant 2.
+  - For each such recommendation, looks for the closest non-FundHer
+    investor recommendation to the same campaign within a 30-minute
+    window. Found -> activity row carries the matching trigger.
+    Not found -> activity row is inserted as anonymous (campaign_id
+    populated, triggered_by_* left NULL), per product owner direction.
+  - Inserts one activity row per candidate (match_grant_id=2,
+    donor_recommendation_id=rec.id, amount=rec.amount,
+    created_at=rec.date_created so it sits in the right historical
+    period for time-bucketed reports).
+  - Bumps campaign_match_grants.amount_used by the sum of inserted
+    activity amounts so the FundHer totals card stays accurate.
+
+What it deliberately does NOT do:
+  - Does NOT create new `recommendations` rows.
+  - Does NOT modify the FundHer donor's account_balance and writes
+    nothing to account_balance_change_logs (the funds were already
+    debited manually when each historical match happened).
+  - Does NOT touch reserved_amount on the grant.
+  - Does NOT pair a FundHer rec to another FundHer rec
+    (no chain-matching).
+  - Does NOT trigger emails, notifications, scheduler jobs, or any
+    application-level side effects.
+
+Idempotency:
+  The candidate CTE filters out any FundHer recommendation that already
+  has an activity row (`NOT EXISTS ... WHERE donor_recommendation_id =
+  r.id AND match_grant_id = 2`), and the UPDATE to amount_used only
+  fires when at least one row is actually inserted. Safe to re-run.
+
+Transactional:
+  Wrapped in BEGIN / COMMIT.
+
+Expected impact (verified against production at write-time):
+  - 49 total FundHer-donor recommendations exist.
+  - 19 already have activity rows (live-tool matches).
+  - 30 candidate rows will be inserted, totaling $9,600 (all $250
+    increments).
+  - campaign_match_grants.amount_used (id=2) goes from $28,000 to
+    $37,600.
+  - Reserved_amount ($31,400) and total_cap ($31,400) are unchanged.
+
+Rollback:
+  See commented rollback block at the bottom of the migration file. It
+  uses the `fundher_backfill_audit` table (created by the companion
+  migration 2026_05_07_fundher_backfill_audit.sql) as the deterministic
+  source of truth for which 30 activity rows were inserted, then removes
+  them and reverses the amount_used delta. Do NOT attempt to identify
+  backfilled rows by timestamp markers — the live matching tool can
+  produce activity.created_at == donor_recommendation.date_created
+  within the same transaction, so a timestamp-based marker is unsafe.
+
+Operational note (over-cap state, intentional):
+  After this backfill, campaign_match_grants.id=2 has
+    amount_used   = $37,600
+    total_cap     = $31,400
+    reserved_amount = $31,400
+  amount_used > total_cap is intentional: the historical FundHer matches
+  predate the matching-tool's cap concept, and recording them faithfully
+  is the entire point of the backfill. Runtime impact was reviewed:
+    * applySingleGrant uses `availableBudget = max(0, reserved_amount -
+      amount_used)`, so the grant simply yields no further matches at
+      runtime (correct).
+    * pendingMatches projections use the same clamp.
+    * Expiry / refund flows clamp with `max(0, reserved - used)`, so no
+      over-refund or negative-budget bug.
+  One side effect: the admin "Edit matching grant" endpoint
+  (PUT /admin/matching/:id) rejects newCap < amountUsed, so editing the
+  cap requires raising it to at least $37,600 (or first deactivating the
+  grant). Worth flagging if anyone tries to edit the FundHer grant.
+
+Companion migration:
+  2026_05_07_fundher_backfill_audit.sql -- creates and seeds the
+  fundher_backfill_audit table that the rollback depends on. Apply
+  immediately after the main backfill migration.
+
+Verification steps after applying:
+  1. SELECT id, name, amount_used, total_cap, reserved_amount
+       FROM campaign_match_grants WHERE id = 2;
+     -> amount_used should equal previous value + 9600.00.
+  2. SELECT COUNT(*), SUM(amount)
+       FROM campaign_match_grant_activity WHERE match_grant_id = 2;
+     -> Count should be 49 (was 19), sum should equal previous + 9600.
+  3. Open the admin matching dashboard; FundHer totals card and
+     per-campaign breakdown should now show the historical matches.
+  4. Open an affected campaign's investors page (e.g. Sea Forward); the
+     matched FundHer recommendations should now display the "match"
+     payment-method badge.
