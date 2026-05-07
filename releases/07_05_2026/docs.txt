@@ -1,6 +1,47 @@
 Release 07_05_2026
 ==================
 
+Migrations in this release (apply in order):
+  1. 2026_05_07_backfill_fundher_match_activity.sql
+  2. 2026_05_07_fundher_backfill_audit.sql
+  3. 2026_05_07_deactivate_fundher_match_grant.sql
+
+------------------------------------------------------------
+
+Migration: 2026_05_07_deactivate_fundher_match_grant.sql
+--------------------------------------------------------
+Purpose: Per Ken's request, turn off the FundHer matching grant
+         (campaign_match_grants.id=2) so it no longer participates in
+         live matching.
+
+Why direct SQL instead of the admin UI deactivate path:
+  The PUT /api/admin/matching/:id handler reconciles reservation when
+  is_active flips. For this grant it would compute
+    newCommitted = amount_used = $37,600
+    delta        = newCommitted - oldReserved = +$6,200
+  and call reserveCapFromWallet() to lock another $6,200 from the
+  donor's wallet (and write a row to account_balance_change_logs). With
+  the donor's current account_balance of $0.00 that call would in fact
+  fail on insufficient funds, blocking deactivation entirely; even if
+  the wallet had funds, debiting it would be wrong. The historical funds
+  were already debited manually outside the system (donor
+  account_balance is $0.00), and the backfill explicitly preserved that
+  truth by not touching wallet/ledger. The migration bypasses the
+  reconciliation logic and just flips is_active to FALSE.
+
+What changes:
+  campaign_match_grants id=2: is_active TRUE -> FALSE, updated_at = NOW()
+  Everything else (total_cap, reserved_amount, amount_used,
+  donor_user_id, users.account_balance, ledger) is left untouched.
+
+Idempotent / Transactional: yes (WHERE is_active = TRUE guard, BEGIN/COMMIT,
+DO-block sanity check that aborts if amounts or donor changed).
+
+Rollback: re-activate via the commented block at the bottom of the
+migration file (sets is_active = TRUE).
+
+------------------------------------------------------------
+
 Migration: 2026_05_07_backfill_fundher_match_activity.sql
 ---------------------------------------------------------
 Purpose: Backfill historical FundHer match contributions into the
