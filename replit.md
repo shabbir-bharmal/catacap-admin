@@ -63,7 +63,7 @@ This application is a React 18 + TypeScript admin panel for managing investments
 
 ## Architecture decisions
 
--   **PostgreSQL Type Parsing:** `pg` library timestamp OIDs (1114, 1184) are overridden to return raw strings instead of JS Date objects to prevent UTC timezone shifts.
+-   **PostgreSQL Type Parsing:** `pg` library timestamp OIDs (1114, 1184) and the plain `date` OID (1082) are overridden to return raw strings instead of JS Date objects to prevent UTC timezone shifts (e.g. `event_date` rendering one day earlier in US Eastern).
 -   **Scheduler Configuration:** Schedules are configurable via the `scheduler_configurations` database table and support runtime reloading.
 -   **Email Queue:** An in-memory producer/consumer pattern is used for asynchronous email sending.
 -   **Soft Deletes:** Most critical entities (users, investments, recommendations, grants, other assets, disbursal requests) use soft-deletion with cascade and restore capabilities. A daily cleanup job archives and deletes soft-deleted records past a retention period.

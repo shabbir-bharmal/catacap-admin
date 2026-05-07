@@ -2,8 +2,15 @@ import pg from "pg";
 
 const TIMESTAMP_OID = 1114;
 const TIMESTAMPTZ_OID = 1184;
+const DATE_OID = 1082;
 pg.types.setTypeParser(TIMESTAMP_OID, (val: string) => val);
 pg.types.setTypeParser(TIMESTAMPTZ_OID, (val: string) => val);
+// Plain `date` columns (e.g. events.event_date) must also be returned as raw
+// strings. The default pg parser builds a JS Date at midnight UTC, which gets
+// JSON-serialized as "...T00:00:00.000Z" and then re-interpreted by the
+// browser in local time, causing dates to render one day earlier in any
+// westward (negative-offset) timezone like US Eastern.
+pg.types.setTypeParser(DATE_OID, (val: string) => val);
 
 // Append `options=-c TimeZone=UTC` to the connection string so Postgres
 // applies the session timezone during the startup handshake — *before* the
