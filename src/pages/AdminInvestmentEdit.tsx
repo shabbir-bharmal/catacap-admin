@@ -188,7 +188,7 @@ const defaultFormData: FormData = {
   email: "",
   investmentInfoEmail: "",
   contactInfoPhoneNumber: "",
-  impactAssetsFundingStatus: "No",
+  impactAssetsFundingStatus: "",
   hasCorporateBankAccount: "",
   hasPersonalFinancialBenefit: "",
   personalFinancialBenefitDescription: "",
@@ -1194,7 +1194,7 @@ export default function AdminInvestmentEdit() {
             }))
           : [{ name: "", email: "" }],
       contactInfoPhoneNumber: data.contactInfoPhoneNumber ?? "",
-      impactAssetsFundingStatus: (data.impactAssetsFundingStatus && data.impactAssetsFundingStatus.toLowerCase() === "yes") ? "Yes" : (data.impactAssetsFundingStatus && data.impactAssetsFundingStatus.toLowerCase() === "not sure") ? "Not sure" : "No",
+      impactAssetsFundingStatus: (data.impactAssetsFundingStatus && data.impactAssetsFundingStatus.toLowerCase() === "yes") ? "Yes" : (data.impactAssetsFundingStatus && data.impactAssetsFundingStatus.toLowerCase() === "not sure") ? "Not sure" : (data.impactAssetsFundingStatus && data.impactAssetsFundingStatus.toLowerCase() === "no") ? "No" : "",
       hasCorporateBankAccount: data.hasCorporateBankAccount === true ? "Yes" : data.hasCorporateBankAccount === false ? "No" : "",
       hasPersonalFinancialBenefit: data.hasPersonalFinancialBenefit === true ? "Yes" : data.hasPersonalFinancialBenefit === false ? "No" : "",
       personalFinancialBenefitDescription: data.personalFinancialBenefitDescription ?? "",
@@ -1686,7 +1686,7 @@ export default function AdminInvestmentEdit() {
         contactInfoEmailAddress: formData.email?.trim(),
         investmentInformationalEmail: formData.investmentInfoEmail?.trim(),
         contactInfoPhoneNumber: formData.contactInfoPhoneNumber?.trim(),
-        impactAssetsFundingStatus: formData.impactAssetsFundingStatus?.trim(),
+        impactAssetsFundingStatus: formData.impactAssetsFundingStatus?.trim() ? formData.impactAssetsFundingStatus.trim() : undefined,
         hasCorporateBankAccount: formData.hasCorporateBankAccount === "Yes" ? true : formData.hasCorporateBankAccount === "No" ? false : null,
         hasPersonalFinancialBenefit: formData.hasPersonalFinancialBenefit === "Yes" ? true : formData.hasPersonalFinancialBenefit === "No" ? false : null,
         personalFinancialBenefitDescription: formData.hasPersonalFinancialBenefit === "Yes" ? (formData.personalFinancialBenefitDescription?.trim() || null) : null,
@@ -2300,7 +2300,7 @@ export default function AdminInvestmentEdit() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label className="text-sm">Have you received funding from Impact Assets before?</Label>
-                    <Select value={formData.impactAssetsFundingStatus || "No"} defaultValue="No" onValueChange={(val) => upd("impactAssetsFundingStatus", val)}>
+                    <Select value={formData.impactAssetsFundingStatus || undefined} onValueChange={(val) => upd("impactAssetsFundingStatus", val)}>
                       <SelectTrigger data-testid="select-funding-status"><SelectValue placeholder="Select…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="No">No</SelectItem>
