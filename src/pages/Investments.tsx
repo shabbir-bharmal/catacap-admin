@@ -531,7 +531,8 @@ export default function InvestmentsPage() {
                       Owner
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">
-                      Stage / Funding Close
+                      <div>Stage</div>
+                      <div>Funding Close</div>
                     </th>
                     <SortHeader field="catacapFunding" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       CataCap Funding
