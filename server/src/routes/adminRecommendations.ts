@@ -101,9 +101,15 @@ router.get("/", async (req: Request, res: Response) => {
               c.id AS "campaignId", c.name AS "campaignName",
               rej.first_name AS "rejectedBy",
               CASE WHEN del.id IS NOT NULL THEN CONCAT(del.first_name, ' ', del.last_name) ELSE NULL END AS "deletedBy",
-              EXISTS (
-                SELECT 1 FROM campaign_match_grant_activity a
-                 WHERE a.donor_recommendation_id = r.id
+              (
+                EXISTS (
+                  SELECT 1 FROM campaign_match_grant_activity a
+                   WHERE a.donor_recommendation_id = r.id
+                )
+                OR EXISTS (
+                  SELECT 1 FROM campaign_match_grants g
+                   WHERE g.donor_user_id = r.user_id
+                )
               ) AS "isMatch"
        FROM recommendations r
        ${userRoleJoin}
