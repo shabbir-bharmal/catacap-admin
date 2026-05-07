@@ -9,6 +9,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axiosInstance from "../api/axios";
@@ -628,11 +638,40 @@ function GrantFormDialog({
 // Activity panel (expandable per grant)
 // ------------------------------------------------------------------ //
 function ActivityPanel({ grantId }: { grantId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [cancelTarget, setCancelTarget] = useState<ActivityEntry | null>(null);
+  const [cancelingId, setCancelingId] = useState<number | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["match-activity", grantId],
     queryFn: () => fetchActivity(grantId),
     staleTime: 30_000,
   });
+
+  const handleCancel = async (entry: ActivityEntry) => {
+    setCancelingId(entry.id);
+    try {
+      const { data: resp } = await axiosInstance.post(
+        `/api/admin/matching/${grantId}/activity/${entry.id}/cancel`,
+      );
+      toast({
+        title: "Match canceled",
+        description: resp?.message || "Match removed and funds returned to the grant pool.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["match-activity", grantId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/matching"] });
+      setCancelTarget(null);
+    } catch (err: any) {
+      toast({
+        title: "Cancel failed",
+        description: err?.response?.data?.message || err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setCancelingId(null);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -672,6 +711,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                 <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Campaign</th>
                 <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Investor</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Matched</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap w-12">&nbsp;</th>
               </tr>
             </thead>
             <tbody>
@@ -689,6 +729,24 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                   </td>
                   <td className="px-3 py-2 text-right font-medium tabular-nums">
                     {currency_format(a.amount)}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                      title="Cancel match"
+                      aria-label="Cancel match"
+                      onClick={() => setCancelTarget(a)}
+                      disabled={cancelingId === a.id}
+                      data-testid={`button-cancel-match-${a.id}`}
+                    >
+                      {cancelingId === a.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -754,6 +812,47 @@ function ActivityPanel({ grantId }: { grantId: number }) {
           </div>
         </div>
       )}
+
+      <AlertDialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+        <AlertDialogContent data-testid="dialog-cancel-match">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel this match?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <div>
+                  This will remove the donor's <strong>{cancelTarget ? currency_format(cancelTarget.amount) : ""}</strong> matching
+                  contribution to <strong>{cancelTarget?.campaignName}</strong> and return that amount to the grant's available pool.
+                </div>
+                <div className="text-muted-foreground">
+                  The triggering investor's own donation is left in place. The cancellation is logged to the donor's Account History.
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="button-cancel-match-no"
+              disabled={cancelingId !== null}
+            >
+              Keep match
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={cancelingId !== null}
+              onClick={(e) => {
+                if (cancelingId !== null) {
+                  e.preventDefault();
+                  return;
+                }
+                if (cancelTarget) handleCancel(cancelTarget);
+              }}
+              data-testid="button-cancel-match-confirm"
+            >
+              {cancelingId !== null ? "Canceling…" : "Cancel match"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

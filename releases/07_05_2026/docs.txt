@@ -150,3 +150,86 @@ Verification steps after applying:
   4. Open an affected campaign's investors page (e.g. Sea Forward); the
      matched FundHer recommendations should now display the "match"
      payment-method badge.
+
+================================================================
+Migration: 2026_05_07_canceled_match_pairs.sql
+================================================================
+Schema:
+  Creates table public.canceled_match_pairs with columns:
+    id                              SERIAL PK
+    match_grant_id                  INT  NOT NULL
+    triggered_by_recommendation_id  INT  NULL
+    donor_recommendation_id         INT  NULL
+    campaign_id                     INT  NULL
+    amount                          NUMERIC(14,2) NOT NULL DEFAULT 0
+    canceled_by                     TEXT NULL  (admin user id)
+    canceled_at                     TIMESTAMP NOT NULL DEFAULT NOW()
+    note                            TEXT NULL
+  Indexes:
+    canceled_match_pairs_grant_trigger_uq  UNIQUE partial on
+      (match_grant_id, triggered_by_recommendation_id)
+      WHERE triggered_by_recommendation_id IS NOT NULL
+    canceled_match_pairs_grant_idx    on (match_grant_id)
+    canceled_match_pairs_donor_rec_idx on (donor_recommendation_id)
+      WHERE donor_recommendation_id IS NOT NULL
+
+Intent:
+  Tombstone for the new "Cancel match" admin action on /matching.
+  When an admin cancels a single match row in a grant's activity panel:
+    * the donor recommendation is soft-deleted,
+    * the campaign_match_grant_activity row is hard-deleted,
+    * amount_used is decremented,
+    * a row is INSERTED into canceled_match_pairs.
+  Without this tombstone, the next runRetroactiveSweep (matchingGrants.ts)
+  and the per-grant pending-match projection (pendingMatches.ts) — both of
+  which dedupe via NOT EXISTS on campaign_match_grant_activity — would
+  observe the trigger as "uncovered" and resurrect the canceled match.
+  The unique partial index also makes the cancel endpoint idempotent
+  against double-clicks (ON CONFLICT DO NOTHING + reload of the missing
+  activity row returns success/no-op rather than 404).
+
+Idempotency:
+  CREATE TABLE IF NOT EXISTS, CREATE INDEX IF NOT EXISTS, transactional.
+  Re-running the migration is a no-op.
+
+Rollback:
+  BEGIN; DROP TABLE IF EXISTS canceled_match_pairs; COMMIT;
+  (See trailing comment in the migration file. Note that dropping after
+  cancellations have occurred will lose the tombstones and allow
+  retroactive sweep to re-create the canceled matches.)
+
+Code touched in this change set (must land together):
+  * server/src/routes/adminMatching.ts
+      Cancel endpoint INSERTs the tombstone in the same transaction as
+      activity delete + amount_used decrement; idempotent on missing
+      activity row.
+  * server/src/utils/matchingGrants.ts
+      runRetroactiveSweep candidate query adds
+        AND NOT EXISTS (SELECT 1 FROM canceled_match_pairs cmp
+                        WHERE cmp.match_grant_id = $1
+                          AND cmp.triggered_by_recommendation_id = r.id)
+  * server/src/utils/pendingMatches.ts
+      fetchPendingTriggers takes optional excludeForGrantId and adds
+      the matching NOT EXISTS clause; projectPendingMatchesForGrant
+      passes its grantId. Cross-grant projections intentionally do not
+      apply the exclusion.
+  * src/pages/AdminMatching.tsx
+      AlertDialog confirm + cancel buttons disabled while a cancel is
+      in flight to prevent double-submit.
+
+Verification steps after applying:
+  1. \\d canceled_match_pairs  -> table + 3 indexes present.
+  2. SELECT to_regclass('public.canceled_match_pairs');  -> not null.
+  3. In the UI, open a grant's activity panel, click Trash on a row,
+     confirm "Cancel match". Row disappears, amount_used drops by the
+     row amount, donor wallet unchanged, account_balance_change_logs
+     gets a row with old_value == new_value.
+  4. SELECT * FROM canceled_match_pairs ORDER BY id DESC LIMIT 5;
+     -> the canceled pair is recorded.
+  5. Trigger a retroactive sweep on that grant (or wait for the next
+     scheduled run) and verify the canceled trigger is NOT re-matched.
+  6. The grant's "pending matches" projection should also exclude the
+     canceled trigger from its per-grant pending list.
+  7. Double-click the confirm button: only one POST is sent (button
+     disables); a manually re-issued POST returns
+     { success: true, alreadyCanceled: true }.

@@ -104,8 +104,29 @@ function computeMatchAmount(triggerAmount: number, grant: GrantRow, remaining: n
 /**
  * Pending trigger investments for a set of campaigns.
  */
-async function fetchPendingTriggers(campaignIds: number[]): Promise<ProjectionTrigger[]> {
+async function fetchPendingTriggers(
+  campaignIds: number[],
+  excludeForGrantId?: number,
+): Promise<ProjectionTrigger[]> {
   if (campaignIds.length === 0) return [];
+
+  // When projecting for a single grant, suppress triggers that have been
+  // explicitly canceled on that grant via the admin "Cancel match" flow,
+  // so they don't reappear in the pending list. We do NOT apply this
+  // exclusion in the cross-grant projections because a cancellation on
+  // one grant does not preclude another grant from matching the same
+  // trigger.
+  const params: any[] = [campaignIds];
+  let cancelExclusion = "";
+  if (excludeForGrantId != null) {
+    params.push(excludeForGrantId);
+    cancelExclusion = `
+        AND NOT EXISTS (
+          SELECT 1 FROM canceled_match_pairs cmp
+           WHERE cmp.match_grant_id = $${params.length}
+             AND cmp.triggered_by_recommendation_id = r.id
+        )`;
+  }
 
   const recResult = await pool.query(
     `SELECT r.id, r.user_id, r.user_email, r.user_full_name,
@@ -123,9 +144,9 @@ async function fetchPendingTriggers(campaignIds: number[]): Promise<ProjectionTr
         AND NOT EXISTS (
           SELECT 1 FROM campaign_match_grant_activity a
            WHERE a.triggered_by_recommendation_id = r.id
-        )
+        )${cancelExclusion}
       ORDER BY r.date_created ASC, r.id ASC`,
-    [campaignIds],
+    params,
   );
 
   const orphanResult = await pool.query(
@@ -293,7 +314,7 @@ export async function projectPendingMatchesForGrant(
 
   const grants = (await fetchGrantsForCampaigns(campaignIds)).filter((g) => g.id === grantId);
   if (grants.length === 0) return [];
-  const triggers = await fetchPendingTriggers(campaignIds);
+  const triggers = await fetchPendingTriggers(campaignIds, grantId);
   if (triggers.length === 0) return [];
   return project(grants, triggers);
 }
