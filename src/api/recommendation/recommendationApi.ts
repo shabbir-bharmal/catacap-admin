@@ -26,6 +26,7 @@ export interface RecommendationEntry {
   isActive: boolean;
   rejectedBy: string | null;
   rejectionMemo: string | null;
+  isMatch?: boolean;
 }
 
 export interface PaginatedRecommendationResponse {
