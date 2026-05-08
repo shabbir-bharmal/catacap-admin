@@ -104,6 +104,7 @@ router.get("/", async (req: Request, res: Response) => {
         OR LOWER(TRIM(COALESCE(u.last_name, ''))) LIKE $${idx}
         OR LOWER(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))) LIKE $${idx}
         OR LOWER(TRIM(COALESCE(u.email, ''))) LIKE $${idx}
+        OR LOWER(TRIM(COALESCE(u.user_name, ''))) LIKE $${idx}
       )`;
     }
 
@@ -923,6 +924,7 @@ router.get("/admin-users", async (req: Request, res: Response) => {
         OR LOWER(TRIM(COALESCE(u.last_name, ''))) LIKE $${idx}
         OR LOWER(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))) LIKE $${idx}
         OR LOWER(TRIM(COALESCE(u.email, ''))) LIKE $${idx}
+        OR LOWER(TRIM(COALESCE(u.user_name, ''))) LIKE $${idx}
       )`;
     }
 
