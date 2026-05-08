@@ -200,6 +200,11 @@ async function archiveAndDeleteOrphan(
     return;
   }
 
+  if (!(await columnExists(client, pgChild, pgFk))) {
+    console.log(`  SKIP (column not found): ${pgChild}.${pgFk}`);
+    return;
+  }
+
   await client.query(
     `INSERT INTO archived_user_data
       (source_table, record_id, user_id, deleted_at, days_old, record_json, archived_at)
@@ -236,6 +241,87 @@ async function archiveAndDeleteOrphan(
 
   console.log(
     `  ${pgChild} (orphan): archived & deleted ${deleteResult.rowCount} row(s)`
+  );
+}
+
+async function archiveAndDeleteOrphanByGrandparent(
+  client: PoolClient,
+  childTable: string,
+  fkToParent: string,
+  parentTable: string,
+  parentPkCol: string,
+  parentFkToGrandparent: string,
+  grandparentTable: string,
+  grandparentPkCol: string,
+  cutoffDate: string
+): Promise<void> {
+  const pgChild = t(childTable);
+  const pgParent = t(parentTable);
+  const pgGrand = t(grandparentTable);
+  const pgFkChild = c(fkToParent);
+  const pgParentPk = c(parentPkCol);
+  const pgFkParent = c(parentFkToGrandparent);
+  const pgGrandPk = c(grandparentPkCol);
+
+  if (!(await tableExists(client, pgChild))) {
+    console.log(`  SKIP (table not found): ${pgChild}`);
+    return;
+  }
+  if (!(await tableExists(client, pgParent))) {
+    console.log(`  SKIP (parent not found): ${pgParent}`);
+    return;
+  }
+  if (!(await tableExists(client, pgGrand))) {
+    console.log(`  SKIP (grandparent not found): ${pgGrand}`);
+    return;
+  }
+
+  if (!(await columnExists(client, pgChild, pgFkChild))) {
+    console.log(`  SKIP (column not found): ${pgChild}.${pgFkChild}`);
+    return;
+  }
+  if (!(await columnExists(client, pgParent, pgFkParent))) {
+    console.log(`  SKIP (column not found): ${pgParent}.${pgFkParent}`);
+    return;
+  }
+
+  await client.query(
+    `INSERT INTO archived_user_data
+      (source_table, record_id, user_id, deleted_at, days_old, record_json, archived_at)
+     SELECT
+       $1,
+       CAST(c.id AS TEXT),
+       NULL,
+       g.deleted_at,
+       (CURRENT_DATE - g.deleted_at::date),
+       row_to_json(c)::TEXT,
+       NOW()
+     FROM ${pgChild} c
+     JOIN ${pgParent} p ON p.${pgParentPk} = c.${pgFkChild}
+     JOIN ${pgGrand}  g ON g.${pgGrandPk}  = p.${pgFkParent}
+       AND g.deleted_at IS NOT NULL
+       AND g.deleted_at <= $2
+     WHERE NOT EXISTS (
+       SELECT 1 FROM archived_user_data a
+       WHERE a.source_table = $1
+         AND a.record_id = CAST(c.id AS TEXT)
+         AND CAST(a.archived_at AS DATE) = CURRENT_DATE
+     )`,
+    [pgChild, cutoffDate]
+  );
+
+  const deleteResult = await client.query(
+    `DELETE FROM ${pgChild} c
+     USING ${pgParent} p, ${pgGrand} g
+     WHERE p.${pgParentPk} = c.${pgFkChild}
+       AND g.${pgGrandPk}  = p.${pgFkParent}
+       AND g.deleted_at IS NOT NULL
+       AND g.deleted_at <= $1`,
+    [cutoffDate]
+  );
+
+  console.log(
+    `  ${pgChild} (orphan via ${pgParent}→${pgGrand}): archived & deleted ${deleteResult.rowCount} row(s)`
   );
 }
 
@@ -639,6 +725,55 @@ export async function runDailyCleanup(): Promise<void> {
         archiveAndDelete(client, "UsersNotifications", "Id", "TargetUserId", cutoffDate));
       await runStep("Level3: AspNetUserRoles", () =>
         archiveAndDelete(client, "AspNetUserRoles", "UserId", "UserId", cutoffDate));
+
+      console.log("-- LEVEL 2.5: Campaign-orphan non-CASCADE children (pre-Level2) --");
+      // Children of pending_grants (clean leaves first so the parent delete below succeeds)
+      await runStep("Level2.5: PendingGrantNotes orphan via Campaign→PendingGrants", () =>
+        archiveAndDeleteOrphanByGrandparent(
+          client,
+          "PendingGrantNotes", "PendingGrantId",
+          "PendingGrants",     "Id",
+          "CampaignId",        "Campaigns", "Id",
+          cutoffDate
+        ));
+      await runStep("Level2.5: AccountBalanceChangeLogs orphan via Campaign→PendingGrants", () =>
+        archiveAndDeleteOrphanByGrandparent(
+          client,
+          "AccountBalanceChangeLogs", "PendingGrantsId",
+          "PendingGrants",            "Id",
+          "CampaignId",               "Campaigns", "Id",
+          cutoffDate
+        ));
+      // pending_grants whose campaign has been purged (donor user may still be alive)
+      await runStep("Level2.5: PendingGrants orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "PendingGrants", "CampaignId", "Campaigns", "Id", cutoffDate));
+
+      // completed_investment_details + its notes (parent campaign purged, owner of the row may differ)
+      await runStep("Level2.5: CompletedInvestmentNotes orphan via Campaign→CompletedInvestmentsDetails", () =>
+        archiveAndDeleteOrphanByGrandparent(
+          client,
+          "CompletedInvestmentNotes",     "CompletedInvestmentId",
+          "CompletedInvestmentsDetails",  "Id",
+          "CampaignId",                   "Campaigns", "Id",
+          cutoffDate
+        ));
+      await runStep("Level2.5: CompletedInvestmentsDetails orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "CompletedInvestmentsDetails", "CampaignId", "Campaigns", "Id", cutoffDate));
+
+      // Other direct non-CASCADE children of campaigns whose owning user is independent of the campaign owner
+      await runStep("Level2.5: Recommendations orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "Recommendations", "CampaignId", "Campaigns", "Id", cutoffDate));
+      await runStep("Level2.5: UserInvestments orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "UserInvestments", "CampaignId", "Campaigns", "Id", cutoffDate));
+      await runStep("Level2.5: InvestmentRequest orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "InvestmentRequest", "CampaignId", "Campaigns", "Id", cutoffDate));
+      await runStep("Level2.5: InvestmentFeedback orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "InvestmentFeedback", "CampaignId", "Campaigns", "Id", cutoffDate));
+      // campaign_updates uses a non-CASCADE FK to campaigns; its own children
+      // (campaign_update_email_logs, campaign_update_attachments) cascade on
+      // delete, so cleaning the parent is sufficient.
+      await runStep("Level2.5: campaign_updates orphan by Campaign", () =>
+        archiveAndDeleteOrphan(client, "campaign_updates", "campaign_id", "campaigns", "id", cutoffDate));
 
       console.log("-- LEVEL 2: Top-level domain parents --");
       await runStep("Level2: Groups", () =>
