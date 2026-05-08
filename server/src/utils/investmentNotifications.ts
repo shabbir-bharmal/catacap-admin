@@ -3,6 +3,140 @@ import pool from "../db.js";
 import { sendTemplateEmail } from "./emailService.js";
 
 const TEMPLATE_NEW_INVESTMENT = 16; // "Campaign Investment Notification"
+const TEMPLATE_CAMPAIGN_OWNER_FUNDING = 15; // "Campaign Owner Funding Notification"
+
+function formatUsdAmount(value: number | string | null | undefined): string {
+  const n = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
+  if (!isFinite(n)) return "$0.00";
+  return `$${n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * Notify a campaign's contact email that a donor just funded the campaign
+ * via a wallet / group-balance recommendation. Mirrors .NET's
+ * `RecommendationsController.CreateRecommendation` and
+ * `Admin/RecommendationsController.AddRecommendation` template-15 send.
+ *
+ * Best-effort: returns false (without throwing) when the campaign has no
+ * contact email or any expected lookup row is missing. Caller should invoke
+ * AFTER the recommendation transaction has committed and use a `.catch()`
+ * so a failed email never rolls back the recommendation insert.
+ */
+export async function sendCampaignOwnerFundingNotification(args: {
+  campaignId: number;
+  recommendationAmount: number;
+  donorUserId: string | number | null | undefined;
+}): Promise<boolean> {
+  const { campaignId, recommendationAmount, donorUserId } = args;
+  try {
+    const campaignRes = await pool.query(
+      `SELECT id, name, description, property,
+              contact_info_full_name,
+              contact_info_email_address
+         FROM campaigns
+        WHERE id = $1
+        LIMIT 1`,
+      [campaignId],
+    );
+    const campaign = campaignRes.rows[0];
+    if (!campaign) return false;
+
+    const contactEmail = String(campaign.contact_info_email_address ?? "")
+      .trim();
+    if (!contactEmail) return false;
+
+    let donorFirstName = "";
+    let donorLastName = "";
+    let isAnonymous = false;
+    if (donorUserId != null && donorUserId !== "") {
+      const donorRes = await pool.query(
+        `SELECT first_name, last_name, is_anonymous_investment
+           FROM users
+          WHERE id = $1
+          LIMIT 1`,
+        [donorUserId],
+      );
+      const donor = donorRes.rows[0];
+      if (donor) {
+        donorFirstName = String(donor.first_name ?? "").trim();
+        donorLastName = String(donor.last_name ?? "").trim();
+        isAnonymous = donor.is_anonymous_investment === true;
+      }
+    }
+
+    const totalsRes = await pool.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS total_raised,
+              COUNT(DISTINCT r.user_email) AS total_investors
+         FROM recommendations r
+        WHERE r.campaign_id = $1
+          AND LOWER(TRIM(r.status)) IN ('approved','pending')
+          AND r.amount > 0
+          AND r.user_email IS NOT NULL
+          AND (r.is_deleted IS NULL OR r.is_deleted = false)`,
+      [campaignId],
+    );
+    const totalsRow = totalsRes.rows[0] || {};
+    const totalRaised = parseFloat(totalsRow.total_raised ?? "0") || 0;
+    const totalInvestors = parseInt(totalsRow.total_investors ?? "0", 10) || 0;
+
+    const requestOrigin =
+      process.env.REQUEST_ORIGIN || process.env.VITE_FRONTEND_URL || "";
+    const origin = requestOrigin.replace(/\/$/, "");
+    const logoUrl = process.env.LOGO_URL || "";
+
+    const campaignIdentifier =
+      (campaign.property && String(campaign.property).trim()) ||
+      String(campaign.id);
+    const campaignPageUrl = origin
+      ? `${origin}/investments/${campaignIdentifier}`
+      : "";
+
+    const fullDonorName = `${donorFirstName} ${donorLastName}`.trim();
+    const investorName = isAnonymous
+      ? "a donor-investor"
+      : fullDonorName || "a donor-investor";
+    const investorDisplayName = isAnonymous
+      ? "Someone"
+      : fullDonorName || "Someone";
+    const donorName = isAnonymous
+      ? "An anonymous CataCap donor"
+      : fullDonorName || "An anonymous CataCap donor";
+
+    const contactFullName = String(campaign.contact_info_full_name ?? "").trim();
+    const campaignFirstName = contactFullName ? contactFullName.split(/\s+/)[0] : "";
+
+    const variables: Record<string, string> = {
+      logoUrl,
+      campaignName: String(campaign.name ?? ""),
+      campaignDescription: String(campaign.description ?? ""),
+      campaignUrl: campaignPageUrl,
+      unsubscribeUrl: origin ? `${origin}/settings` : "",
+      investorDisplayName,
+      donorName,
+      campaignFirstName,
+      investorName,
+      investmentAmount: formatUsdAmount(recommendationAmount),
+      totalRaised: formatUsdAmount(totalRaised),
+      totalInvestors: String(totalInvestors),
+      campaignPageUrl,
+    };
+
+    return await sendTemplateEmail(
+      TEMPLATE_CAMPAIGN_OWNER_FUNDING,
+      contactEmail,
+      variables,
+    );
+  } catch (err: any) {
+    console.error(
+      "sendCampaignOwnerFundingNotification: unexpected error:",
+      err?.message || err,
+    );
+    return false;
+  }
+}
 
 export interface InvestmentNotificationRecipient {
   id?: number;

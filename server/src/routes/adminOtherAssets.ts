@@ -12,7 +12,7 @@ import {
 } from "../utils/noteAttachments.js";
 import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembership.js";
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
-import { sendNewInvestmentNotifications } from "../utils/investmentNotifications.js";
+import { sendNewInvestmentNotifications, sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
 import ExcelJS from "exceljs";
 import dayjs from "dayjs";
@@ -259,6 +259,9 @@ router.put("/:id/status", async (req: Request, res: Response) => {
     let notifyAfterCommit:
       | { campaignId: number; donorDisplayName: string; amount: number }
       | null = null;
+    let fundingAfterCommit:
+      | { campaignId: number; recommendationAmount: number; donorUserId: string | number | null }
+      | null = null;
     let matchAfterCommit: {
       campaignId: number; userId: string; recId: number;
       amount: number; email: string; campaignName: string;
@@ -397,6 +400,11 @@ router.put("/:id/status", async (req: Request, res: Response) => {
           donorDisplayName: donorDisplayNameApproved,
           amount: recAmount,
         };
+        fundingAfterCommit = {
+          campaignId: Number(asset.camp_id),
+          recommendationAmount: recAmount,
+          donorUserId: asset.uid,
+        };
       }
     } else if ((oldStatus === "Pending" || oldStatus === "In Transit") && newStatus === "Rejected") {
       await client.query(`UPDATE asset_based_payment_requests SET status = $1 WHERE id = $2`, [newStatus, id]);
@@ -407,6 +415,11 @@ router.put("/:id/status", async (req: Request, res: Response) => {
     if (notifyAfterCommit) {
       sendNewInvestmentNotifications(notifyAfterCommit).catch((err) =>
         console.error("Investment notification email failed:", err?.message || err),
+      );
+    }
+    if (fundingAfterCommit) {
+      sendCampaignOwnerFundingNotification(fundingAfterCommit).catch((err) =>
+        console.error("Campaign owner funding email failed:", err?.message || err),
       );
     }
     if (matchAfterCommit) {
