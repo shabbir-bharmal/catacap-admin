@@ -229,7 +229,12 @@ export default function NewsManagementPage() {
       .filter((p) => p.slug && !HIDDEN_SLUGS.has(p.slug.toLowerCase()))
       .map((p) => ({ id: p.slug, name: p.title || p.slug }));
     const hasHome = filtered.some((o) => o.id.toLowerCase() === "home");
-    return hasHome ? filtered : [{ id: "home", name: "Home" }, ...filtered];
+    const withHome = hasHome ? filtered : [{ id: "home", name: "Home" }, ...filtered];
+    const normalize = (s: string) => s.toLowerCase().replace(/[\s_-]+/g, "");
+    const hasRaiseMoney = withHome.some(
+      (o) => normalize(o.id) === "raisemoney" || normalize(o.name) === "raisemoney",
+    );
+    return hasRaiseMoney ? withHome : [...withHome, { id: "raisemoney", name: "Raise Money" }];
   }, [customPagesListQuery.data]);
 
   const isLoadingInvestmentOptions = investmentsListQuery.isLoading;
