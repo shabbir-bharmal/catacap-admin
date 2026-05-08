@@ -6,6 +6,28 @@ import { resolveFileUrl, uploadBase64Image, extractStoragePath, ensureFolderPref
 
 const router = Router();
 
+function normalizeIntIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .map((v: unknown) => parseInt(String(v), 10))
+        .filter((n: number) => Number.isInteger(n) && n > 0)
+    )
+  );
+}
+
+function normalizeSlugs(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .map((v: unknown) => (v == null ? "" : String(v).trim()))
+        .filter((s: string) => s.length > 0)
+    )
+  );
+}
+
 router.get("/", async (req: Request, res: Response) => {
   try {
     const params = parsePagination(req.query as Record<string, unknown>);
@@ -64,6 +86,7 @@ router.get("/", async (req: Request, res: Response) => {
          n.audience_id, aud.value AS audience_name,
          n.theme_id AS theme_id, th.name AS theme_name,
          n.image_file_name, n.status, n.news_link,
+         n.linked_investment_ids, n.linked_custom_page_slugs,
          CASE WHEN n.news_date IS NOT NULL
            THEN TO_CHAR(n.news_date, 'DD Mon YYYY')
            ELSE NULL
@@ -95,6 +118,8 @@ router.get("/", async (req: Request, res: Response) => {
       status: r.status ?? false,
       link: r.news_link,
       newsDate: r.formatted_date,
+      linkedInvestmentIds: normalizeIntIds(r.linked_investment_ids),
+      linkedCustomPageSlugs: normalizeSlugs(r.linked_custom_page_slugs),
       deletedAt: r.deleted_at,
       deletedBy: r.deleted_by_name,
     }));
@@ -118,6 +143,7 @@ router.get("/:id", async (req: Request, res: Response) => {
               n.audience_id, aud.value AS audience_name,
               n.theme_id AS theme_id, th.name AS theme_name,
               n.image_file_name, n.news_link, n.status,
+              n.linked_investment_ids, n.linked_custom_page_slugs,
               n.news_date::text AS news_date
        FROM news n
        LEFT JOIN site_configurations nt ON n.news_type_id = nt.id
@@ -147,6 +173,8 @@ router.get("/:id", async (req: Request, res: Response) => {
       link: r.news_link,
       status: r.status ?? false,
       newsDate: r.news_date,
+      linkedInvestmentIds: normalizeIntIds(r.linked_investment_ids),
+      linkedCustomPageSlugs: normalizeSlugs(r.linked_custom_page_slugs),
     });
   } catch (err) {
     console.error("News GetById error:", err);
@@ -176,6 +204,9 @@ router.post("/", async (req: Request, res: Response) => {
       }
     }
 
+    const linkedInvestmentIds = normalizeIntIds(dto.linkedInvestmentIds);
+    const linkedCustomPageSlugs = normalizeSlugs(dto.linkedCustomPageSlugs);
+
     if (dto.id && dto.id > 0) {
       const existing = await pool.query(`SELECT id, image_file_name FROM news WHERE id = $1`, [dto.id]);
       if (existing.rows.length === 0) {
@@ -188,12 +219,15 @@ router.post("/", async (req: Request, res: Response) => {
            title = $1, description = $2, news_type_id = $3, audience_id = $4,
            theme_id = $5, image_file_name = COALESCE($6, image_file_name),
            news_link = $7, status = $8, news_date = $9,
-           modified_at = NOW(), modified_by = $10
-         WHERE id = $11`,
+           linked_investment_ids = $10::INTEGER[],
+           linked_custom_page_slugs = $11::TEXT[],
+           modified_at = NOW(), modified_by = $12
+         WHERE id = $13`,
         [
           dto.title, dto.description, dto.newsTypeId, dto.audienceId,
           dto.themeId, imageFileName,
           dto.newsLink, dto.status, dto.newsDate,
+          linkedInvestmentIds, linkedCustomPageSlugs,
           userId, dto.id,
         ]
       );
@@ -202,13 +236,17 @@ router.post("/", async (req: Request, res: Response) => {
     } else {
       const result = await pool.query(
         `INSERT INTO news (title, description, news_type_id, audience_id, theme_id,
-           image_file_name, news_link, status, news_date, created_at, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10)
+           image_file_name, news_link, status, news_date,
+           linked_investment_ids, linked_custom_page_slugs,
+           created_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::INTEGER[], $11::TEXT[], NOW(), $12)
          RETURNING id`,
         [
           dto.title, dto.description, dto.newsTypeId, dto.audienceId,
           dto.themeId, imageFileName,
-          dto.newsLink, dto.status, dto.newsDate, userId,
+          dto.newsLink, dto.status, dto.newsDate,
+          linkedInvestmentIds, linkedCustomPageSlugs,
+          userId,
         ]
       );
 

@@ -251,11 +251,17 @@ export async function fetchCountries(): Promise<any> {
 }
 
 
-export async function fetchAllInvestmentNameList(investmentStage: number = 0, investmentId: number): Promise<any[]> {
-    const response = await axiosInstance.get("/api/Campaign/get-all-investment-name-list", {
+export interface InvestmentNameListItem {
+    id: number;
+    name: string;
+    [key: string]: unknown;
+}
+
+export async function fetchAllInvestmentNameList(investmentStage: number = 0, investmentId: number): Promise<InvestmentNameListItem[]> {
+    const response = await axiosInstance.get<InvestmentNameListItem[]>("/api/Campaign/get-all-investment-name-list", {
         params: { investmentStage, investmentId }
     });
-    return response.data;
+    return Array.isArray(response.data) ? response.data : [];
 }
 
 export function downloadInvestmentDocument(

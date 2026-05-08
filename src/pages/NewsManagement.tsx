@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   fetchNews,
   createOrUpdateNews,
@@ -7,6 +8,9 @@ import {
   type NewsApiItem,
   type DropdownOption,
 } from "../api/news/newsApi";
+import { fetchAllInvestmentNameList, type InvestmentNameListItem } from "../api/investment/investmentApi";
+import { fetchCustomPages } from "../api/event/customPagesApi";
+import { MultiSelectPopover, type MultiSelectOption } from "@/components/MultiSelectPopover";
 import { getUrlBlobContainerImage } from "@/lib/image-utils";
 import catacapLogo from "@assets/CataCap-Logo.png";
 import { AdminLayout } from "../components/AdminLayout";
@@ -79,6 +83,8 @@ interface NewsArticle {
   date: string;
   link: string;
   status: "Published" | "Draft";
+  linkedInvestmentIds: number[];
+  linkedCustomPageSlugs: string[];
 }
 
 function mapApiItemToArticle(item: NewsApiItem): NewsArticle {
@@ -97,6 +103,8 @@ function mapApiItemToArticle(item: NewsApiItem): NewsArticle {
     date: formatLongDate(item.newsDate, ""),
     link: item.link ?? "",
     status: item.status === true ? "Published" : "Draft",
+    linkedInvestmentIds: Array.isArray(item.linkedInvestmentIds) ? item.linkedInvestmentIds : [],
+    linkedCustomPageSlugs: Array.isArray(item.linkedCustomPageSlugs) ? item.linkedCustomPageSlugs : [],
   };
 }
 
@@ -117,6 +125,8 @@ const emptyForm: Omit<NewsArticle, "id"> = {
   date: "",
   link: "",
   status: "Draft",
+  linkedInvestmentIds: [],
+  linkedCustomPageSlugs: [],
 };
 
 function getDropdownValue(opts: DropdownOption[], currentId: number | null, currentName: string): string {
@@ -189,6 +199,46 @@ export default function NewsManagementPage() {
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewArticle, setPreviewArticle] = useState<NewsArticle | null>(null);
+
+  const investmentsListQuery = useQuery({
+    queryKey: ["news-link-investments"],
+    queryFn: () => fetchAllInvestmentNameList(0, 0),
+    staleTime: 5 * 60 * 1000,
+  });
+  const customPagesListQuery = useQuery({
+    queryKey: ["news-link-custom-pages"],
+    queryFn: () => fetchCustomPages(),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const investmentOptions: MultiSelectOption<number>[] = useMemo(() => {
+    const list: InvestmentNameListItem[] = Array.isArray(investmentsListQuery.data) ? investmentsListQuery.data : [];
+    return list
+      .map((it) => {
+        const rawId = (it.id ?? (it as Record<string, unknown>).Id ?? (it as Record<string, unknown>).investmentId ?? (it as Record<string, unknown>).InvestmentId) as unknown;
+        const rawName = (it.name ?? (it as Record<string, unknown>).Name ?? (it as Record<string, unknown>).title ?? (it as Record<string, unknown>).Title ?? "") as unknown;
+        return { id: Number(rawId ?? 0), name: String(rawName ?? "") };
+      })
+      .filter((o) => Number.isInteger(o.id) && o.id > 0 && o.name.length > 0);
+  }, [investmentsListQuery.data]);
+
+  const customPageOptions: MultiSelectOption<string>[] = useMemo(() => {
+    const list = Array.isArray(customPagesListQuery.data) ? customPagesListQuery.data : [];
+    const HIDDEN_SLUGS = new Set(["communities", "companies"]);
+    const filtered = list
+      .filter((p) => p.slug && !HIDDEN_SLUGS.has(p.slug.toLowerCase()))
+      .map((p) => ({ id: p.slug, name: p.title || p.slug }));
+    const hasHome = filtered.some((o) => o.id.toLowerCase() === "home");
+    const withHome = hasHome ? filtered : [{ id: "home", name: "Home" }, ...filtered];
+    const normalize = (s: string) => s.toLowerCase().replace(/[\s_-]+/g, "");
+    const hasRaiseMoney = withHome.some(
+      (o) => normalize(o.id) === "raisemoney" || normalize(o.name) === "raisemoney",
+    );
+    return hasRaiseMoney ? withHome : [...withHome, { id: "raisemoney", name: "Raise Money" }];
+  }, [customPagesListQuery.data]);
+
+  const isLoadingInvestmentOptions = investmentsListQuery.isLoading;
+  const isLoadingCustomPageOptions = customPagesListQuery.isLoading;
 
   function parseDate(dateStr: string): Date {
     const d = new Date(dateStr);
@@ -265,6 +315,8 @@ export default function NewsManagementPage() {
       date: article.date,
       link: article.link,
       status: article.status,
+      linkedInvestmentIds: Array.isArray(article.linkedInvestmentIds) ? article.linkedInvestmentIds : [],
+      linkedCustomPageSlugs: Array.isArray(article.linkedCustomPageSlugs) ? article.linkedCustomPageSlugs : [],
     });
     setDialogOpen(true);
   }
@@ -321,6 +373,8 @@ export default function NewsManagementPage() {
         newsLink: formData.link.trim(),
         status: formData.status === "Published",
         newsDate,
+        linkedInvestmentIds: formData.linkedInvestmentIds,
+        linkedCustomPageSlugs: formData.linkedCustomPageSlugs,
       });
       if (!editingArticle) {
         setCurrentPage(1);
@@ -869,6 +923,58 @@ export default function NewsManagementPage() {
                 className={errors.link ? "border-destructive" : ""}
               />
               {errors.link && <p className="text-xs text-destructive mt-1">{errors.link}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Link to Investments</Label>
+              <p className="text-xs text-muted-foreground">
+                Show this article on the selected investment pages. Multi-select supported.
+              </p>
+              <MultiSelectPopover<number>
+                options={investmentOptions}
+                selected={formData.linkedInvestmentIds}
+                onToggle={(id) =>
+                  setFormData((f) => ({
+                    ...f,
+                    linkedInvestmentIds: f.linkedInvestmentIds.includes(id)
+                      ? f.linkedInvestmentIds.filter((x) => x !== id)
+                      : [...f.linkedInvestmentIds, id],
+                  }))
+                }
+                placeholder={isLoadingInvestmentOptions ? "Loading..." : "Select Investments"}
+                searchPlaceholder="Search investments…"
+                emptyMessage={isLoadingInvestmentOptions ? "Loading…" : "No results"}
+                showChips
+                disabled={isLoadingInvestmentOptions}
+                triggerClassName="h-10 px-3"
+                testId="multiselect-news-linked-investments"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Link to Custom Pages</Label>
+              <p className="text-xs text-muted-foreground">
+                Show this article on the selected custom pages (the home page is included in this list). Multi-select supported.
+              </p>
+              <MultiSelectPopover<string>
+                options={customPageOptions}
+                selected={formData.linkedCustomPageSlugs}
+                onToggle={(slug) =>
+                  setFormData((f) => ({
+                    ...f,
+                    linkedCustomPageSlugs: f.linkedCustomPageSlugs.includes(slug)
+                      ? f.linkedCustomPageSlugs.filter((x) => x !== slug)
+                      : [...f.linkedCustomPageSlugs, slug],
+                  }))
+                }
+                placeholder={isLoadingCustomPageOptions ? "Loading..." : "Select Custom Pages"}
+                searchPlaceholder="Search custom pages…"
+                emptyMessage={isLoadingCustomPageOptions ? "Loading…" : "No results"}
+                showChips
+                disabled={isLoadingCustomPageOptions}
+                triggerClassName="h-10 px-3"
+                testId="multiselect-news-linked-custom-pages"
+              />
             </div>
 
             <div className="space-y-1.5">

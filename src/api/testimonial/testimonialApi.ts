@@ -14,8 +14,12 @@ export interface TestimonialResponse {
     role: string;
     organizationName: string;
     userFullName: string;
+    userId?: string | null;
     profilePicture: string;
     status: boolean;
+    videoLink?: string | null;
+    linkedInvestmentIds?: number[];
+    linkedCustomPageSlugs?: string[];
 }
 
 export interface PaginatedTestimonialResponse {
@@ -23,12 +27,12 @@ export interface PaginatedTestimonialResponse {
     totalCount: number;
 }
 
-export async function fetchTestimonials(params?: { 
-    Search?: string; 
+export async function fetchTestimonials(params?: {
+    Search?: string;
     searchValue?: string;
-    PerspectiveText?: string; 
-    Status?: string; 
-    SortField?: string; 
+    PerspectiveText?: string;
+    Status?: string;
+    SortField?: string;
     SortDirection?: string;
     CurrentPage?: number;
     currentPage?: number;
@@ -63,6 +67,11 @@ export async function fetchTestimonials(params?: {
     return response.data;
 }
 
+export async function fetchTestimonialById(id: number): Promise<TestimonialResponse> {
+    const response = await axiosInstance.get<TestimonialResponse>(`/api/admin/testimonial/${id}`);
+    return response.data;
+}
+
 export async function deleteTestimonial(id: number): Promise<void> {
     await axiosInstance.delete(`/api/admin/testimonial/${id}`, {
         headers: { Accept: "application/octet-stream" },
@@ -79,6 +88,9 @@ export interface TestimonialCreateUpdatePayload {
     organizationName: string;
     userId: string;
     status: boolean;
+    videoLink?: string | null;
+    linkedInvestmentIds?: number[];
+    linkedCustomPageSlugs?: string[];
 }
 
 export async function createOrUpdateTestimonial(payload: TestimonialCreateUpdatePayload): Promise<TestimonialResponse> {
@@ -90,3 +102,4 @@ export async function createOrUpdateTestimonial(payload: TestimonialCreateUpdate
     });
     return response.data;
 }
+

@@ -14,6 +14,7 @@ import teamRoutes from "./routes/teams.js";
 import testimonialRoutes from "./routes/testimonials.js";
 import siteConfigRoutes from "./routes/siteConfiguration.js";
 import publicEventRoutes from "./routes/publicEvents.js";
+import publicTestimonialRoutes from "./routes/publicTestimonials.js";
 import publicSiteConfigRoutes from "./routes/publicSiteConfiguration.js";
 import formSubmissionRoutes from "./routes/formSubmission.js";
 import adminFormSubmissionRoutes from "./routes/adminFormSubmission.js";
@@ -58,6 +59,7 @@ app.use("/api/uploads", express.static(path.resolve(process.cwd(), "server", "up
 
 app.use("/api/userauthentication", authRoutes);
 app.use("/api/event", publicEventRoutes);
+app.use("/api/testimonial", publicTestimonialRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/home", jwtAuthMiddleware, dashboardRoutes);
 app.use("/api/admin/event", jwtAuthMiddleware, eventRoutes);
