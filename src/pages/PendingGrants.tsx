@@ -12,7 +12,7 @@ import { useSort } from "../hooks/useSort";
 import { useDebounce } from "../hooks/useDebounce";
 import { SortHeader } from "../components/ui/table-sort";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchPendingGrants, updatePendingGrant, exportPendingGrants, fetchPendingGrantNotes, deletePendingGrant, fetchDafProviders, PendingGrantEntry, NoteEntry } from "../api/pending-grant/pendingGrantApi";
+import { fetchPendingGrants, updatePendingGrant, exportPendingGrants, exportPendingGrantsByDaf, fetchPendingGrantNotes, deletePendingGrant, fetchDafProviders, PendingGrantEntry, NoteEntry } from "../api/pending-grant/pendingGrantApi";
 import { AttachmentsPicker, SelectedAttachment } from "../components/AttachmentsPicker";
 import { currency_format, formatDate } from "../helpers/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -172,6 +172,7 @@ export default function AdminPendingGrants() {
   };
   const { toast } = useToast();
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingDaf, setIsExportingDaf] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -373,6 +374,25 @@ export default function AdminPendingGrants() {
     }
   };
 
+  const handleDafExport = async () => {
+    setIsExportingDaf(true);
+    try {
+      await exportPendingGrantsByDaf();
+      toast({
+        title: "DAF provider summary exported.",
+        duration: 4000
+      });
+    } catch (err: any) {
+      toast({
+        title: "Failed to export DAF provider summary",
+        variant: "destructive",
+        duration: 4000
+      });
+    } finally {
+      setIsExportingDaf(false);
+    }
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -548,10 +568,25 @@ export default function AdminPendingGrants() {
                 </Popover>
               </div>
             </div>
-            <Button size="sm" className="bg-[#405189] text-white" data-testid="button-export-all" onClick={handleExport} disabled={isExporting}>
-              <Download className="h-4 w-4 mr-1.5" />
-              {isExporting ? "Exporting..." : "Export All"}
-            </Button>
+            <div className="flex items-center gap-2">
+              {authUser?.isSuperAdmin && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-[#405189] text-[#405189] hover:bg-[#405189]/10"
+                  data-testid="button-export-daf"
+                  onClick={handleDafExport}
+                  disabled={isExportingDaf}
+                >
+                  <Download className="h-4 w-4 mr-1.5" />
+                  {isExportingDaf ? "Exporting..." : "DAF Export"}
+                </Button>
+              )}
+              <Button size="sm" className="bg-[#405189] text-white" data-testid="button-export-all" onClick={handleExport} disabled={isExporting}>
+                <Download className="h-4 w-4 mr-1.5" />
+                {isExporting ? "Exporting..." : "Export All"}
+              </Button>
+            </div>
           </CardHeader>
 
           <CardContent className="p-0">

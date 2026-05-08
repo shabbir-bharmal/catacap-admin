@@ -141,6 +141,26 @@ export async function exportPendingGrants(): Promise<void> {
   window.URL.revokeObjectURL(downloadUrl);
 }
 
+export async function exportPendingGrantsByDaf(): Promise<void> {
+  const response = await axiosInstance.get("/api/admin/pending-grant/export-by-daf", {
+    responseType: "blob",
+  });
+
+  const blob = new Blob([response.data]);
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  link.setAttribute("download", `DAF_Providers_Summary_${dateStr}.xlsx`);
+
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}
+
 export async function deletePendingGrant(id: number): Promise<any> {
   const response = await axiosInstance.delete(`/api/admin/pending-grant/${id}`);
   return response.data;
