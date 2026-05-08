@@ -1,0 +1,122 @@
+Release 2026-05-07 — Success Stories: video link + multi-page linking
+=====================================================================
+
+Final intended schema for this release (single source of truth):
+  testimonials.video_link               TEXT NULL
+  testimonials.linked_investment_ids    INTEGER[] NOT NULL DEFAULT '{}'
+  testimonials.linked_custom_page_slugs TEXT[]    NOT NULL DEFAULT '{}'
+  + GIN indexes on both arrays
+
+A single success story can be linked to BOTH investments AND custom
+pages simultaneously (multi-select on each list, independent of the
+other). The home page is treated as just another custom-page slug, so
+no dedicated `show_on_home` boolean exists.
+
+Migration files in this release
+-------------------------------
+
+1) 2026_05_07_testimonial_inline_links.sql  — APPLY THIS (only file)
+
+Earlier iterations of this feature inside the same release added a
+`testimonial_links` junction table and a `show_on_home` boolean in
+two separate files. Per the user's mid-release clarification those
+were replaced with the inline arrays defined here, and the two
+superseded files were first reduced to no-ops and then deleted from
+the release entirely (they had only ever been applied to dev). The
+single file above is fully idempotent (`ADD COLUMN IF NOT EXISTS`,
+`CREATE INDEX IF NOT EXISTS`, `DROP COLUMN IF EXISTS`,
+`DROP TABLE IF EXISTS`) so dev environments that already ran the
+older files end up in the same final schema.
+
+Migration: 2026_05_07_testimonial_inline_links.sql
+--------------------------------------------------
+Schema changes
+  ALTER TABLE testimonials
+      ADD COLUMN IF NOT EXISTS video_link TEXT NULL;
+  ALTER TABLE testimonials
+      ADD COLUMN IF NOT EXISTS linked_investment_ids INTEGER[]
+          NOT NULL DEFAULT '{}'::INTEGER[];
+  ALTER TABLE testimonials
+      ADD COLUMN IF NOT EXISTS linked_custom_page_slugs TEXT[]
+          NOT NULL DEFAULT '{}'::TEXT[];
+  CREATE INDEX IF NOT EXISTS idx_testimonials_linked_investment_ids
+      ON testimonials USING GIN (linked_investment_ids);
+  CREATE INDEX IF NOT EXISTS idx_testimonials_linked_custom_page_slugs
+      ON testimonials USING GIN (linked_custom_page_slugs);
+  ALTER TABLE testimonials DROP COLUMN IF EXISTS show_on_home;
+  DROP TABLE IF EXISTS testimonial_links;
+
+Why GIN indexes
+  The public endpoint filters with `<col> @> ARRAY[$1]` (containment),
+  which GIN serves natively. Keeps slug/id lookups O(log n) and
+  consistent with similar tag-array filters elsewhere in the
+  codebase.
+
+Idempotency
+  Every step is `IF (NOT) EXISTS`-guarded and wrapped in a single
+  transaction. Re-runs are safe.
+
+Data preservation
+  The earlier same-day junction-table and show_on_home features were
+  applied to dev only; no production rows have been authored against
+  them yet, so no backfill from `testimonial_links` into the new
+  arrays is required.
+
+Application-side behavior (not in this migration)
+  - server/src/routes/testimonials.ts — admin route reads/writes the
+    two arrays directly.
+  - server/src/routes/publicTestimonials.ts — filters with
+    `linked_investment_ids @> ARRAY[$1]::INTEGER[]` and
+    `linked_custom_page_slugs @> ARRAY[$1]::TEXT[]`. The
+    `?showOnHome=` query param is removed.
+  - src/api/testimonial/testimonialApi.ts — types expose
+    `linkedInvestmentIds` / `linkedCustomPageSlugs`; legacy
+    `linkTargetType`, `linkTargetIds`, `linkTargetsByType`, and
+    `showOnHome` removed.
+  - src/pages/SuccessStoriesManagement.tsx — Investments and Custom
+    Pages multi-selects render side-by-side (independent multi-
+    selection); the Show-on-Home Yes/No radio, the type-toggle
+    radio, and the switch-confirmation dialog are removed; the list
+    table's "Linked To" cell shows independent counts for each.
+  - src/components/CaseStudySection.tsx — context is now required
+    (either `{kind:"investment"}` or `{kind:"customPage"}`); the
+    `home` variant is removed (home consumers pass the home page's
+    custom-page slug).
+
+Rollback
+  See the commented rollback block at the bottom of the SQL file. It
+  drops the new arrays and re-adds `show_on_home`. If the previous
+  `testimonial_links` junction table is needed back, recreate it from
+  git history (the original migration was deleted from the release
+  but remains in the commit history).
+
+
+Migration: 2026_05_07_news_inline_links.sql
+-------------------------------------------
+Adds two array columns to `news` mirroring the testimonials inline-links
+model so an article can link to multiple investment pages and multiple
+custom pages simultaneously:
+  ALTER TABLE news
+      ADD COLUMN IF NOT EXISTS linked_investment_ids INTEGER[]
+          NOT NULL DEFAULT '{}'::INTEGER[];
+  ALTER TABLE news
+      ADD COLUMN IF NOT EXISTS linked_custom_page_slugs TEXT[]
+          NOT NULL DEFAULT '{}'::TEXT[];
+  CREATE INDEX IF NOT EXISTS idx_news_linked_investment_ids
+      ON news USING GIN (linked_investment_ids);
+  CREATE INDEX IF NOT EXISTS idx_news_linked_custom_page_slugs
+      ON news USING GIN (linked_custom_page_slugs);
+
+The "home" page is treated as just another custom-page slug (no
+dedicated boolean), matching how Success Stories handles it.
+Idempotent and transactional.
+
+Application-side:
+  - server/src/routes/news.ts — list and getById return the arrays;
+    create/update accept and persist them.
+  - src/api/news/newsApi.ts — types extended with
+    linkedInvestmentIds / linkedCustomPageSlugs.
+  - src/pages/NewsManagement.tsx — Add/Edit dialog renders the same
+    "Link to Investments" + "Link to Custom Pages" multi-selects used
+    by Success Stories (Communities/Companies hidden, Home prepended
+    when missing).

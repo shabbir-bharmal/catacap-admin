@@ -29,6 +29,8 @@ export interface NewsApiItem {
     link: string;
     status: boolean;       // true = Published, false = Draft
     newsDate: string;      // e.g. "24 Feb 2026"
+    linkedInvestmentIds?: number[];
+    linkedCustomPageSlugs?: string[];
 }
 
 export interface PaginatedNewsResponse {
@@ -100,6 +102,11 @@ export interface NewsCreateUpdatePayload {
     status: boolean;
     /** ISO 8601 date-time string, e.g. "2026-02-25T00:00:00.000Z" */
     newsDate: string;
+    /** Investment ids this article should be shown on (multi-select). */
+    linkedInvestmentIds?: number[];
+    /** Custom-page slugs this article should be shown on (multi-select).
+     *  The "home" slug represents the home page. */
+    linkedCustomPageSlugs?: string[];
 }
 
 /**

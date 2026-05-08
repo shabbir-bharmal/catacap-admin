@@ -6,6 +6,28 @@ import { resolveFileUrl } from "../utils/uploadBase64Image.js";
 
 const router = Router();
 
+function normalizeIntIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .map((v: unknown) => parseInt(String(v), 10))
+        .filter((n: number) => Number.isInteger(n) && n > 0)
+    )
+  );
+}
+
+function normalizeSlugs(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .map((v: unknown) => (v == null ? "" : String(v).trim()))
+        .filter((s: string) => s.length > 0)
+    )
+  );
+}
+
 router.get("/", async (req: Request, res: Response) => {
   try {
     const params = parsePagination(req.query as Record<string, unknown>);
@@ -74,6 +96,7 @@ router.get("/", async (req: Request, res: Response) => {
       `SELECT
          t.id, t.display_order, t.perspective_text, t.description,
          t.status, t.metrics, t.role, t.organization_name,
+         t.video_link, t.linked_investment_ids, t.linked_custom_page_slugs,
          u.first_name, u.last_name, u.id AS user_id, u.picture_file_name,
          t.deleted_at,
          du.first_name AS del_fn, du.last_name AS del_ln
@@ -110,6 +133,9 @@ router.get("/", async (req: Request, res: Response) => {
         userFullName: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
         userId: r.user_id,
         profilePicture: resolveFileUrl(r.picture_file_name, "users"),
+        videoLink: r.video_link ?? null,
+        linkedInvestmentIds: normalizeIntIds(r.linked_investment_ids),
+        linkedCustomPageSlugs: normalizeSlugs(r.linked_custom_page_slugs),
         deletedAt: r.deleted_at,
         deletedBy: r.del_fn ? `${r.del_fn} ${r.del_ln}` : null,
       };
@@ -131,6 +157,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     const result = await pool.query(
       `SELECT t.id, t.display_order, t.perspective_text, t.description,
               t.status, t.metrics, t.role, t.organization_name,
+              t.video_link, t.linked_investment_ids, t.linked_custom_page_slugs,
               u.first_name, u.last_name, u.id AS user_id, u.picture_file_name
        FROM testimonials t
        LEFT JOIN users u ON t.user_id = u.id AND (u.is_deleted IS NULL OR u.is_deleted = false)
@@ -167,6 +194,9 @@ router.get("/:id", async (req: Request, res: Response) => {
       userFullName: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
       userId: r.user_id,
       profilePicture: resolveFileUrl(r.picture_file_name, "users"),
+      videoLink: r.video_link ?? null,
+      linkedInvestmentIds: normalizeIntIds(r.linked_investment_ids),
+      linkedCustomPageSlugs: normalizeSlugs(r.linked_custom_page_slugs),
     });
   } catch (err) {
     console.error("Testimonials GetById error:", err);
@@ -175,6 +205,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 });
 
 router.post("/", async (req: Request, res: Response) => {
+  const client = await pool.connect();
   try {
     const dto = req.body;
     if (!dto) { res.status(400).json({ message: "Invalid data." }); return; }
@@ -191,49 +222,78 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    const linkedInvestmentIds = normalizeIntIds(dto.linkedInvestmentIds);
+    const linkedCustomPageSlugs = normalizeSlugs(dto.linkedCustomPageSlugs);
+
     const metricsJson = dto.metrics ? JSON.stringify(
       dto.metrics.map((m: any) => ({ Key: m.key || m.Key || "", Value: m.value || m.Value || "" }))
     ) : null;
 
+    const videoLinkRaw = typeof dto.videoLink === "string" ? dto.videoLink.trim() : null;
+    const videoLink = videoLinkRaw && videoLinkRaw.length > 0 ? videoLinkRaw : null;
+
+    await client.query("BEGIN");
+
+    let savedId: number;
+
     if (dto.id && dto.id > 0) {
-      const existing = await pool.query(`SELECT id FROM testimonials WHERE id = $1`, [dto.id]);
+      const existing = await client.query(`SELECT id FROM testimonials WHERE id = $1`, [dto.id]);
       if (existing.rows.length === 0) {
+        await client.query("ROLLBACK");
         res.json({ success: false, message: "Testimonial not found." });
         return;
       }
 
-      await pool.query(
+      await client.query(
         `UPDATE testimonials SET
            display_order = $1, perspective_text = $2, description = $3,
            status = $4, metrics = $5, role = $6,
-           organization_name = $7, user_id = $8
-         WHERE id = $9`,
+           organization_name = $7, user_id = $8,
+           video_link = $9,
+           linked_investment_ids = $10::INTEGER[],
+           linked_custom_page_slugs = $11::TEXT[]
+         WHERE id = $12`,
         [
           dto.displayOrder, dto.perspectiveText, dto.description,
           dto.status, metricsJson, dto.role,
-          dto.organizationName, dto.userId, dto.id,
+          dto.organizationName, dto.userId,
+          videoLink,
+          linkedInvestmentIds,
+          linkedCustomPageSlugs,
+          dto.id,
         ]
       );
 
-      res.json({ success: true, message: "Testimonial updated successfully.", data: dto.id });
+      savedId = dto.id;
+      await client.query("COMMIT");
+      res.json({ success: true, message: "Testimonial updated successfully.", data: savedId });
     } else {
-      const result = await pool.query(
+      const result = await client.query(
         `INSERT INTO testimonials (display_order, perspective_text, description,
-           status, metrics, role, organization_name, user_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+           status, metrics, role, organization_name, user_id,
+           video_link, linked_investment_ids, linked_custom_page_slugs, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::INTEGER[], $11::TEXT[], NOW())
          RETURNING id`,
         [
           dto.displayOrder, dto.perspectiveText, dto.description,
           dto.status, metricsJson, dto.role,
           dto.organizationName, dto.userId,
+          videoLink,
+          linkedInvestmentIds,
+          linkedCustomPageSlugs,
         ]
       );
 
-      res.json({ success: true, message: "Testimonial created successfully.", data: result.rows[0].id });
+      savedId = result.rows[0].id as number;
+      await client.query("COMMIT");
+      res.json({ success: true, message: "Testimonial created successfully.", data: savedId });
     }
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch { /* noop */ }
     console.error("Testimonials Create error:", err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
   }
 });
 

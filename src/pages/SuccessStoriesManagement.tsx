@@ -1,5 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
-import { fetchTestimonials, deleteTestimonial, createOrUpdateTestimonial, TestimonialCreateUpdatePayload } from "@/api/testimonial/testimonialApi";
+import { useQuery } from "@tanstack/react-query";
+import {
+  fetchTestimonials,
+  fetchTestimonialById,
+  deleteTestimonial,
+  createOrUpdateTestimonial,
+  TestimonialCreateUpdatePayload,
+} from "@/api/testimonial/testimonialApi";
+import { fetchAllInvestmentNameList, type InvestmentNameListItem } from "../api/investment/investmentApi";
+import { fetchCustomPages } from "../api/event/customPagesApi";
+import { MultiSelectPopover, type MultiSelectOption } from "@/components/MultiSelectPopover";
 import { getUrlBlobContainerImage as getContainerImage } from "@/lib/image-utils";
 import { fetchUsersDropdown, UserDropdownItem } from "@/api/user/userApi";
 import { useToast } from "@/hooks/use-toast";
@@ -17,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Search, Plus, ChevronLeft, ChevronRight, ArrowUpDown, Pencil, Trash2, Eye, Minus, Check, ChevronsUpDown, ChevronDown, Loader2 } from "lucide-react";
+import { Search, Plus, ChevronLeft, ChevronRight, ArrowUpDown, Pencil, Trash2, Eye, Minus, Check, ChevronsUpDown, ChevronDown, Loader2, Video, Link2 } from "lucide-react";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { useSort } from "@/hooks/useSort";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -43,12 +53,52 @@ interface SuccessStory {
   personImage: string;
   status: "Active" | "Draft";
   order: number;
+  videoLink: string | null;
+  linkedInvestmentIds: number[];
+  linkedCustomPageSlugs: string[];
 }
 
 const PERSPECTIVE_LABELS: Record<Perspective, string> = {
   funder: "Investment",
   investee: "Donor Investor"
 };
+
+function isValidUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function getVideoEmbedUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === "youtube.com" || host === "m.youtube.com") {
+      const id = u.searchParams.get("v");
+      if (id) return `https://www.youtube.com/embed/${id}`;
+      const m = u.pathname.match(/^\/(?:embed|shorts)\/([^/?#]+)/);
+      if (m) return `https://www.youtube.com/embed/${m[1]}`;
+      return null;
+    }
+    if (host === "youtu.be") {
+      const id = u.pathname.replace(/^\//, "").split("/")[0];
+      if (id) return `https://www.youtube.com/embed/${id}`;
+      return null;
+    }
+    if (host === "vimeo.com") {
+      const id = u.pathname.replace(/^\//, "").split("/")[0];
+      if (/^\d+$/.test(id)) return `https://player.vimeo.com/video/${id}`;
+      return null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 const emptyForm = {
   perspective: "funder" as Perspective,
@@ -59,7 +109,10 @@ const emptyForm = {
   personTitle: "",
   personOrg: "",
   personImage: "",
-  status: "Active" as "Active" | "Draft"
+  status: "Active" as "Active" | "Draft",
+  videoLink: "",
+  linkedInvestmentIds: [] as number[],
+  linkedCustomPageSlugs: [] as string[],
 };
 
 type SortField = "person" | "perspective" | "displayorder" | "status";
@@ -95,6 +148,57 @@ export default function SuccessStoriesManagement() {
   const [userPopoverOpen, setUserPopoverOpen] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  const investmentsListQuery = useQuery({
+    queryKey: ["testimonial-link-investments"],
+    queryFn: () => fetchAllInvestmentNameList(0, 0),
+    staleTime: 5 * 60 * 1000,
+  });
+  const customPagesListQuery = useQuery({
+    queryKey: ["testimonial-link-custom-pages"],
+    queryFn: () => fetchCustomPages(),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const investmentOptions: MultiSelectOption<number>[] = useMemo(() => {
+    const list: InvestmentNameListItem[] = Array.isArray(investmentsListQuery.data) ? investmentsListQuery.data : [];
+    return list
+      .map((it) => {
+        const rawId = (it.id ?? (it as Record<string, unknown>).Id ?? (it as Record<string, unknown>).investmentId ?? (it as Record<string, unknown>).InvestmentId) as unknown;
+        const rawName = (it.name ?? (it as Record<string, unknown>).Name ?? (it as Record<string, unknown>).title ?? (it as Record<string, unknown>).Title ?? "") as unknown;
+        return { id: Number(rawId ?? 0), name: String(rawName ?? "") };
+      })
+      .filter((o) => Number.isInteger(o.id) && o.id > 0 && o.name.length > 0);
+  }, [investmentsListQuery.data]);
+
+  const customPageOptions: MultiSelectOption<string>[] = useMemo(() => {
+    const list = Array.isArray(customPagesListQuery.data) ? customPagesListQuery.data : [];
+    const HIDDEN_SLUGS = new Set(["communities", "companies"]);
+    const filtered = list
+      .filter((p) => p.slug && !HIDDEN_SLUGS.has(p.slug.toLowerCase()))
+      .map((p) => ({ id: p.slug, name: p.title || p.slug }));
+    const hasHome = filtered.some((o) => o.id.toLowerCase() === "home");
+    return hasHome ? filtered : [{ id: "home", name: "Home" }, ...filtered];
+  }, [customPagesListQuery.data]);
+
+  const isLoadingInvestmentOptions = investmentsListQuery.isLoading;
+  const isLoadingCustomPageOptions = customPagesListQuery.isLoading;
+
+  function toggleInvestmentLinkId(id: number) {
+    setFormData((prev) => {
+      const current = prev.linkedInvestmentIds;
+      const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+      return { ...prev, linkedInvestmentIds: next };
+    });
+  }
+
+  function toggleCustomPageLinkId(slug: string) {
+    setFormData((prev) => {
+      const current = prev.linkedCustomPageSlugs;
+      const next = current.includes(slug) ? current.filter((x) => x !== slug) : [...current, slug];
+      return { ...prev, linkedCustomPageSlugs: next };
+    });
+  }
+
   const loadStories = async () => {
     try {
       const params = {
@@ -117,7 +221,10 @@ export default function SuccessStoriesManagement() {
         personOrg: item.organizationName || "",
         personImage: getContainerImage(item.profilePicture),
         status: item.status ? "Active" : "Draft",
-        order: item.displayOrder ?? item.id
+        order: item.displayOrder ?? item.id,
+        videoLink: item.videoLink ?? null,
+        linkedInvestmentIds: Array.isArray(item.linkedInvestmentIds) ? item.linkedInvestmentIds : [],
+        linkedCustomPageSlugs: Array.isArray(item.linkedCustomPageSlugs) ? item.linkedCustomPageSlugs : [],
       }));
       setStories(mappedStories);
       setTotalCount(data.totalCount);
@@ -157,18 +264,18 @@ export default function SuccessStoriesManagement() {
 
   function openAdd() {
     setEditingStory(null);
-    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }] });
+    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }], linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
     setFormOpen(true);
   }
 
   function closeDialog() {
     setFormOpen(false);
     setEditingStory(null);
-    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }] });
+    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }], linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
     setErrors({});
   }
 
-  function openEdit(story: SuccessStory) {
+  async function openEdit(story: SuccessStory) {
     setEditingStory(story);
     const matchedUser = usersDropdown.find((u) => u.fullName === story.personName);
     setFormData({
@@ -180,10 +287,25 @@ export default function SuccessStoriesManagement() {
       personTitle: story.personTitle,
       personOrg: story.personOrg,
       personImage: story.personImage,
-      status: story.status
+      status: story.status,
+      videoLink: story.videoLink ?? "",
+      linkedInvestmentIds: [...story.linkedInvestmentIds],
+      linkedCustomPageSlugs: [...story.linkedCustomPageSlugs],
     });
     setErrors({});
     setFormOpen(true);
+
+    try {
+      const detail = await fetchTestimonialById(story.id);
+      setFormData((prev) => ({
+        ...prev,
+        videoLink: detail.videoLink ?? "",
+        linkedInvestmentIds: Array.isArray(detail.linkedInvestmentIds) ? [...detail.linkedInvestmentIds] : [],
+        linkedCustomPageSlugs: Array.isArray(detail.linkedCustomPageSlugs) ? [...detail.linkedCustomPageSlugs] : [],
+      }));
+    } catch (err) {
+      console.error("Failed to load testimonial detail:", err);
+    }
   }
 
   async function handleSave() {
@@ -191,6 +313,10 @@ export default function SuccessStoriesManagement() {
     if (!formData.quote.trim()) newErrors.quote = "Quote is required";
     if (!formData.selectedUserId) newErrors.person = "Person is required";
     if (!formData.personTitle.trim()) newErrors.personTitle = "Title / Role is required";
+    const trimmedVideoLink = formData.videoLink.trim();
+    if (trimmedVideoLink.length > 0 && !isValidUrl(trimmedVideoLink)) {
+      newErrors.videoLink = "Enter a valid http(s) URL";
+    }
 
     const stats: Stat[] = formData.stats.filter((s) => s.value.trim() || s.label.trim());
     if (stats.length === 0) {
@@ -222,7 +348,10 @@ export default function SuccessStoriesManagement() {
         role: formData.personTitle.trim(),
         organizationName: formData.personOrg?.trim(),
         userId: formData.selectedUserId,
-        status: formData.status === "Active"
+        status: formData.status === "Active",
+        videoLink: trimmedVideoLink.length > 0 ? trimmedVideoLink : null,
+        linkedInvestmentIds: [...formData.linkedInvestmentIds],
+        linkedCustomPageSlugs: [...formData.linkedCustomPageSlugs],
       };
 
       await createOrUpdateTestimonial(payload);
@@ -397,6 +526,8 @@ export default function SuccessStoriesManagement() {
                     </SortHeader>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Quote</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Stats</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Linked To</th>
                     <SortHeader
                       field="status"
                       sortField={sortField}
@@ -450,6 +581,48 @@ export default function SuccessStoriesManagement() {
                             </div>
                           ))}
                         </div>
+                      </td>
+                      <td className="px-4 py-3" data-testid={`cell-video-${story.id}`}>
+                        {story.videoLink ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <a
+                                href={story.videoLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center text-primary hover:underline"
+                                data-testid={`link-video-${story.id}`}
+                              >
+                                <Video className="h-4 w-4" />
+                              </a>
+                            </TooltipTrigger>
+                            <TooltipContent>Watch video</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3" data-testid={`cell-link-summary-${story.id}`}>
+                        {story.linkedInvestmentIds.length > 0 || story.linkedCustomPageSlugs.length > 0 ? (
+                          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                            {story.linkedInvestmentIds.length > 0 && (
+                              <span className="inline-flex items-center gap-1">
+                                <Link2 className="h-3.5 w-3.5" />
+                                {story.linkedInvestmentIds.length} investment
+                                {story.linkedInvestmentIds.length === 1 ? "" : "s"}
+                              </span>
+                            )}
+                            {story.linkedCustomPageSlugs.length > 0 && (
+                              <span className="inline-flex items-center gap-1">
+                                <Link2 className="h-3.5 w-3.5" />
+                                {story.linkedCustomPageSlugs.length} custom page
+                                {story.linkedCustomPageSlugs.length === 1 ? "" : "s"}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <Badge
@@ -523,7 +696,7 @@ export default function SuccessStoriesManagement() {
                   ))}
                   {paginated.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="py-12 text-center text-muted-foreground">
+                      <td colSpan={10} className="py-12 text-center text-muted-foreground">
                         No success stories found matching your filters.
                       </td>
                     </tr>
@@ -765,6 +938,65 @@ export default function SuccessStoriesManagement() {
                 />
               </div>
             </div>
+
+            <div>
+              <Label>Video Link</Label>
+              <Input
+                type="url"
+                value={formData.videoLink}
+                onChange={(e) => {
+                  setFormData({ ...formData, videoLink: e.target.value });
+                  if (errors.videoLink)
+                    setErrors((prev) => {
+                      const n = { ...prev };
+                      delete n.videoLink;
+                      return n;
+                    });
+                }}
+                placeholder="https://www.youtube.com/watch?v=…"
+                className={errors.videoLink ? "border-destructive focus-visible:ring-destructive" : ""}
+                data-testid="input-story-video-link"
+              />
+              {errors.videoLink && <p className="text-xs text-destructive mt-1">{errors.videoLink}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Link to Investments</Label>
+              <p className="text-xs text-muted-foreground">
+                Show this story on the selected investment pages. Multi-select supported.
+              </p>
+              <MultiSelectPopover<number>
+                options={investmentOptions}
+                selected={formData.linkedInvestmentIds}
+                onToggle={toggleInvestmentLinkId}
+                placeholder={isLoadingInvestmentOptions ? "Loading..." : "Select Investments"}
+                searchPlaceholder="Search investments…"
+                emptyMessage={isLoadingInvestmentOptions ? "Loading…" : "No results"}
+                showChips
+                disabled={isLoadingInvestmentOptions}
+                triggerClassName="h-10 px-3"
+                testId="multiselect-story-linked-investments"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Link to Custom Pages</Label>
+              <p className="text-xs text-muted-foreground">
+                Show this story on the selected custom pages (the home page is included in this list). Multi-select supported.
+              </p>
+              <MultiSelectPopover<string>
+                options={customPageOptions}
+                selected={formData.linkedCustomPageSlugs}
+                onToggle={toggleCustomPageLinkId}
+                placeholder={isLoadingCustomPageOptions ? "Loading..." : "Select Custom Pages"}
+                searchPlaceholder="Search custom pages…"
+                emptyMessage={isLoadingCustomPageOptions ? "Loading…" : "No results"}
+                showChips
+                disabled={isLoadingCustomPageOptions}
+                triggerClassName="h-10 px-3"
+                testId="multiselect-story-linked-custom-pages"
+              />
+            </div>
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={closeDialog} disabled={isSaving} data-testid="button-cancel-story">
@@ -847,6 +1079,66 @@ export default function SuccessStoriesManagement() {
                   <div className="text-sm text-muted-foreground">{previewStory.personOrg}</div>
                 </div>
               </div>
+
+              {previewStory.videoLink && (
+                <div className="space-y-2 pt-2" data-testid="preview-video">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Video className="h-4 w-4" /> Video
+                  </div>
+                  {(() => {
+                    const embed = getVideoEmbedUrl(previewStory.videoLink);
+                    return embed ? (
+                      <div className="aspect-video w-full overflow-hidden rounded-md bg-black">
+                        <iframe
+                          src={embed}
+                          title="Success story video"
+                          className="h-full w-full"
+                          frameBorder={0}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                        />
+                      </div>
+                    ) : null;
+                  })()}
+                  <a
+                    href={previewStory.videoLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-sm text-primary hover:underline break-all"
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    {previewStory.videoLink}
+                  </a>
+                </div>
+              )}
+
+              {(previewStory.linkedInvestmentIds.length > 0 || previewStory.linkedCustomPageSlugs.length > 0) && (
+                <div className="space-y-2 pt-2 border-t" data-testid="preview-links">
+                  <div className="text-sm font-medium">Linked To</div>
+                  {previewStory.linkedInvestmentIds.length > 0 && (
+                    <div className="text-sm">
+                      <span className="text-muted-foreground">Investments: </span>
+                      {previewStory.linkedInvestmentIds
+                        .map((id) => {
+                          const opt = investmentOptions.find((o) => o.id === id);
+                          return opt ? opt.name : `#${id}`;
+                        })
+                        .join(", ")}
+                    </div>
+                  )}
+                  {previewStory.linkedCustomPageSlugs.length > 0 && (
+                    <div className="text-sm">
+                      <span className="text-muted-foreground">Custom Pages: </span>
+                      {previewStory.linkedCustomPageSlugs
+                        .map((slug) => {
+                          const opt = customPageOptions.find((o) => o.id === slug);
+                          return opt ? opt.name : slug;
+                        })
+                        .join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>
