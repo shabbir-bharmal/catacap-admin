@@ -1,6 +1,43 @@
 Release 07_05_2026
 ==================
 
+Run log
+-------
+2026-05-08 — Applied via the pooler (SUPABASE_DB_URL):
+  - migrations/2026_05_07_testimonial_inline_links.sql  → OK
+  - migrations/2026_05_07_news_inline_links.sql         → OK
+
+Operational note: three Supavisor sessions had been "idle in transaction"
+for ~27 hours running `COPY ... TO stdout;` (leaked pg_dump workers from
+the BackupDatabase scheduler), holding AccessShareLocks on `news`,
+`testimonials`, and `raise_money_applications`. This caused the migrations'
+ALTER TABLE statements to time out on lock acquisition. Force-terminating
+those PIDs via `pg_terminate_backend` (one at a time) freed the locks; both
+files then ran cleanly inside their own BEGIN..COMMIT. A follow-up task
+(#22) was opened to fix the BackupDatabase scheduler so future runs do not
+leak idle-in-transaction sessions.
+
+Verification (queried via the pooler immediately after the run):
+
+## Columns
+  - news.linked_custom_page_slugs          udt=_text  nullable=NO  default='{}'::text[]
+  - news.linked_investment_ids             udt=_int4  nullable=NO  default='{}'::integer[]
+  - testimonials.linked_custom_page_slugs  udt=_text  nullable=NO  default='{}'::text[]
+  - testimonials.linked_investment_ids     udt=_int4  nullable=NO  default='{}'::integer[]
+  - testimonials.video_link                udt=text   nullable=YES default=NULL
+
+## Drops
+  - testimonial_links table exists:        false
+  - testimonials.show_on_home column:      false (dropped)
+
+## Indexes
+  - idx_news_linked_custom_page_slugs          ON public.news         USING gin (linked_custom_page_slugs)
+  - idx_news_linked_investment_ids             ON public.news         USING gin (linked_investment_ids)
+  - idx_testimonials_linked_custom_page_slugs  ON public.testimonials USING gin (linked_custom_page_slugs)
+  - idx_testimonials_linked_investment_ids     ON public.testimonials USING gin (linked_investment_ids)
+
+------------------------------------------------------------
+
 Migrations in this release (apply in order):
   1. 2026_05_07_backfill_fundher_match_activity.sql
   2. 2026_05_07_fundher_backfill_audit.sql
