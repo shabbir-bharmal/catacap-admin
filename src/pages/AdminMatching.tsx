@@ -9,6 +9,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axiosInstance from "../api/axios";
@@ -312,7 +322,17 @@ function GrantFormDialog({
   const [saving, setSaving] = useState(false);
   const isEdit = !!initial.id;
 
-  useEffect(() => { setForm(initial); }, [initial, open]);
+  // Edit-mode cap adjuster: user picks "Add" or "Remove" + amount instead
+  // of typing a new absolute cap. We translate the signed delta into the
+  // absolute totalCap that the API expects.
+  const [capAdjustMode, setCapAdjustMode] = useState<"add" | "subtract">("add");
+  const [capAdjustAmount, setCapAdjustAmount] = useState<string>("");
+
+  useEffect(() => {
+    setForm(initial);
+    setCapAdjustMode("add");
+    setCapAdjustAmount("");
+  }, [initial, open]);
 
   const upd = (key: keyof typeof EMPTY_FORM, val: any) =>
     setForm((prev) => ({ ...prev, [key]: val }));
@@ -328,6 +348,47 @@ function GrantFormDialog({
   const effectiveAvailable = isEdit
     ? form.donorBalance + form.reservedAmount
     : form.donorBalance;
+
+  // Translate the cap delta (edit mode) into the absolute totalCap the
+  // backend expects. The baseline is the grant's persisted cap (not the
+  // reservation, which can diverge for over-cap grants). When the
+  // adjust field is blank we leave form.totalCap untouched so the PUT
+  // payload still carries the original cap unchanged.
+  const initialCapNum =
+    initial.totalCap !== "" && initial.totalCap != null
+      ? Number(initial.totalCap)
+      : 0;
+  const currentCap = isEdit ? initialCapNum : 0;
+  const adjustNumRaw = capAdjustAmount === "" ? NaN : Number(capAdjustAmount);
+  const adjustNum = Number.isFinite(adjustNumRaw) && adjustNumRaw >= 0 ? adjustNumRaw : 0;
+  const signedDelta =
+    capAdjustAmount === "" ? 0 : (capAdjustMode === "add" ? 1 : -1) * adjustNum;
+  const proposedCap = Math.round((currentCap + signedDelta) * 100) / 100;
+
+  useEffect(() => {
+    // Only sync form.totalCap when the user has explicitly entered an
+    // adjustment. Otherwise the PUT payload retains the persisted cap.
+    if (!isEdit || capAdjustAmount === "") return;
+    setForm((prev) => ({ ...prev, totalCap: String(proposedCap) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposedCap, capAdjustAmount, isEdit]);
+
+  // Donor-impact preview. Adds reserve more from the donor's wallet;
+  // subtracts return funds to the donor's wallet. Only the unused
+  // portion of the reservation is mobile, so a subtract that would push
+  // the cap below amount_used is blocked.
+  const capDeltaInvalidReason: string | null = (() => {
+    if (!isEdit || capAdjustAmount === "") return null;
+    if (!Number.isFinite(adjustNumRaw) || adjustNumRaw < 0) return "Enter a positive amount.";
+    if (signedDelta > 0 && signedDelta > form.donorBalance) {
+      return `Donor wallet only has ${currency_format(form.donorBalance)} — add funds to ${form.donorFullName || form.donorEmail || "the donor"}'s wallet first.`;
+    }
+    if (signedDelta < 0 && proposedCap < form.amountUsed) {
+      const minSubtract = Math.max(0, currentCap - form.amountUsed);
+      return `Cannot subtract more than ${currency_format(minSubtract)} — ${currency_format(form.amountUsed)} has already been matched.`;
+    }
+    return null;
+  })();
 
   const handleSave = async () => {
     if (!form.donorUserId) {
@@ -458,55 +519,190 @@ function GrantFormDialog({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label className="text-sm">Total Grant Cap ($)</Label>
-              {isEdit && form.reservedAmount > 0 && (
-                <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-0.5" data-testid="panel-current-cap-summary">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Current cap</span>
-                    <span className="font-medium tabular-nums" data-testid="text-current-cap">{currency_format(form.reservedAmount)}</span>
+
+              {isEdit ? (
+                // ── Edit mode: delta-based adjuster ──────────────────
+                <>
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-0.5" data-testid="panel-current-cap-summary">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Current cap</span>
+                      <span className="font-medium tabular-nums" data-testid="text-current-cap">{currency_format(currentCap)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Already matched</span>
+                      <span className="font-medium tabular-nums text-amber-600 dark:text-amber-400" data-testid="text-amount-matched">{currency_format(form.amountUsed)}</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-0.5 mt-1">
+                      <span className="text-muted-foreground">Remaining</span>
+                      <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(remainingCap)}</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-0.5 mt-1">
+                      <span className="text-muted-foreground">Donor wallet balance</span>
+                      <span className="font-medium tabular-nums" data-testid="text-donor-balance">{currency_format(form.donorBalance)}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Already matched</span>
-                    <span className="font-medium tabular-nums text-amber-600 dark:text-amber-400" data-testid="text-amount-matched">{currency_format(form.amountUsed)}</span>
+
+                  <div className="rounded-md border p-3 space-y-3 mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">Adjust cap:</span>
+                      <div className="inline-flex rounded-md border overflow-hidden text-xs" role="group">
+                        <button
+                          type="button"
+                          onClick={() => setCapAdjustMode("add")}
+                          data-testid="button-cap-mode-add"
+                          className={cn(
+                            "px-3 py-1 font-medium transition-colors",
+                            capAdjustMode === "add"
+                              ? "bg-emerald-600 text-white"
+                              : "bg-background hover:bg-muted",
+                          )}
+                        >
+                          + Add funds
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCapAdjustMode("subtract")}
+                          data-testid="button-cap-mode-subtract"
+                          className={cn(
+                            "px-3 py-1 font-medium transition-colors border-l",
+                            capAdjustMode === "subtract"
+                              ? "bg-amber-600 text-white"
+                              : "bg-background hover:bg-muted",
+                          )}
+                        >
+                          − Remove funds
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {[1000, 5000, 10000, 25000, 100000].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setCapAdjustAmount(String(preset))}
+                          data-testid={`button-cap-preset-${preset}`}
+                          className={cn(
+                            "rounded border px-2 py-1 text-xs font-medium transition-colors",
+                            capAdjustAmount === String(preset)
+                              ? capAdjustMode === "add"
+                                ? "border-emerald-600 bg-emerald-50 text-emerald-700 dark:bg-emerald-950"
+                                : "border-amber-600 bg-amber-50 text-amber-700 dark:bg-amber-950"
+                              : "bg-background hover:bg-muted",
+                          )}
+                        >
+                          {capAdjustMode === "add" ? "+" : "−"}
+                          {currency_format(preset)}
+                        </button>
+                      ))}
+                      {capAdjustAmount !== "" && (
+                        <button
+                          type="button"
+                          onClick={() => setCapAdjustAmount("")}
+                          data-testid="button-cap-clear"
+                          className="rounded border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Custom amount ($)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={capAdjustAmount}
+                        onChange={(e) => setCapAdjustAmount(e.target.value)}
+                        placeholder="e.g. 5000"
+                        data-testid="input-cap-adjust-amount"
+                        className={
+                          capDeltaInvalidReason
+                            ? "border-destructive focus-visible:ring-destructive"
+                            : ""
+                        }
+                      />
+                    </div>
+
+                    {capAdjustAmount === "" ? (
+                      <p className="text-xs text-muted-foreground" data-testid="text-cap-no-change">
+                        No cap change. Pick an amount to add or remove.
+                      </p>
+                    ) : capDeltaInvalidReason ? (
+                      <p className="text-xs text-destructive font-medium" data-testid="text-cap-delta-error">
+                        {capDeltaInvalidReason}
+                      </p>
+                    ) : (
+                      <div
+                        className={cn(
+                          "rounded-md border-l-4 px-3 py-2 text-xs space-y-1",
+                          signedDelta > 0
+                            ? "border-l-emerald-600 bg-emerald-50 dark:bg-emerald-950/40"
+                            : "border-l-amber-600 bg-amber-50 dark:bg-amber-950/40",
+                        )}
+                        data-testid="panel-cap-delta-preview"
+                      >
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">New cap will be</span>
+                          <span className="font-semibold tabular-nums" data-testid="text-cap-proposed">
+                            {currency_format(proposedCap)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">
+                            {signedDelta > 0 ? "Reserved from donor wallet" : "Returned to donor wallet"}
+                          </span>
+                          <span
+                            className={cn(
+                              "font-semibold tabular-nums",
+                              signedDelta > 0
+                                ? "text-emerald-700 dark:text-emerald-400"
+                                : "text-amber-700 dark:text-amber-400",
+                            )}
+                            data-testid="text-cap-delta-impact"
+                          >
+                            {signedDelta > 0 ? "−" : "+"}{currency_format(Math.abs(signedDelta))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between border-t pt-1 mt-1">
+                          <span className="text-muted-foreground">Donor wallet after</span>
+                          <span className="font-medium tabular-nums" data-testid="text-donor-balance-after">
+                            {currency_format(form.donorBalance - signedDelta)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex justify-between border-t pt-0.5 mt-1">
-                    <span className="text-muted-foreground">Remaining</span>
-                    <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(remainingCap)}</span>
-                  </div>
-                </div>
-              )}
-              <Input
-                type="number"
-                min={isEdit ? form.amountUsed : 0}
-                value={form.totalCap}
-                onChange={(e) => upd("totalCap", e.target.value)}
-                placeholder="Leave empty for unlimited"
-                data-testid="input-total-cap"
-                className={
-                  form.totalCap !== "" && form.donorUserId && (
-                    Number(form.totalCap) > effectiveAvailable ||
-                    (isEdit && Number(form.totalCap) < form.amountUsed)
-                  )
-                    ? "border-destructive focus-visible:ring-destructive"
-                    : ""
-                }
-              />
-              {form.donorUserId && form.totalCap !== "" && Number(form.totalCap) > effectiveAvailable ? (
-                <p className="text-xs text-destructive font-medium" data-testid="text-cap-error-exceeds">
-                  Exceeds maximum {currency_format(effectiveAvailable)}
-                </p>
-              ) : form.donorUserId && isEdit && form.totalCap !== "" && Number(form.totalCap) < form.amountUsed ? (
-                <p className="text-xs text-destructive font-medium" data-testid="text-cap-error-too-low">
-                  Cannot be below already-matched {currency_format(form.amountUsed)}
-                </p>
-              ) : form.donorUserId ? (
-                <p className="text-xs text-muted-foreground">
-                  {isEdit
-                    ? `Min ${currency_format(form.amountUsed)} · Max ${currency_format(effectiveAvailable)} (donor balance ${currency_format(form.donorBalance)} + current reservation ${currency_format(form.reservedAmount)})`
-                    : `Available: ${currency_format(form.donorBalance)}`
-                  }
-                </p>
+                </>
               ) : (
-                <p className="text-xs text-muted-foreground">Max total matched across all investments.</p>
+                // ── Create mode: absolute cap input ──────────────────
+                <>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={form.totalCap}
+                    onChange={(e) => upd("totalCap", e.target.value)}
+                    placeholder="Leave empty for unlimited"
+                    data-testid="input-total-cap"
+                    className={
+                      form.totalCap !== "" && form.donorUserId && Number(form.totalCap) > effectiveAvailable
+                        ? "border-destructive focus-visible:ring-destructive"
+                        : ""
+                    }
+                  />
+                  {form.donorUserId && form.totalCap !== "" && Number(form.totalCap) > effectiveAvailable ? (
+                    <p className="text-xs text-destructive font-medium" data-testid="text-cap-error-exceeds">
+                      Exceeds donor wallet balance {currency_format(form.donorBalance)}
+                    </p>
+                  ) : form.donorUserId ? (
+                    <p className="text-xs text-muted-foreground">
+                      Available: {currency_format(form.donorBalance)}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Max total matched across all investments.</p>
+                  )}
+                </>
               )}
             </div>
 
@@ -615,8 +811,20 @@ function GrantFormDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving} data-testid="button-save-grant">
-            {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving…</> : "Save"}
+          <Button
+            onClick={handleSave}
+            disabled={saving || !!capDeltaInvalidReason}
+            data-testid="button-save-grant"
+          >
+            {saving ? (
+              <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving…</>
+            ) : isEdit && signedDelta > 0 ? (
+              `Confirm: reserve ${currency_format(signedDelta)}`
+            ) : isEdit && signedDelta < 0 ? (
+              `Confirm: refund ${currency_format(-signedDelta)}`
+            ) : (
+              "Save"
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -628,11 +836,40 @@ function GrantFormDialog({
 // Activity panel (expandable per grant)
 // ------------------------------------------------------------------ //
 function ActivityPanel({ grantId }: { grantId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [cancelTarget, setCancelTarget] = useState<ActivityEntry | null>(null);
+  const [cancelingId, setCancelingId] = useState<number | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["match-activity", grantId],
     queryFn: () => fetchActivity(grantId),
     staleTime: 30_000,
   });
+
+  const handleCancel = async (entry: ActivityEntry) => {
+    setCancelingId(entry.id);
+    try {
+      const { data: resp } = await axiosInstance.post(
+        `/api/admin/matching/${grantId}/activity/${entry.id}/cancel`,
+      );
+      toast({
+        title: "Match canceled",
+        description: resp?.message || "Match removed and funds returned to the grant pool.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["match-activity", grantId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/matching"] });
+      setCancelTarget(null);
+    } catch (err: any) {
+      toast({
+        title: "Cancel failed",
+        description: err?.response?.data?.message || err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setCancelingId(null);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -672,6 +909,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                 <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Campaign</th>
                 <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Investor</th>
                 <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Matched</th>
+                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap w-12">&nbsp;</th>
               </tr>
             </thead>
             <tbody>
@@ -689,6 +927,24 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                   </td>
                   <td className="px-3 py-2 text-right font-medium tabular-nums">
                     {currency_format(a.amount)}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                      title="Cancel match"
+                      aria-label="Cancel match"
+                      onClick={() => setCancelTarget(a)}
+                      disabled={cancelingId === a.id}
+                      data-testid={`button-cancel-match-${a.id}`}
+                    >
+                      {cancelingId === a.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -754,6 +1010,47 @@ function ActivityPanel({ grantId }: { grantId: number }) {
           </div>
         </div>
       )}
+
+      <AlertDialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+        <AlertDialogContent data-testid="dialog-cancel-match">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel this match?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <div>
+                  This will remove the donor's <strong>{cancelTarget ? currency_format(cancelTarget.amount) : ""}</strong> matching
+                  contribution to <strong>{cancelTarget?.campaignName}</strong> and return that amount to the grant's available pool.
+                </div>
+                <div className="text-muted-foreground">
+                  The triggering investor's own donation is left in place. The cancellation is logged to the donor's Account History.
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="button-cancel-match-no"
+              disabled={cancelingId !== null}
+            >
+              Keep match
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={cancelingId !== null}
+              onClick={(e) => {
+                if (cancelingId !== null) {
+                  e.preventDefault();
+                  return;
+                }
+                if (cancelTarget) handleCancel(cancelTarget);
+              }}
+              data-testid="button-cancel-match-confirm"
+            >
+              {cancelingId !== null ? "Canceling…" : "Cancel match"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

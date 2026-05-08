@@ -379,6 +379,11 @@ export async function runRetroactiveSweep(grantId: number): Promise<{
              WHERE a.match_grant_id = $1
                AND a.triggered_by_recommendation_id = r.id
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM canceled_match_pairs cmp
+             WHERE cmp.match_grant_id = $1
+               AND cmp.triggered_by_recommendation_id = r.id
+          )
         ORDER BY r.date_created ASC, r.id ASC`,
       [grantId, grant.donor_user_id, grant.retroactive_from],
     );

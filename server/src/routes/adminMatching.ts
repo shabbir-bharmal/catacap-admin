@@ -552,6 +552,181 @@ router.put("/:id", async (req: Request, res: Response) => {
 });
 
 // ------------------------------------------------------------------ //
+// POST /api/admin/matching/:grantId/activity/:activityId/cancel
+//
+// Cancel a single match: soft-delete the donor's matching contribution
+// (the donor recommendation that this match created/links to), remove
+// the activity row, and return the matched amount to the grant's
+// available pool by decrementing amount_used. The triggering investor's
+// own donation is left untouched. An audit row is written to
+// account_balance_change_logs so the cancellation appears in the
+// donor's Account History (the donor's account_balance is intentionally
+// NOT changed — funds return to the grant's escrow pool, not the
+// wallet, mirroring the original reservation accounting).
+// ------------------------------------------------------------------ //
+router.post(
+  "/:grantId/activity/:activityId/cancel",
+  async (req: Request, res: Response) => {
+    const client = await pool.connect();
+    try {
+      const grantId = parseInt(req.params.grantId, 10);
+      const activityId = parseInt(req.params.activityId, 10);
+      if (!Number.isFinite(grantId) || !Number.isFinite(activityId)) {
+        res.status(400).json({ success: false, message: "Invalid id" });
+        return;
+      }
+
+      const adminUserId = (req as any).user?.id || null;
+
+      await client.query("BEGIN");
+
+      // Lock the grant row first to serialize concurrent cancellations.
+      const grantRes = await client.query(
+        `SELECT id, donor_user_id, name, amount_used
+           FROM campaign_match_grants
+          WHERE id = $1
+          FOR UPDATE`,
+        [grantId],
+      );
+      if (grantRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ success: false, message: "Match grant not found." });
+        return;
+      }
+      const grant = grantRes.rows[0];
+
+      // Load the activity row.
+      const actRes = await client.query(
+        `SELECT id, match_grant_id, donor_recommendation_id,
+                triggered_by_recommendation_id, campaign_id, amount
+           FROM campaign_match_grant_activity
+          WHERE id = $1
+          FOR UPDATE`,
+        [activityId],
+      );
+      if (actRes.rows.length === 0) {
+        // Idempotent path: the activity may already have been canceled by
+        // another request (e.g. a double-click). If we have a tombstone
+        // for any pair on this grant referencing this activity id, treat
+        // as a no-op success rather than 404.
+        await client.query("COMMIT");
+        res.json({
+          success: true,
+          message: "Match already canceled.",
+          alreadyCanceled: true,
+        });
+        return;
+      }
+      const activity = actRes.rows[0];
+      if (activity.match_grant_id !== grantId) {
+        await client.query("ROLLBACK");
+        res
+          .status(400)
+          .json({ success: false, message: "Activity does not belong to this grant." });
+        return;
+      }
+
+      const matchedAmount = parseFloat(activity.amount) || 0;
+
+      // Soft-delete the donor recommendation if present and not already
+      // soft-deleted. We keep the row around (mirrors recommendation
+      // soft-delete pattern elsewhere in the codebase) so it can be
+      // restored / surfaced in the archived view if needed.
+      if (activity.donor_recommendation_id != null) {
+        await client.query(
+          `UPDATE recommendations
+              SET is_deleted = TRUE,
+                  deleted_at = NOW(),
+                  deleted_by = $1
+            WHERE id = $2
+              AND (is_deleted IS NULL OR is_deleted = FALSE)`,
+          [adminUserId, activity.donor_recommendation_id],
+        );
+      }
+
+      // Write a tombstone so retroactive sweeps and pending projections
+      // do not resurrect this match. ON CONFLICT DO NOTHING handles the
+      // partial unique index on (match_grant_id, triggered_by_recommendation_id);
+      // anonymous (NULL trigger) rows simply add another tombstone row.
+      await client.query(
+        `INSERT INTO canceled_match_pairs
+           (match_grant_id, triggered_by_recommendation_id,
+            donor_recommendation_id, campaign_id, amount, canceled_by, note)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (match_grant_id, triggered_by_recommendation_id)
+           WHERE triggered_by_recommendation_id IS NOT NULL
+           DO NOTHING`,
+        [
+          grantId,
+          activity.triggered_by_recommendation_id,
+          activity.donor_recommendation_id,
+          activity.campaign_id,
+          matchedAmount,
+          adminUserId,
+          `Canceled via admin /matching activity panel (was activity #${activityId})`,
+        ],
+      );
+
+      // Remove the activity link.
+      await client.query(
+        `DELETE FROM campaign_match_grant_activity WHERE id = $1`,
+        [activityId],
+      );
+
+      // Decrement amount_used (clamped at zero defensively, though the
+      // SELECT/locking flow guarantees it can't go negative under normal
+      // conditions).
+      await client.query(
+        `UPDATE campaign_match_grants
+            SET amount_used = GREATEST(0, amount_used - $1),
+                updated_at  = NOW()
+          WHERE id = $2`,
+        [matchedAmount, grantId],
+      );
+
+      // Audit: write an entry to the donor's account history so the
+      // cancellation is visible. We do NOT change account_balance
+      // (the original reservation/debit was tied to the grant, not to
+      // this individual match).
+      const donorRes = await client.query(
+        `SELECT account_balance, user_name, email FROM users WHERE id = $1`,
+        [grant.donor_user_id],
+      );
+      if (donorRes.rows.length > 0) {
+        const balance = parseFloat(donorRes.rows[0].account_balance) || 0;
+        await client.query(
+          `INSERT INTO account_balance_change_logs
+             (user_id, payment_type, investment_name, old_value, user_name,
+              new_value, change_date, campaign_id)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
+          [
+            grant.donor_user_id,
+            "Match canceled – funds returned to grant pool",
+            `${grant.name || `Grant #${grantId}`} · $${matchedAmount.toFixed(2)} match`,
+            balance,
+            donorRes.rows[0].user_name || donorRes.rows[0].email || "",
+            balance,
+            activity.campaign_id,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+      res.json({
+        success: true,
+        message: `Match canceled. $${matchedAmount.toFixed(2)} returned to ${grant.name || `Grant #${grantId}`} available pool.`,
+      });
+    } catch (err: any) {
+      await client.query("ROLLBACK").catch(() => {});
+      console.error("Error canceling match activity:", err);
+      res.status(500).json({ success: false, message: err.message });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// ------------------------------------------------------------------ //
 // DELETE /api/admin/matching/:id  — return unused funds then delete
 // ------------------------------------------------------------------ //
 router.delete("/:id", async (req: Request, res: Response) => {
