@@ -906,6 +906,48 @@ router.get("/:id/export", async (req: Request, res: Response) => {
     summary.addRow([]);
     addRow("Eligible Campaigns", campsRes.rows.map((c: any) => c.name).join(", ") || "(none)");
 
+    // ── Per-venture breakdown of matching funds ────────────────────────
+    summary.addRow([]);
+    const sectionHeader = summary.addRow(["Matching Funds by Venture"]);
+    sectionHeader.getCell(1).font = { bold: true, size: 12 };
+
+    const ventureTotals = new Map<string, number>();
+    for (const r of activityRes.rows) {
+      const name = (r.campaign_name || "(Unknown campaign)").trim() || "(Unknown campaign)";
+      const amt = parseFloat(r.match_amount) || 0;
+      ventureTotals.set(name, (ventureTotals.get(name) || 0) + amt);
+    }
+
+    if (ventureTotals.size === 0) {
+      summary.addRow(["(no matched investments yet)"]);
+    } else {
+      const breakdownHeader = summary.addRow(["Venture", "Matching $", "% of Total Match"]);
+      breakdownHeader.eachCell((cell) => {
+        cell.font = { bold: true };
+      });
+
+      const sorted = Array.from(ventureTotals.entries()).sort((a, b) => b[1] - a[1]);
+      const denom = amountUsed > 0 ? amountUsed : sorted.reduce((s, [, v]) => s + v, 0);
+
+      for (const [name, amt] of sorted) {
+        const pct = denom > 0 ? amt / denom : 0;
+        const row = summary.addRow([name, amt, pct]);
+        row.getCell(2).numFmt = "$#,##0.00";
+        row.getCell(3).numFmt = "0.00%";
+      }
+
+      const totalRow = summary.addRow([
+        "TOTAL",
+        sorted.reduce((s, [, v]) => s + v, 0),
+        denom > 0 ? sorted.reduce((s, [, v]) => s + v, 0) / denom : 0,
+      ]);
+      totalRow.getCell(1).font = { bold: true };
+      totalRow.getCell(2).font = { bold: true };
+      totalRow.getCell(3).font = { bold: true };
+      totalRow.getCell(2).numFmt = "$#,##0.00";
+      totalRow.getCell(3).numFmt = "0.00%";
+    }
+
     // -- Sheet 2: Matched Investments --
     const detail = workbook.addWorksheet("Matched Investments");
     const headers = [
