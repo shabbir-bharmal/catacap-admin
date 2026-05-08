@@ -253,25 +253,30 @@ router.post("/:jobName/trigger", async (req: Request, res: Response) => {
 
 router.get("/status", async (_req: Request, res: Response) => {
   try {
-    const tableCheck = await pool.query(
-      `SELECT 1 FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = 'scheduler_logs'`,
+    const schemaCheck = await pool.query<{
+      tableExists: boolean;
+      hasStatusCol: boolean;
+      hasMetadataCol: boolean;
+    }>(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_name = 'scheduler_logs'
+         ) AS "tableExists",
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'status'
+         ) AS "hasStatusCol",
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'metadata'
+         ) AS "hasMetadataCol"`,
     );
-    if (tableCheck.rows.length === 0) {
+    const { tableExists, hasStatusCol, hasMetadataCol } = schemaCheck.rows[0];
+    if (!tableExists) {
       res.json({ statuses: [] });
       return;
     }
-
-    const statusColCheck = await pool.query(
-      `SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'status'`,
-    );
-    const hasStatusCol = statusColCheck.rows.length > 0;
-    const metadataColCheck = await pool.query(
-      `SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'scheduler_logs' AND column_name = 'metadata'`,
-    );
-    const hasMetadataCol = metadataColCheck.rows.length > 0;
 
     const statusSelect = hasStatusCol
       ? `sl.status`
@@ -284,47 +289,68 @@ router.get("/status", async (_req: Request, res: Response) => {
       ? `(sl.status IS NULL OR sl.status <> 'Running') AND sl.end_time IS NOT NULL`
       : `sl.end_time IS NOT NULL`;
 
-    const configsResult = await pool.query<{
+    const combinedResult = await pool.query<{
       jobName: string;
       timezone: string;
+      runningId: number | null;
+      runningStartTime: string | null;
+      lastRunId: number | null;
+      lastRunJobName: string | null;
+      lastRunStartTime: string | null;
+      lastRunEndTime: string | null;
+      lastRunErrorMessage: string | null;
+      lastRunStatus: string | null;
+      lastRunMetadata: unknown;
     }>(
-      `SELECT job_name AS "jobName", timezone FROM scheduler_configurations ORDER BY id`,
+      `SELECT
+         sc.job_name AS "jobName",
+         sc.timezone AS "timezone",
+         r.id AS "runningId",
+         r.start_time AS "runningStartTime",
+         l.id AS "lastRunId",
+         l.job_name AS "lastRunJobName",
+         l.start_time AS "lastRunStartTime",
+         l.end_time AS "lastRunEndTime",
+         l.error_message AS "lastRunErrorMessage",
+         l.status AS "lastRunStatus",
+         l.metadata AS "lastRunMetadata"
+       FROM scheduler_configurations sc
+       LEFT JOIN LATERAL (
+         SELECT sl.id, sl.start_time
+         FROM scheduler_logs sl
+         WHERE sl.job_name = sc.job_name AND ${runningPredicate}
+         ORDER BY sl.start_time DESC
+         LIMIT 1
+       ) r ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT sl.id, sl.job_name, sl.start_time, sl.end_time, sl.error_message,
+                ${statusSelect}, ${metadataSelect}
+         FROM scheduler_logs sl
+         WHERE sl.job_name = sc.job_name AND ${completedPredicate}
+         ORDER BY sl.start_time DESC
+         LIMIT 1
+       ) l ON TRUE
+       ORDER BY sc.id`,
     );
 
-    const statuses = [];
-    for (const cfg of configsResult.rows) {
-      const runningResult = await pool.query(
-        `SELECT sl.id, sl.job_name AS "jobName", sl.start_time AS "startTime",
-                sl.end_time AS "endTime", sl.error_message AS "errorMessage",
-                ${statusSelect}, ${metadataSelect},
-                $2::text AS "timezone"
-         FROM scheduler_logs sl
-         WHERE sl.job_name = $1 AND ${runningPredicate}
-         ORDER BY sl.start_time DESC
-         LIMIT 1`,
-        [cfg.jobName, cfg.timezone],
-      );
-      const lastRunResult = await pool.query(
-        `SELECT sl.id, sl.job_name AS "jobName", sl.start_time AS "startTime",
-                sl.end_time AS "endTime", sl.error_message AS "errorMessage",
-                ${statusSelect}, ${metadataSelect},
-                $2::text AS "timezone"
-         FROM scheduler_logs sl
-         WHERE sl.job_name = $1 AND ${completedPredicate}
-         ORDER BY sl.start_time DESC
-         LIMIT 1`,
-        [cfg.jobName, cfg.timezone],
-      );
-      const runningRow = runningResult.rows[0] || null;
-      const lastRunRow = lastRunResult.rows[0] || null;
-      statuses.push({
-        jobName: cfg.jobName,
-        running: !!runningRow,
-        runningLogId: runningRow ? runningRow.id : null,
-        runningSince: runningRow ? runningRow.startTime : null,
-        lastRun: lastRunRow,
-      });
-    }
+    const statuses = combinedResult.rows.map((row) => ({
+      jobName: row.jobName,
+      running: row.runningId !== null,
+      runningLogId: row.runningId,
+      runningSince: row.runningStartTime,
+      lastRun: row.lastRunId
+        ? {
+            id: row.lastRunId,
+            jobName: row.lastRunJobName,
+            startTime: row.lastRunStartTime,
+            endTime: row.lastRunEndTime,
+            errorMessage: row.lastRunErrorMessage,
+            status: row.lastRunStatus,
+            metadata: row.lastRunMetadata,
+            timezone: row.timezone,
+          }
+        : null,
+    }));
 
     res.json({ statuses });
   } catch (err) {
