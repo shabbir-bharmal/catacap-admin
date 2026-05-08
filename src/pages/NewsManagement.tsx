@@ -234,7 +234,7 @@ export default function NewsManagementPage() {
     const hasRaiseMoney = withHome.some(
       (o) => normalize(o.id) === "raisemoney" || normalize(o.name) === "raisemoney",
     );
-    return hasRaiseMoney ? withHome : [...withHome, { id: "raisemoney", name: "Raise Money" }];
+    return hasRaiseMoney ? withHome : [...withHome, { id: "raise-money", name: "Raise Money" }];
   }, [customPagesListQuery.data]);
 
   const isLoadingInvestmentOptions = investmentsListQuery.isLoading;
