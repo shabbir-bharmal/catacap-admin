@@ -155,19 +155,75 @@ export default function SchedulersTab() {
   const expandedLogsRef = useRef(expandedLogs);
   expandedLogsRef.current = expandedLogs;
   const isInitialStatusFetch = useRef(true);
+  // Per-job optimistic-trigger guard. After a manual Run Now we briefly protect
+  // the optimistic running state from being clobbered by status polls that race
+  // ahead of the (possibly self-inserted) Running log row on the server.
+  const optimisticTriggersRef = useRef<
+    Record<string, { triggeredAt: number; baselineLastRunId: number | null }>
+  >({});
+  const OPTIMISTIC_GRACE_MS = 15000;
 
   const pollStatuses = useCallback(async () => {
     let statuses: SchedulerJobStatus[];
     try {
       statuses = await fetchSchedulerStatuses();
     } catch {
+      // Status fetch failed (e.g. transient pool exhaustion). Skip this tick
+      // entirely and leave existing job state intact so the running banner /
+      // live timer don't disappear because of a single failed poll.
       return;
     }
     const finishedNotifications: Array<{ jobName: string; lastRun: SchedulerLog }> = [];
     setJobStatuses((prev) => {
       const next: Record<string, SchedulerJobStatus> = { ...prev };
+      const nowMs = Date.now();
       for (const status of statuses) {
         const previous = prev[status.jobName];
+        const optimistic = optimisticTriggersRef.current[status.jobName];
+        const withinGrace =
+          !!optimistic && nowMs - optimistic.triggeredAt < OPTIMISTIC_GRACE_MS;
+        // Treat the server's lastRun as "advanced past the optimistic
+        // baseline" only when we actually had a baseline to compare against.
+        // If the user triggered Run Now before the first /status poll
+        // settled, baselineLastRunId is null and *any* historical lastRun
+        // would otherwise look like a brand-new completion and prematurely
+        // drop the guard.
+        const lastRunAdvanced =
+          !!optimistic &&
+          optimistic.baselineLastRunId !== null &&
+          !!status.lastRun &&
+          status.lastRun.id !== optimistic.baselineLastRunId;
+
+        // If the server now confirms running OR a genuinely-newer lastRun has
+        // appeared, the optimistic guard has done its job — drop it.
+        if (optimistic && (status.running || lastRunAdvanced)) {
+          delete optimisticTriggersRef.current[status.jobName];
+        }
+
+        // Race-protection: server still says not-running, no new lastRun yet,
+        // and we're inside the grace window after a manual trigger. Preserve
+        // the optimistic running state instead of letting the poll clobber it.
+        if (
+          optimistic &&
+          !status.running &&
+          !lastRunAdvanced &&
+          withinGrace
+        ) {
+          next[status.jobName] = {
+            ...status,
+            running: true,
+            runningLogId: previous?.runningLogId ?? status.runningLogId,
+            runningSince: previous?.runningSince ?? status.runningSince,
+          };
+          continue;
+        }
+
+        // Grace expired without ever seeing the run server-side — give up the
+        // optimistic guard and accept whatever the server reports.
+        if (optimistic && !withinGrace && !status.running && !lastRunAdvanced) {
+          delete optimisticTriggersRef.current[status.jobName];
+        }
+
         next[status.jobName] = status;
         if (
           !isInitialStatusFetch.current &&
@@ -230,9 +286,20 @@ export default function SchedulersTab() {
       (logs || []).some((log) => log.status === "Running" && !log.endTime),
     );
 
+  // Initial poll once configs are loaded. Kept separate from the cadence
+  // effect below so that flipping the polling interval (e.g. when an
+  // optimistic running state lands) does NOT trigger an immediate re-poll
+  // that would race with — and clobber — the optimistic state.
   useEffect(() => {
     if (configs.length === 0) return;
     pollStatuses();
+  }, [configs.length, pollStatuses]);
+
+  // Long-lived polling interval. Only the cadence (1s while a run is active,
+  // 5s otherwise) is adjusted when hasActiveRun flips; we never call
+  // pollStatuses synchronously here.
+  useEffect(() => {
+    if (configs.length === 0) return;
     const intervalMs = hasActiveRun ? 1000 : 5000;
     const interval = setInterval(() => {
       pollStatuses();
@@ -350,6 +417,15 @@ export default function SchedulersTab() {
           ...prev,
           [jobName]: { variant: "info", message },
         }));
+        // Register an optimistic-trigger guard so the next status poll(s)
+        // — which may race ahead of the server-side Running log row for
+        // self-logging jobs — don't clobber the running banner / live timer.
+        const baselineLastRunId =
+          jobStatuses[jobName]?.lastRun?.id ?? null;
+        optimisticTriggersRef.current[jobName] = {
+          triggeredAt: Date.now(),
+          baselineLastRunId,
+        };
         // Optimistically mark as running until the next poll confirms.
         setJobStatuses((prev) => ({
           ...prev,
