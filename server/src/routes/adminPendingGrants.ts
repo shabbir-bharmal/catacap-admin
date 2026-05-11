@@ -130,6 +130,150 @@ router.get("/export", async (_req: Request, res: Response) => {
   }
 });
 
+// DAF provider rollup export — one row per DAF provider with unique-donor
+// count, total grant count, and total $ across all grants from that
+// provider. Excludes soft-deleted grants. Counts rejected separately so
+// the headline totals reflect funds that actually moved.
+router.get("/export-by-daf", async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         COALESCE(NULLIF(TRIM(pg.daf_provider), ''), '(Unspecified)') AS daf_provider,
+         COUNT(DISTINCT pg.user_id) AS unique_donors,
+         COUNT(*) AS total_grants,
+         COALESCE(SUM(
+           CASE WHEN pg.amount ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                THEN pg.amount::numeric
+                ELSE 0
+           END
+         ), 0) AS total_amount,
+         COUNT(*) FILTER (WHERE LOWER(TRIM(COALESCE(pg.status, ''))) = 'rejected') AS rejected_count,
+         COALESCE(SUM(
+           CASE WHEN LOWER(TRIM(COALESCE(pg.status, ''))) <> 'rejected'
+                 AND pg.amount ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                THEN pg.amount::numeric
+                ELSE 0
+           END
+         ), 0) AS total_amount_excl_rejected
+       FROM pending_grants pg
+       JOIN users u ON pg.user_id = u.id AND (u.is_deleted IS NULL OR u.is_deleted = false)
+       WHERE (pg.is_deleted IS NULL OR pg.is_deleted = false)
+       GROUP BY COALESCE(NULLIF(TRIM(pg.daf_provider), ''), '(Unspecified)')
+       ORDER BY total_amount DESC`
+    );
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "CataCap Admin";
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet("DAF Providers");
+
+    sheet.addRow(["DAF Provider Summary"]).getCell(1).font = { bold: true, size: 14 };
+    sheet.addRow([`Generated ${new Date().toLocaleString()}`]).getCell(1).font = { italic: true, color: { argb: "FF666666" } };
+    sheet.addRow([]);
+
+    const headers = [
+      "DAF Provider",
+      "Unique Donors",
+      "Total # of Grants",
+      "Total $ (All Grants)",
+      "Rejected Grants",
+      "Total $ (Excl. Rejected)",
+    ];
+    const headerRow = sheet.addRow(headers);
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF405189" } };
+      cell.alignment = { horizontal: "left" };
+    });
+
+    let totalDonors = 0;
+    let totalGrants = 0;
+    let totalAmt = 0;
+    let totalRejected = 0;
+    let totalAmtExcl = 0;
+
+    for (const r of result.rows) {
+      const donors = parseInt(r.unique_donors, 10) || 0;
+      const grants = parseInt(r.total_grants, 10) || 0;
+      const amt = parseFloat(r.total_amount) || 0;
+      const rejected = parseInt(r.rejected_count, 10) || 0;
+      const amtExcl = parseFloat(r.total_amount_excl_rejected) || 0;
+
+      totalDonors += donors;
+      totalGrants += grants;
+      totalAmt += amt;
+      totalRejected += rejected;
+      totalAmtExcl += amtExcl;
+
+      const row = sheet.addRow([r.daf_provider, donors, grants, amt, rejected, amtExcl]);
+      row.getCell(4).numFmt = "$#,##0.00";
+      row.getCell(6).numFmt = "$#,##0.00";
+    }
+
+    if (result.rows.length > 0) {
+      // Note: Unique-donor totals are summed across providers, so a donor
+      // who used two providers is counted in each. The platform-wide
+      // unique-donor count is shown separately below.
+      const totalRow = sheet.addRow([
+        "TOTAL (sum across providers)",
+        totalDonors,
+        totalGrants,
+        totalAmt,
+        totalRejected,
+        totalAmtExcl,
+      ]);
+      totalRow.eachCell((cell) => { cell.font = { bold: true }; });
+      totalRow.getCell(4).numFmt = "$#,##0.00";
+      totalRow.getCell(6).numFmt = "$#,##0.00";
+
+      const distinctDonorsRes = await pool.query(
+        `SELECT COUNT(DISTINCT pg.user_id) AS c
+           FROM pending_grants pg
+           JOIN users u ON pg.user_id = u.id AND (u.is_deleted IS NULL OR u.is_deleted = false)
+          WHERE (pg.is_deleted IS NULL OR pg.is_deleted = false)`
+      );
+      const platformDonors = parseInt(distinctDonorsRes.rows[0]?.c, 10) || 0;
+      const platformRow = sheet.addRow([
+        "Platform-wide unique donors (deduped)",
+        platformDonors,
+        "",
+        "",
+        "",
+        "",
+      ]);
+      platformRow.getCell(1).font = { bold: true, italic: true };
+      platformRow.getCell(2).font = { bold: true };
+    } else {
+      sheet.addRow(["(no grants found)"]);
+    }
+
+    sheet.addRow([]);
+    const note = sheet.addRow([
+      'Scope: All non-deleted pending_grants. "Total $ (All Grants)" includes Rejected; "Total $ (Excl. Rejected)" reflects funds that actually moved (Pending, In Transit, Received).',
+    ]);
+    note.getCell(1).font = { italic: true, color: { argb: "FF666666" } };
+    note.getCell(1).alignment = { wrapText: true };
+
+    sheet.columns.forEach((col) => {
+      let maxLen = 14;
+      col.eachCell?.({ includeEmpty: false }, (cell) => {
+        const len = String(cell.value ?? "").length;
+        if (len > maxLen) maxLen = len;
+      });
+      col.width = Math.min(maxLen + 4, 60);
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=DAF_Providers_Summary.xlsx");
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err: any) {
+    console.error("Error exporting DAF provider summary:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get("/", async (req: Request, res: Response) => {
   try {
     const params = parsePagination(req.query as Record<string, unknown>);
