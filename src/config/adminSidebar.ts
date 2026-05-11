@@ -99,12 +99,25 @@ export const sidebarConfig = [
             url: "/other-assets",
             icon: Wallet,
             permission: { module: "other-assets", action: "view" }
-          },
+          }
+        ]
+      },
+
+      {
+        title: "Matching & Fee Coverage",
+        icon: GitMerge,
+        children: [
           {
             title: "Matching",
             url: "/matching",
             icon: GitMerge,
             permission: { module: "recommendations", action: "view" }
+          },
+          {
+            title: "Cover Fees",
+            url: "/cover-fees",
+            icon: GitMerge,
+            permission: { module: "cover-fees", action: "view" }
           }
         ]
       },

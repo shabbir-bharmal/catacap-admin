@@ -1083,6 +1083,99 @@ router.post("/raisemoney", async (req: Request, res: Response) => {
   }
 });
 
+// ------------------------------------------------------------------ //
+// GET /api/Campaign/cover-fees-status/:campaignId
+//
+// Public endpoint surfacing whether a campaign's CataCap platform fee
+// is sponsor-covered. Returns a compact payload for embedding on the
+// public investment page:
+//   { isCovered, sponsorName, remainingEscrow }
+// `remainingEscrow` is null for unlimited (non-escrow) pools.
+// ------------------------------------------------------------------ //
+async function lookupCoverFeesStatus(campaignId: number, res: Response) {
+  // Pull every active, non-expired pool covering this campaign so we
+  // can pick one that still has remaining capacity. Selecting LIMIT 1
+  // by id alone could return an exhausted pool while another active
+  // pool still has escrow available, leading to a false "not covered".
+  const result = await pool.query(
+      `SELECT ccf.id, ccf.name, ccf.total_cap, ccf.amount_used,
+              ccf.reserved_amount, ccf.expires_at,
+              CONCAT(u.first_name, ' ', u.last_name) AS sponsor_full_name,
+              u.user_name AS sponsor_user_name
+         FROM campaign_cover_fees ccf
+         JOIN campaign_cover_fees_campaigns ccfc
+              ON ccfc.cover_fee_id = ccf.id AND ccfc.campaign_id = $1
+         LEFT JOIN users u ON u.id = ccf.sponsor_user_id
+        WHERE ccf.is_active = TRUE
+          AND (ccf.expires_at IS NULL OR ccf.expires_at > NOW())
+        ORDER BY ccf.id ASC`,
+      [campaignId],
+    );
+    if (result.rows.length === 0) {
+      res.json({ isCovered: false, sponsorName: null, remainingEscrow: null });
+      return;
+    }
+    const computeRemaining = (r: any) => {
+      const reserved = parseFloat(r.reserved_amount) || 0;
+      const used = parseFloat(r.amount_used) || 0;
+      const totalCap = r.total_cap != null ? parseFloat(r.total_cap) : null;
+      if (reserved > 0) return Math.max(0, Math.round((reserved - used) * 100) / 100);
+      if (totalCap != null) return Math.max(0, Math.round((totalCap - used) * 100) / 100);
+      return null;
+    };
+    // Prefer the first pool with remaining capacity; fall back to the
+    // first pool overall so we still surface a sponsor name when every
+    // pool is technically exhausted (unlimited pools always qualify).
+    const chosen =
+      result.rows.find((r) => {
+        const rem = computeRemaining(r);
+        return rem == null || rem > 0;
+      }) || result.rows[0];
+    const remaining = computeRemaining(chosen);
+    const isCovered = remaining == null || remaining > 0;
+    const sponsorName =
+      ((chosen.sponsor_full_name || "").trim() || chosen.sponsor_user_name || "Sponsor");
+    res.json({ isCovered, sponsorName, remainingEscrow: remaining });
+}
+
+router.get("/cover-fees-status/:campaignId", async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.campaignId, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ success: false, message: "Invalid campaignId" });
+      return;
+    }
+    await lookupCoverFeesStatus(id, res);
+  } catch (err: any) {
+    console.error("Error fetching cover-fees status:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Slug-based variant for the public donation app, which routes by
+// campaign URL slug rather than numeric id.
+router.get("/cover-fees-status/by-slug/:slug", async (req: Request, res: Response) => {
+  try {
+    const slug = String(req.params.slug || "").trim();
+    if (!slug) {
+      res.status(400).json({ success: false, message: "Invalid slug" });
+      return;
+    }
+    const slugRes = await pool.query(
+      `SELECT reference_id FROM slugs WHERE type = 1 AND value = $1 LIMIT 1`,
+      [slug],
+    );
+    if (slugRes.rows.length === 0) {
+      res.json({ isCovered: false, sponsorName: null, remainingEscrow: null });
+      return;
+    }
+    await lookupCoverFeesStatus(parseInt(slugRes.rows[0].reference_id, 10), res);
+  } catch (err: any) {
+    console.error("Error fetching cover-fees status by slug:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.post("/investment-request", async (req: Request, res: Response) => {
   try {
     const dto = req.body;

@@ -6,6 +6,7 @@ import { restoreOwningUsersForRecordsInTx } from "../utils/userRestore.js";
 import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembership.js";
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
+import { applyCoverFees } from "../utils/coverFees.js";
 import ExcelJS from "exceljs";
 
 const router = Router();
@@ -444,6 +445,19 @@ router.put("/:id", async (req: Request, res: Response) => {
       }).catch((err) =>
         console.error(
           "applyMatchGrants fire-and-forget error:",
+          err?.message || err,
+        ),
+      );
+      applyCoverFees({
+        campaignId: recommendation.camp_id,
+        investorUserId: user.id,
+        triggeringRecommendationId: id,
+        investmentAmount: parseFloat(data.amount || recommendation.amount) || 0,
+        investorEmail: recommendation.user_email || "",
+        campaignName: recommendation.campaign_name || "",
+      }).catch((err) =>
+        console.error(
+          "applyCoverFees fire-and-forget error:",
           err?.message || err,
         ),
       );
