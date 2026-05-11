@@ -119,14 +119,14 @@ export function AttachmentsPicker({
   };
 
   return (
-    <div className="space-y-2 pt-2" data-testid={dataTestId}>
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Attachments (optional, max 10MB per file)</p>
+    <div className="space-y-2 pt-2 w-full min-w-0" data-testid={dataTestId}>
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <p className="text-sm text-muted-foreground min-w-0 truncate">Attachments (optional, max 10MB per file)</p>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 text-xs"
+          className="h-8 text-xs shrink-0"
           onClick={triggerFilePicker}
           disabled={disabled}
           data-testid={dataTestId ? `${dataTestId}-add` : undefined}
@@ -147,11 +147,11 @@ export function AttachmentsPicker({
         />
       </div>
       {attachments.length > 0 && (
-        <ul className="space-y-1.5 max-h-[160px] overflow-y-auto">
+        <ul className="space-y-1.5 max-h-[160px] overflow-y-auto w-full min-w-0">
           {attachments.map((att, idx) => (
             <li
               key={`${att.fileName}-${idx}`}
-              className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md border bg-muted/40 text-sm"
+              className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md border bg-muted/40 text-sm w-full min-w-0"
               data-testid={dataTestId ? `${dataTestId}-item-${idx}` : undefined}
             >
               <div className="flex items-center gap-2 min-w-0">
