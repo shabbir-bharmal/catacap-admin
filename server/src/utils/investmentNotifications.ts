@@ -2,7 +2,7 @@ import type pg from "pg";
 import pool from "../db.js";
 import { sendTemplateEmail } from "./emailService.js";
 
-const TEMPLATE_NEW_INVESTMENT = 16; // "Campaign Investment Notification"
+const TEMPLATE_NEW_INVESTMENT = 30; // "CampaignInvestmentNotification"
 const TEMPLATE_CAMPAIGN_OWNER_FUNDING = 15; // "Campaign Owner Funding Notification"
 
 function formatUsdAmount(value: number | string | null | undefined): string {

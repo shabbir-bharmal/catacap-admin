@@ -12,7 +12,7 @@ import {
 } from "../utils/noteAttachments.js";
 import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembership.js";
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
-import { sendNewInvestmentNotifications, sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
+import { sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
 import ExcelJS from "exceljs";
 import dayjs from "dayjs";
@@ -412,11 +412,11 @@ router.put("/:id/status", async (req: Request, res: Response) => {
 
     await client.query("COMMIT");
 
-    if (notifyAfterCommit) {
-      sendNewInvestmentNotifications(notifyAfterCommit).catch((err) =>
-        console.error("Investment notification email failed:", err?.message || err),
-      );
-    }
+    // CampaignInvestmentNotification (template 30, "👀 ... Just Invested in ...")
+    // is intentionally disabled per product request — only the
+    // CampaignOwnerFundingNotification ("You Got Funded!") email should fire on
+    // Pending → In Transit transitions.
+    void notifyAfterCommit;
     if (fundingAfterCommit) {
       sendCampaignOwnerFundingNotification(fundingAfterCommit).catch((err) =>
         console.error("Campaign owner funding email failed:", err?.message || err),
