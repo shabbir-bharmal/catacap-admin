@@ -156,6 +156,18 @@ export interface InvestmentInvestor {
     match: InvestmentMatchInfo | null;
 }
 
+export interface InvestmentCoverFeeInfo {
+    id: number;
+    name: string;
+    sponsorName: string | null;
+    sponsorEmail: string | null;
+    sponsorUserId: string | null;
+    reservedAmount: number;
+    amountUsed: number;
+    totalCap: number | null;
+    expiresAt: string | null;
+}
+
 export interface InvestmentInvestorsResponse {
     campaignId: number;
     campaignName: string;
@@ -164,6 +176,7 @@ export interface InvestmentInvestorsResponse {
     totalAmount: number;
     pendingMatchAmount?: number;
     pendingMatchCount?: number;
+    coverFees?: InvestmentCoverFeeInfo[];
     items: InvestmentInvestor[];
 }
 

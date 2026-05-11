@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation, useRoute } from "wouter";
-import { exportInvestmentInvestors, fetchInvestmentInvestors, type InvestmentContributionStatus, type InvestmentInvestor, type InvestmentInvestorsResponse, type InvestmentMatchInfo, type InvestmentPaymentMethod } from "../api/investment/investmentApi";
+import { exportInvestmentInvestors, fetchInvestmentInvestors, type InvestmentContributionStatus, type InvestmentCoverFeeInfo, type InvestmentInvestor, type InvestmentInvestorsResponse, type InvestmentMatchInfo, type InvestmentPaymentMethod } from "../api/investment/investmentApi";
 import { AdminLayout } from "../components/AdminLayout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -75,6 +75,39 @@ function formatDate(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function CoverFeesAnnotation({ coverFees }: { coverFees: InvestmentCoverFeeInfo[] | undefined }) {
+  if (!coverFees || coverFees.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1 mt-2" data-testid="cover-fees-annotation">
+      {coverFees.map((cf) => {
+        const sponsor = cf.sponsorName || cf.sponsorEmail || "Unknown sponsor";
+        const remaining = Math.max(cf.reservedAmount - cf.amountUsed, 0);
+        const tooltip = [
+          `Pool: ${cf.name}`,
+          `Sponsor: ${sponsor}`,
+          `Escrow remaining: ${currency_format(remaining)}`,
+          cf.totalCap != null ? `Total cap: ${currency_format(cf.totalCap)}` : null,
+          `Used so far: ${currency_format(cf.amountUsed)}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return (
+          <a
+            key={cf.id}
+            href="/cover-fees"
+            className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 py-0.5 text-xs text-teal-800 hover:bg-teal-100"
+            title={tooltip}
+            data-testid={`cover-fees-pool-${cf.id}`}
+          >
+            <span className="font-medium">★ Fees covered by {sponsor}</span>
+            <span className="text-teal-700">· {currency_format(remaining)} escrow</span>
+          </a>
+        );
+      })}
+    </div>
+  );
 }
 
 function MatchAnnotation({ match, idx }: { match: InvestmentMatchInfo | null; idx: number }) {
@@ -286,6 +319,7 @@ export default function InvestmentInvestors() {
                     )}
                   </p>
                 )}
+                {data && <CoverFeesAnnotation coverFees={data.coverFees} />}
               </div>
               <Button
                 variant="outline"

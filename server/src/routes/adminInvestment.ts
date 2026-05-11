@@ -971,6 +971,48 @@ async function fetchMatchInfoForCampaign(campaignId: number) {
   return { asMatch, triggeredBy };
 }
 
+async function fetchCoverFeeInfoForCampaign(campaignId: number) {
+  // Active cover-fees pools attached to this campaign. Mirrors the
+  // filtering used by applyCoverFees in utils/coverFees.ts: pool must be
+  // active and not yet expired. We surface these so admins can see, from
+  // the investment page, whether the platform fee is being covered and
+  // by whom.
+  const result = await pool.query(
+    `SELECT ccf.id,
+            ccf.name,
+            ccf.reserved_amount,
+            ccf.amount_used,
+            ccf.total_cap,
+            ccf.expires_at,
+            ccf.sponsor_user_id,
+            COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''),
+                     u.user_name, u.email) AS sponsor_name,
+            u.email AS sponsor_email
+       FROM campaign_cover_fees ccf
+       JOIN campaign_cover_fees_campaigns ccfc
+            ON ccfc.cover_fee_id = ccf.id
+       LEFT JOIN users u ON u.id = ccf.sponsor_user_id
+      WHERE ccfc.campaign_id = $1
+        AND ccf.is_active = TRUE
+        AND (ccf.expires_at IS NULL OR ccf.expires_at > NOW())
+        AND ccf.coverage_active_from <= NOW()
+      ORDER BY ccf.id ASC`,
+    [campaignId],
+  );
+
+  return result.rows.map((r: any) => ({
+    id: Number(r.id),
+    name: r.name || `Cover-fees #${r.id}`,
+    sponsorName: r.sponsor_name || null,
+    sponsorEmail: r.sponsor_email || null,
+    sponsorUserId: r.sponsor_user_id || null,
+    reservedAmount: parseFloat(r.reserved_amount) || 0,
+    amountUsed: parseFloat(r.amount_used) || 0,
+    totalCap: r.total_cap != null ? parseFloat(r.total_cap) : null,
+    expiresAt: r.expires_at || null,
+  }));
+}
+
 router.get("/:id/investors", async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -979,7 +1021,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       return;
     }
 
-    const [rowsResult, summaryResult, nameResult, matchInfo, projections] = await Promise.all([
+    const [rowsResult, summaryResult, nameResult, matchInfo, projections, coverFees] = await Promise.all([
       pool.query(
         `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
          SELECT source_id, source_type, name, email, amount, date_created, status,
@@ -998,6 +1040,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
       fetchMatchInfoForCampaign(id),
       projectPendingMatchesForCampaign(id),
+      fetchCoverFeeInfoForCampaign(id),
     ]);
 
     const items: any[] = rowsResult.rows.map((r: any) => {
@@ -1121,6 +1164,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       totalAmount,
       pendingMatchAmount: Math.round(projectedTotal * 100) / 100,
       pendingMatchCount: projections.length,
+      coverFees,
       items,
     });
   } catch (err) {
