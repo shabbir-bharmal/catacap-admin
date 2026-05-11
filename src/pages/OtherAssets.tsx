@@ -115,14 +115,14 @@ function OtherAssetNotes({ assetId }: { assetId: number }) {
                                 href={att.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="text-[#405189] hover:underline truncate"
+                                className="block min-w-0 flex-1 truncate text-[#405189] hover:underline"
                                 title={att.fileName}
                                 data-testid={`link-note-attachment-${assetId}-${idx}-${ai}`}
                               >
                                 {att.fileName}
                               </a>
                             ) : (
-                              <span className="truncate" title={att.fileName}>{att.fileName}</span>
+                              <span className="block min-w-0 flex-1 truncate" title={att.fileName}>{att.fileName}</span>
                             )}
                           </li>
                         ))}

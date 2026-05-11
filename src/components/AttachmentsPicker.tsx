@@ -154,9 +154,9 @@ export function AttachmentsPicker({
               className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md border bg-muted/40 text-sm w-full min-w-0"
               data-testid={dataTestId ? `${dataTestId}-item-${idx}` : undefined}
             >
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                 <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate" title={att.fileName}>{att.fileName}</span>
+                <span className="block min-w-0 flex-1 truncate" title={att.fileName}>{att.fileName}</span>
                 <span className="text-xs text-muted-foreground shrink-0">{formatBytes(att.sizeBytes)}</span>
               </div>
               <Button

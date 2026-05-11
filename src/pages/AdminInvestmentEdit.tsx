@@ -2604,21 +2604,22 @@ export default function AdminInvestmentEdit() {
                               )}
                               data-testid={`item-thank-you-attachment-${att.id}`}
                             >
-                              <div className="flex items-center gap-2 min-w-0">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
                                 <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                <div className="min-w-0">
+                                <div className="min-w-0 flex-1">
                                   {att.publicUrl ? (
                                     <a
                                       href={att.publicUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className={cn("text-sm truncate block", removed ? "line-through" : "text-[#405189] hover:underline")}
+                                      className={cn("text-sm truncate block min-w-0", removed ? "line-through" : "text-[#405189] hover:underline")}
+                                      title={att.fileName}
                                       data-testid={`link-thank-you-attachment-${att.id}`}
                                     >
                                       {att.fileName}
                                     </a>
                                   ) : (
-                                    <span className={cn("text-sm truncate block", removed && "line-through")}>{att.fileName}</span>
+                                    <span className={cn("text-sm truncate block min-w-0", removed && "line-through")} title={att.fileName}>{att.fileName}</span>
                                   )}
                                   <span className="text-xs text-muted-foreground">{formatBytes(att.sizeBytes)}{removed ? " · will be removed on save" : ""}</span>
                                 </div>
@@ -2653,10 +2654,10 @@ export default function AdminInvestmentEdit() {
                             className="flex items-center justify-between gap-3 px-3 py-2 bg-[#f6fbf7]"
                             data-testid={`item-thank-you-attachment-pending-${f.localId}`}
                           >
-                            <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
                               <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                              <div className="min-w-0">
-                                <span className="text-sm truncate block">{f.fileName}</span>
+                              <div className="min-w-0 flex-1">
+                                <span className="text-sm truncate block min-w-0" title={f.fileName}>{f.fileName}</span>
                                 <span className="text-xs text-muted-foreground">{formatBytes(f.sizeBytes)} · will be uploaded on save</span>
                               </div>
                             </div>
