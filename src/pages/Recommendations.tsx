@@ -1,4 +1,4 @@
-import { useState, Fragment } from "react";
+import { useState, useRef, useEffect, Fragment } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -72,6 +72,14 @@ export default function RecommendationsPage() {
 
   const [selectedInvestmentIds, setSelectedInvestmentIds] = useState<number[]>([]);
   const [investmentPopoverOpen, setInvestmentPopoverOpen] = useState(false);
+  const [investmentSearchQuery, setInvestmentSearchQuery] = useState("");
+  const investmentListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (investmentListRef.current) {
+      investmentListRef.current.scrollTop = 0;
+    }
+  }, [investmentSearchQuery, investmentPopoverOpen]);
 
   const { data: investmentOptions = [] } = useQuery({
     queryKey: ["investmentNames"],
@@ -294,7 +302,12 @@ export default function RecommendationsPage() {
             <div className="flex items-end gap-3 flex-wrap flex-1">
               <div className="flex flex-col gap-0.5">
                 <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">Select Investment</Label>
-                <Popover open={investmentPopoverOpen} onOpenChange={setInvestmentPopoverOpen}>
+                <Popover open={investmentPopoverOpen} onOpenChange={(open) => {
+                  setInvestmentPopoverOpen(open);
+                  if (!open) {
+                    setInvestmentSearchQuery("");
+                  }
+                }}>
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
@@ -319,8 +332,12 @@ export default function RecommendationsPage() {
                   </PopoverTrigger>
                   <PopoverContent className="w-[300px] p-0 bg-popover" align="start">
                     <Command className="bg-transparent">
-                      <CommandInput placeholder="Search investment..." />
-                      <CommandList className="max-h-[264px]">
+                      <CommandInput
+                        placeholder="Search investment..."
+                        value={investmentSearchQuery}
+                        onValueChange={setInvestmentSearchQuery}
+                      />
+                      <CommandList ref={investmentListRef} className="max-h-[264px]">
                         <CommandEmpty>No investment found.</CommandEmpty>
                         <CommandGroup>
                           <CommandItem
