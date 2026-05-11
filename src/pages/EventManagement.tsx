@@ -1140,7 +1140,7 @@ export default function EventManagement() {
         title="Delete Event"
         description={
           <span>
-            Are you sure you want to delete <strong className="text-foreground">{deletingEvent?.title}</strong>? This action cannot be undone.
+            Are you sure you want to delete <strong className="text-foreground break-words">{deletingEvent?.title}</strong>? This action cannot be undone.
           </span>
         }
         confirmLabel="Delete"

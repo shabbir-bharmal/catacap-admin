@@ -1019,7 +1019,7 @@ export default function NewsManagementPage() {
         description={
           <span>
             Are you sure you want to delete{" "}
-            <strong className="text-foreground">{deleteTarget?.title}</strong>?
+            <strong className="text-foreground break-words">{deleteTarget?.title}</strong>?
             This action cannot be undone.
           </span>
         }
@@ -1056,8 +1056,8 @@ export default function NewsManagementPage() {
                 </Badge>
                 <span className="text-xs text-muted-foreground">{previewArticle.date}</span>
               </div>
-              <h3 className="text-lg font-semibold" data-testid="text-preview-article-title">{previewArticle.title}</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">{previewArticle.description}</p>
+              <h3 className="text-lg font-semibold break-words min-w-0" data-testid="text-preview-article-title">{previewArticle.title}</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed break-words">{previewArticle.description}</p>
               <div className="flex items-center gap-4 text-xs text-muted-foreground">
                 <span>Audience: {previewArticle.audience}</span>
                 <span>Theme: {previewArticle.theme}</span>

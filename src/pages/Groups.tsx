@@ -653,10 +653,10 @@ export default function GroupsPage() {
         if (!open) loadGroups(false);
       }}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden border-none shadow-2xl [&>button]:text-white">
-          <DialogHeader className="p-6 bg-[#405189] text-white">
-            <DialogTitle className="text-xl font-bold flex items-center gap-2">
-              <Crown className="h-5 w-5" />
-              Manage Leaders - {selectedGroupName}
+          <DialogHeader className="p-6 bg-[#405189] text-white min-w-0">
+            <DialogTitle className="text-xl font-bold flex items-center gap-2 min-w-0">
+              <Crown className="h-5 w-5 shrink-0" />
+              <span className="min-w-0 break-words">Manage Leaders - {selectedGroupName}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="p-1 min-h-[300px] flex flex-col">
@@ -680,10 +680,10 @@ export default function GroupsPage() {
       {/* Group Members Modal */}
       <Dialog open={isMembersDialogOpen} onOpenChange={setIsMembersDialogOpen}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden border-none shadow-2xl [&>button]:text-white">
-          <DialogHeader className="p-6 bg-[#405189] text-white">
-            <DialogTitle className="text-xl font-bold flex items-center gap-2">
-              <UsersIcon className="h-5 w-5" />
-              Members - {membersDialogGroupName}
+          <DialogHeader className="p-6 bg-[#405189] text-white min-w-0">
+            <DialogTitle className="text-xl font-bold flex items-center gap-2 min-w-0">
+              <UsersIcon className="h-5 w-5 shrink-0" />
+              <span className="min-w-0 break-words">Members - {membersDialogGroupName}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="p-4 min-h-[300px] max-h-[70vh] flex flex-col">
@@ -713,8 +713,8 @@ export default function GroupsPage() {
                   <tbody className="divide-y">
                     {membersList.map((m) => (
                       <tr key={m.id} data-testid={`row-member-${m.id}`}>
-                        <td className="px-3 py-2" data-testid={`text-member-name-${m.id}`}>{m.fullName || "—"}</td>
-                        <td className="px-3 py-2 text-muted-foreground" data-testid={`text-member-email-${m.id}`}>{m.email || "—"}</td>
+                        <td className="px-3 py-2 break-words min-w-0" data-testid={`text-member-name-${m.id}`}>{m.fullName || "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground break-all min-w-0" data-testid={`text-member-email-${m.id}`}>{m.email || "—"}</td>
                         <td className="px-3 py-2" data-testid={`text-member-role-${m.id}`}>
                           <Badge
                             className={`no-default-hover-elevate no-default-active-elevate border-0 ${
@@ -741,10 +741,10 @@ export default function GroupsPage() {
       {/* Campaign Investments Modal */}
       <Dialog open={isInvestmentsDialogOpen} onOpenChange={setIsInvestmentsDialogOpen}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden border-none shadow-2xl">
-          <DialogHeader className="p-6 bg-[#405189] text-white">
-            <DialogTitle className="text-xl font-bold flex items-center gap-2">
-              <TrendingUp className="h-5 w-5" />
-              Investments — {investmentsDialogGroupName}
+          <DialogHeader className="p-6 bg-[#405189] text-white min-w-0">
+            <DialogTitle className="text-xl font-bold flex items-center gap-2 min-w-0">
+              <TrendingUp className="h-5 w-5 shrink-0" />
+              <span className="min-w-0 break-words">Investments — {investmentsDialogGroupName}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="p-4 min-h-[200px]">
@@ -772,7 +772,7 @@ export default function GroupsPage() {
                   <tbody className="divide-y">
                     {investmentsCampaigns.map((c) => (
                       <tr key={c.id} className="hover:bg-muted/30" data-testid={`row-campaign-investment-${c.id}`}>
-                        <td className="px-3 py-2.5 font-medium" data-testid={`text-campaign-name-${c.id}`}>
+                        <td className="px-3 py-2.5 font-medium break-words min-w-0" data-testid={`text-campaign-name-${c.id}`}>
                           {c.name}
                         </td>
                         <td className="px-3 py-2.5">
@@ -830,10 +830,10 @@ export default function GroupsPage() {
         setIsManageChampionsOpen(open);
       }}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden border-none shadow-2xl [&>button]:text-white">
-          <DialogHeader className="p-6 bg-[#405189] text-white">
-            <DialogTitle className="text-xl font-bold flex items-center gap-2">
-              <UsersIcon className="h-5 w-5" />
-              Manage Champions - {selectedGroupName}
+          <DialogHeader className="p-6 bg-[#405189] text-white min-w-0">
+            <DialogTitle className="text-xl font-bold flex items-center gap-2 min-w-0">
+              <UsersIcon className="h-5 w-5 shrink-0" />
+              <span className="min-w-0 break-words">Manage Champions - {selectedGroupName}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="p-1 min-h-[300px] flex flex-col">

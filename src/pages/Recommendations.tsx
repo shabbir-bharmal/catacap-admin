@@ -687,16 +687,16 @@ export default function RecommendationsPage() {
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-[120px_1fr] gap-2">
                 <span className="text-muted-foreground">User:</span>
-                <span data-testid="text-reject-details-user">
+                <span className="min-w-0 break-words" data-testid="text-reject-details-user">
                   {rejectDetailsTarget.userFullName}
                   {rejectDetailsTarget.userEmail ? ` (${rejectDetailsTarget.userEmail})` : ""}
                 </span>
                 <span className="text-muted-foreground">Investment:</span>
-                <span data-testid="text-reject-details-investment">{rejectDetailsTarget.campaignName}</span>
+                <span className="min-w-0 break-words" data-testid="text-reject-details-investment">{rejectDetailsTarget.campaignName}</span>
                 {rejectDetailsTarget.rejectedBy && (
                   <>
                     <span className="text-muted-foreground">Rejected by:</span>
-                    <span data-testid="text-reject-details-by">{rejectDetailsTarget.rejectedBy}</span>
+                    <span className="min-w-0 break-words" data-testid="text-reject-details-by">{rejectDetailsTarget.rejectedBy}</span>
                   </>
                 )}
               </div>

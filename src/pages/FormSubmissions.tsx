@@ -509,14 +509,14 @@ export default function FormSubmissionsPage() {
                 </div>
 
                 {selectedSubmission.formType !== 3 && (
-                  <div>
+                  <div className="min-w-0">
                     <Label className="text-xs text-muted-foreground uppercase tracking-wide">Email</Label>
-                    <p className="text-sm font-medium mt-0.5">{selectedSubmission.email || "—"}</p>
+                    <p className="text-sm font-medium mt-0.5 break-all">{selectedSubmission.email || "—"}</p>
                   </div>
                 )}
 
                 {selectedSubmission.description && (
-                  <div>
+                  <div className="min-w-0">
                     <Label className="text-xs text-muted-foreground uppercase tracking-wide">
                       {selectedSubmission.formType === 1
                         ? "Company Name & Foundation Name"
@@ -530,7 +530,7 @@ export default function FormSubmissionsPage() {
                                 ? "Theme(s) to focus on"
                                 : "Description"}
                     </Label>
-                    <p className="text-sm font-medium mt-0.5">{selectedSubmission.description}</p>
+                    <p className="text-sm font-medium mt-0.5 break-words">{selectedSubmission.description}</p>
                   </div>
                 )}
 
