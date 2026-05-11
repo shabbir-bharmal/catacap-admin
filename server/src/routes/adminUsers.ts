@@ -121,6 +121,7 @@ router.get("/", async (req: Request, res: Response) => {
     const dir = isAsc ? "ASC" : "DESC";
     let orderClause: string;
     const isRecSorting = sortField === "recommendations";
+    const isTotalInvestedSorting = sortField === "totalinvested";
 
     switch (sortField) {
       case "fullname":
@@ -146,7 +147,10 @@ router.get("/", async (req: Request, res: Response) => {
     let dataQuery: string;
     let dataParams: (string | number)[];
 
-    if (isRecSorting) {
+    if (isRecSorting || isTotalInvestedSorting) {
+      // For aggregate columns (recommendations count, total invested) we have
+      // to fetch the unpaginated set and sort in JS after enrichment, since
+      // those values come from a separate aggregate query keyed by email.
       dataQuery = `SELECT DISTINCT u.id, u.first_name, u.last_name, u.user_name, u.account_balance,
                     u.email, u.is_active, u.date_created, u.is_exclude_user_balance,
                     u.deleted_at, u.deleted_by
@@ -180,7 +184,9 @@ router.get("/", async (req: Request, res: Response) => {
       : `AND (is_deleted IS NULL OR is_deleted = false)`;
 
     const recCountResult = await pool.query(
-      `SELECT LOWER(TRIM(user_email)) as email, COUNT(*) as count
+      `SELECT LOWER(TRIM(user_email)) as email,
+              COUNT(*) as count,
+              COALESCE(SUM(amount), 0) as total_amount
        FROM recommendations
        WHERE amount > 0
          AND (status = 'pending' OR status = 'approved')
@@ -190,8 +196,10 @@ router.get("/", async (req: Request, res: Response) => {
       [emails]
     );
     const recCounts: Record<string, number> = {};
+    const totalInvestedByEmail: Record<string, number> = {};
     for (const r of recCountResult.rows) {
       recCounts[r.email] = parseInt(r.count, 10);
+      totalInvestedByEmail[r.email] = parseFloat(String(r.total_amount)) || 0;
     }
 
     const groupsResult = await pool.query(
@@ -256,6 +264,7 @@ router.get("/", async (req: Request, res: Response) => {
         isGroupAdmin: groupAdminUserIds.includes(u.id),
         isExcludeUserBalance: u.is_exclude_user_balance || false,
         recommendationsCount: recCounts[emailKey] || 0,
+        totalInvested: totalInvestedByEmail[emailKey] || 0,
         groupNames: acceptedGroups.map((g) => g.name).join(","),
         groupBalances: acceptedGroups
           .map((g) => {
@@ -272,6 +281,12 @@ router.get("/", async (req: Request, res: Response) => {
       result.sort((a, b) => {
         if (isAsc) return a.recommendationsCount - b.recommendationsCount;
         return b.recommendationsCount - a.recommendationsCount;
+      });
+      result = result.slice((page - 1) * pageSize, page * pageSize);
+    } else if (isTotalInvestedSorting) {
+      result.sort((a, b) => {
+        if (isAsc) return a.totalInvested - b.totalInvested;
+        return b.totalInvested - a.totalInvested;
       });
       result = result.slice((page - 1) * pageSize, page * pageSize);
     }
