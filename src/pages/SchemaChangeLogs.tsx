@@ -714,9 +714,9 @@ export default function SchemaChangeLogs() {
           if (!open) setPendingRollback(null);
         }}
         title={
-          <span className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-red-600" />
-            Roll back schema change?
+          <span className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+            <span className="min-w-0 break-words">Roll back schema change?</span>
           </span>
         }
         description={

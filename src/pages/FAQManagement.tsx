@@ -660,9 +660,9 @@ export default function FAQManagement() {
         dataTestId="dialog-delete-faq"
       >
         {deletingFaq && (
-          <div className="bg-muted/50 rounded-md p-3 text-sm mt-4">
-            <div className="font-medium">{deletingFaq.question}</div>
-            <div className="text-xs text-muted-foreground mt-1">Category: {CATEGORY_LABELS[deletingFaq.category]}</div>
+          <div className="bg-muted/50 rounded-md p-3 text-sm mt-4 min-w-0">
+            <div className="font-medium break-words">{deletingFaq.question}</div>
+            <div className="text-xs text-muted-foreground mt-1 break-words">Category: {CATEGORY_LABELS[deletingFaq.category]}</div>
           </div>
         )}
       </ConfirmationDialog>

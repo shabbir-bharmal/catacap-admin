@@ -350,10 +350,10 @@ export default function EventRegistrationsList() {
           deletingRegistration ? (
             <>
               Are you sure you want to delete the registration for{" "}
-              <span className="font-medium text-foreground">
+              <span className="font-medium text-foreground break-words">
                 {deletingRegistration.firstName} {deletingRegistration.lastName}
               </span>{" "}
-              ({deletingRegistration.email})? This action cannot be undone from this page.
+              (<span className="break-all">{deletingRegistration.email}</span>)? This action cannot be undone from this page.
             </>
           ) : (
             "Are you sure you want to delete this event registration?"

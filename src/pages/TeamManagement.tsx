@@ -833,7 +833,7 @@ export default function TeamManagement() {
         description={
           <span>
             Are you sure you want to delete{" "}
-            <strong className="text-foreground">
+            <strong className="text-foreground break-words">
               {deletingMember?.firstName} {deletingMember?.lastName}
             </strong>
             ? This action cannot be undone.

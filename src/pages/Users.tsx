@@ -682,8 +682,8 @@ export default function UsersPage() {
 
       <Dialog open={recsDialogOpen} onOpenChange={setRecsDialogOpen}>
         <DialogContent className="max-w-2xl" data-testid="dialog-user-recommendations">
-          <DialogHeader>
-            <DialogTitle>
+          <DialogHeader className="min-w-0">
+            <DialogTitle className="min-w-0 break-words">
               Recommendations{recsDialogUser ? ` - ${recsDialogUser.fullName}` : ""}
             </DialogTitle>
           </DialogHeader>
@@ -711,7 +711,7 @@ export default function UsersPage() {
                 <tbody>
                   {recsDialogItems.map((rec) => (
                     <tr key={rec.id} className="border-b last:border-b-0" data-testid={`row-user-recommendation-${rec.id}`}>
-                      <td className="px-3 py-2" data-testid={`text-rec-campaign-${rec.id}`}>
+                      <td className="px-3 py-2 break-words min-w-0" data-testid={`text-rec-campaign-${rec.id}`}>
                         {rec.campaignName || "-"}
                       </td>
                       <td className="px-3 py-2 text-right font-medium" data-testid={`text-rec-amount-${rec.id}`}>

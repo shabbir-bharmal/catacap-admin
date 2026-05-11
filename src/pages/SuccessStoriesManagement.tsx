@@ -1025,9 +1025,9 @@ export default function SuccessStoriesManagement() {
         dataTestId="dialog-delete-story"
       >
         {deletingStory && (
-          <div className="bg-muted/50 rounded-md p-3 text-sm mt-4">
-            <div className="font-medium">{deletingStory.personName}</div>
-            <div className="text-xs text-muted-foreground mt-1">
+          <div className="bg-muted/50 rounded-md p-3 text-sm mt-4 min-w-0">
+            <div className="font-medium break-words">{deletingStory.personName}</div>
+            <div className="text-xs text-muted-foreground mt-1 break-words">
               {PERSPECTIVE_LABELS[deletingStory.perspective as Perspective]} - {deletingStory.personOrg}
             </div>
           </div>
