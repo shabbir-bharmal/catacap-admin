@@ -37,7 +37,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import BannerCropper from "@/components/BannerCropper";
 import { MultiSelectPopover } from "@/components/MultiSelectPopover";
 import { UserEmailCombobox } from "@/components/UserEmailCombobox";
-import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus } from "lucide-react";
+import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus, Bell, Eye, Sparkles, Users as UsersIcon } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QRCodeCanvas } from "qrcode.react";
 
@@ -3794,48 +3794,124 @@ export default function AdminInvestmentEdit() {
             <DialogHeader>
               <DialogTitle>{editingUpdateId ? "Edit Update" : "New Update"}</DialogTitle>
             </DialogHeader>
+
+            {/* Audience + scope banner — sets expectations before any field. */}
+            <div
+              className="rounded-md border border-[#405189]/30 bg-[#405189]/5 p-3 text-xs text-[#2c3a66] space-y-1.5"
+              data-testid="banner-update-audience"
+            >
+              <div className="flex items-start gap-2">
+                <UsersIcon className="h-4 w-4 mt-0.5 shrink-0 text-[#405189]" />
+                <div>
+                  <div className="font-semibold text-[#405189]">Who sees this</div>
+                  <div>
+                    Only investors who funded this venture through CataCap — via approved or
+                    pending recommendations, pending grants, or in-transit asset payments.
+                    People who are merely browsing or following the venture do not receive it.
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <Bell className="h-4 w-4 mt-0.5 shrink-0 text-[#405189]" />
+                <div>
+                  <span className="font-semibold text-[#405189]">Where it appears: </span>
+                  Email to the investor, in-app Notifications tab, and on the venture page
+                  (visible to investors any time).
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <Sparkles className="h-4 w-4 mt-0.5 shrink-0 text-[#405189]" />
+                <div>
+                  <span className="font-semibold text-[#405189]">What to share: </span>
+                  Milestones, financial performance, and social or environmental impact since
+                  your last update.
+                </div>
+              </div>
+            </div>
+
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="update-subject" className="text-sm">Subject <span className="text-[#f06548]">*</span></Label>
+                <Label htmlFor="update-subject" className="text-sm">
+                  Headline <span className="text-[#f06548]">*</span>
+                </Label>
                 <Input
                   id="update-subject"
                   value={updateForm.subject}
                   onChange={(e) => setUpdateForm((p) => ({ ...p, subject: e.target.value }))}
+                  placeholder="One short line that summarizes the news (e.g. ‘Q1 results: revenue up 32%, first profitable quarter’)"
                   data-testid="input-update-subject"
                 />
+                <p className="text-[11px] text-muted-foreground">
+                  Becomes the email subject line. Aim for under 80 characters so it isn’t cut off in inboxes.
+                </p>
                 {updateFormErrors.subject && <p className="text-[#f06548] text-xs">{updateFormErrors.subject}</p>}
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="update-description" className="text-sm">Description <span className="text-[#f06548]">*</span></Label>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <Label htmlFor="update-description" className="text-sm">
+                    The full update <span className="text-[#f06548]">*</span>
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-[#405189] hover:bg-[#405189]/10"
+                    onClick={() => {
+                      const outline = `<p><strong>What’s new since the last update?</strong></p><p><em>The headline news in 2–3 sentences. Wins, milestones, anything investors should know first.</em></p><p><strong>What does this mean for the business?</strong></p><p><em>Context for investors who don’t follow day-to-day. The “so what.”</em></p><p><strong>Impact this period</strong></p><ul><li><strong>Social: </strong><em>Who did you serve and how can you measure it?</em></li><li><strong>Environmental: </strong><em>Any measurable footprint change or external impact?</em></li><li><strong>Financial: </strong><em>Revenue, runway, unit economics, customer growth, etc.</em></li></ul><p><strong>What’s next?</strong></p><p><em>What investors should expect over the next 30–90 days.</em></p>`;
+                      setUpdateForm((p) => ({ ...p, description: outline }));
+                    }}
+                    disabled={!!updateForm.description && updateForm.description.replace(/<[^>]*>/g, "").trim().length > 0}
+                    data-testid="button-insert-suggested-outline"
+                    title={updateForm.description && updateForm.description.replace(/<[^>]*>/g, "").trim().length > 0
+                      ? "Clear the description first to insert the outline"
+                      : "Insert a suggested outline you can edit"}
+                  >
+                    <Sparkles className="h-3.5 w-3.5 mr-1" />
+                    Insert suggested outline
+                  </Button>
+                </div>
                 <RichTextEditor
                   value={updateForm.description}
                   onChange={(val) => setUpdateForm((p) => ({ ...p, description: val }))}
-                  placeholder="Update description"
+                  placeholder="What happened, what does it mean, and what’s next? Click ‘Insert suggested outline’ above for a fill-in-the-blanks template."
                   data-testid="input-update-description"
                   maxLength={3000}
                 />
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <p>
+                    <span className="text-[#0ab39c] font-semibold">✓</span> Share things you’d be comfortable saying in a public press release.
+                  </p>
+                  <p>
+                    <span className="text-[#f7b84b] font-semibold">⚠</span> Don’t include confidential investor information, individual donor names, or anything you wouldn’t want forwarded.
+                  </p>
+                </div>
                 {updateFormErrors.description && <p className="text-[#f06548] text-xs">{updateFormErrors.description}</p>}
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="update-short-description" className="text-sm">Short Description</Label>
+                <Label htmlFor="update-short-description" className="text-sm">Notification preview</Label>
                 <Textarea
                   id="update-short-description"
                   rows={2}
                   maxLength={240}
-                  placeholder="Notification body (defaults to truncated Description)"
+                  placeholder="A 1–2 sentence teaser investors see in the email preview pane and in the CataCap notifications tab."
                   value={updateForm.shortDescription}
                   onChange={(e) => setUpdateForm((p) => ({ ...p, shortDescription: e.target.value }))}
                   data-testid="input-update-short-description"
                 />
-                <p className="text-[11px] text-muted-foreground">Used as the in-app notification body.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Shown in the email preview pane and as the in-app notification body (max 240 characters).
+                  If left blank, we use a truncated version of the full update above.
+                </p>
               </div>
 
               <div className="space-y-2">
-                <Label className="text-sm">Impact Highlights</Label>
+                <Label className="text-sm">Key numbers</Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Up to three custom (Label, Value) pairs shown alongside this update. Leave blank to skip.
+                  Up to three stats your investors will care about most — these render as
+                  large, scannable tiles next to the update. Examples: <em>Monthly Revenue / $42K (▲ 18% MoM)</em>;
+                  &nbsp;<em>Customers Served / 12,400</em>; <em>CO₂ Avoided / 380 tons</em>. Leave blank to skip.
                 </p>
                 <div className="space-y-2">
                   {updateForm.impactHighlights.map((row, idx) => (
@@ -3847,7 +3923,11 @@ export default function AdminInvestmentEdit() {
                       <Input
                         value={row.label}
                         maxLength={200}
-                        placeholder={`Custom Label ${idx + 1}`}
+                        placeholder={
+                          idx === 0 ? "Label (e.g. Monthly Revenue)" :
+                          idx === 1 ? "Label (e.g. Customers Served)" :
+                          "Label (e.g. CO₂ Avoided)"
+                        }
                         aria-label={`Impact highlight ${idx + 1} label`}
                         onChange={(e) => {
                           const next = updateForm.impactHighlights.slice();
@@ -3859,7 +3939,11 @@ export default function AdminInvestmentEdit() {
                       <Input
                         value={row.value}
                         maxLength={200}
-                        placeholder={`Custom Value ${idx + 1}`}
+                        placeholder={
+                          idx === 0 ? "Value (e.g. $42K · ▲ 18% MoM)" :
+                          idx === 1 ? "Value (e.g. 12,400)" :
+                          "Value (e.g. 380 tons)"
+                        }
                         aria-label={`Impact highlight ${idx + 1} value`}
                         onChange={(e) => {
                           const next = updateForm.impactHighlights.slice();
@@ -3888,7 +3972,13 @@ export default function AdminInvestmentEdit() {
                   data-testid="input-update-attach-file"
                   className="cursor-pointer file:cursor-pointer"
                 />
-                <p className="text-[11px] text-muted-foreground">Images, PDF, Word, Excel, PowerPoint, TXT or CSV (max 10MB each). All files are sent to investors as real email attachments.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Images, PDF, Word, Excel, PowerPoint, TXT or CSV (max 10MB each). All files are sent to investors as real email attachments.
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-semibold text-[#405189]">Tip: </span>
+                  Attach proof for any impact claim — a photo, third-party report, customer letter, or chart. Updates with images get noticeably higher open and engagement rates.
+                </p>
                 {updateForm.attachments.length > 0 && (
                   <ul className="mt-2 space-y-2" data-testid="list-update-attachments">
                     {updateForm.attachments.map((att, idx) => {
@@ -3954,6 +4044,119 @@ export default function AdminInvestmentEdit() {
                   <p className="text-[#f06548] text-xs">{updateFormErrors.attachments}</p>
                 )}
               </div>
+
+              {/* Live "what investors see" preview ─────────────────────── */}
+              <details className="rounded-md border bg-muted/30" data-testid="panel-update-preview">
+                <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium flex items-center gap-2 hover:bg-muted/50 rounded-md">
+                  <Eye className="h-4 w-4 text-[#405189]" />
+                  Preview as investor
+                  <span className="text-[11px] text-muted-foreground font-normal">
+                    (email, in-app notification, and venture page)
+                  </span>
+                </summary>
+                <div className="px-3 pb-3 pt-1 space-y-3">
+                  {/* Email row */}
+                  <div className="rounded border bg-white p-3 space-y-1" data-testid="preview-update-email">
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <Mail className="h-3.5 w-3.5" />
+                      Email inbox row
+                    </div>
+                    <div className="text-sm font-semibold text-foreground truncate">
+                      {updateForm.subject?.trim() || <span className="text-muted-foreground italic font-normal">(Headline — required)</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground line-clamp-2">
+                      {(() => {
+                        const teaser = updateForm.shortDescription?.trim();
+                        if (teaser) return teaser;
+                        const stripped = (updateForm.description || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+                        return stripped ? stripped.slice(0, 200) + (stripped.length > 200 ? "…" : "") : <span className="italic">(Notification preview will appear here)</span>;
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* In-app notification row */}
+                  <div className="rounded border bg-white p-3 space-y-1" data-testid="preview-update-notification">
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <Bell className="h-3.5 w-3.5" />
+                      In-app notification (CataCap notifications tab)
+                    </div>
+                    <div className="text-sm font-medium text-foreground line-clamp-1">
+                      {updateForm.subject?.trim() || <span className="text-muted-foreground italic font-normal">(Headline)</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground line-clamp-2">
+                      {(() => {
+                        const teaser = updateForm.shortDescription?.trim();
+                        if (teaser) return teaser;
+                        const stripped = (updateForm.description || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+                        return stripped ? stripped.slice(0, 140) + (stripped.length > 140 ? "…" : "") : <span className="italic">(Notification preview)</span>;
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Venture page card */}
+                  <div className="rounded border bg-white p-3 space-y-2" data-testid="preview-update-post">
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <FileText className="h-3.5 w-3.5" />
+                      On the venture page
+                    </div>
+                    <div className="text-base font-semibold text-foreground">
+                      {updateForm.subject?.trim() || <span className="text-muted-foreground italic font-normal">(Headline)</span>}
+                    </div>
+                    {updateForm.impactHighlights.some((h) => h.label.trim() || h.value.trim()) && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {updateForm.impactHighlights
+                          .filter((h) => h.label.trim() || h.value.trim())
+                          .map((h, i) => (
+                            <div key={i} className="rounded bg-[#405189]/5 border border-[#405189]/20 px-2 py-1.5">
+                              <div className="text-[10px] uppercase tracking-wide text-muted-foreground truncate">
+                                {h.label || "—"}
+                              </div>
+                              <div className="text-sm font-semibold text-[#405189] truncate">
+                                {h.value || "—"}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                    {(() => {
+                      // Render the description as plain text in this admin
+                      // preview to avoid a new dangerouslySetInnerHTML sink for
+                      // arbitrary HTML loaded from the DB on edit. The real
+                      // pre-send rendering still uses the sandboxed email
+                      // iframe ("Send email to investors?" dialog).
+                      const stripped = (updateForm.description || "")
+                        .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+                        .replace(/<\/(p|div|li|h[1-6])\s*>/gi, "\n")
+                        .replace(/<li[^>]*>/gi, "• ")
+                        .replace(/<[^>]*>/g, "")
+                        .replace(/&nbsp;/g, " ")
+                        .replace(/&amp;/g, "&")
+                        .replace(/&lt;/g, "<")
+                        .replace(/&gt;/g, ">")
+                        .replace(/&quot;/g, '"')
+                        .replace(/&#39;/g, "'")
+                        .replace(/[ \t]+\n/g, "\n")
+                        .replace(/\n{3,}/g, "\n\n")
+                        .trim();
+                      if (!stripped) {
+                        return (
+                          <div className="text-sm text-muted-foreground italic">
+                            (The full update will appear here)
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="text-sm text-foreground whitespace-pre-wrap">
+                          {stripped}
+                        </div>
+                      );
+                    })()}
+                    <p className="text-[10px] text-muted-foreground italic">
+                      Formatting (bold, links, lists) is shown to investors. This admin preview shows text only — use “Send email” to see the full styled version.
+                    </p>
+                  </div>
+                </div>
+              </details>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
