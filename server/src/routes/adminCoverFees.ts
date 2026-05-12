@@ -202,7 +202,12 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
                   WHEN tr.pending_grants_id IS NOT NULL THEN 'DAF Grant'
                   ELSE NULL
                 END AS trigger_payment_type,
-                tr.date_created AS trigger_date
+                CASE
+                  WHEN tr.pending_grants_id IS NOT NULL
+                       AND LOWER(TRIM(COALESCE(tpg.daf_provider, ''))) = 'foundation grant'
+                    THEN tpg.created_date
+                  ELSE tr.date_created
+                END AS trigger_date
            FROM campaign_cover_fees_activity a
            LEFT JOIN campaigns c ON c.id = a.campaign_id
            LEFT JOIN users iu ON iu.id = a.triggered_by_user_id
