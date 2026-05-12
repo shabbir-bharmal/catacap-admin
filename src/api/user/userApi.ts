@@ -69,6 +69,7 @@ export interface UserEntry {
   isGroupAdmin: boolean;
   isExcludeUserBalance: boolean;
   recommendationsCount: number;
+  totalInvested: number;
   groupNames: string;
   groupBalances: string;
 }

@@ -22,7 +22,7 @@ import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { AuditLogModal } from "../components/AuditLogModal";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 
-type SortField = "fullName" | "username" | "recommendations" | "dateCreated" | "accountbalance";
+type SortField = "fullName" | "username" | "recommendations" | "totalInvested" | "dateCreated" | "accountbalance";
 
 export default function UsersPage() {
   const { user: authUser } = useAuth();
@@ -347,6 +347,9 @@ export default function UsersPage() {
                       <br />
                       Email
                     </th>
+                    <SortHeader field="totalInvested" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
+                      Total Invested
+                    </SortHeader>
                     <SortHeader field="recommendations" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Recs
                     </SortHeader>
@@ -365,21 +368,21 @@ export default function UsersPage() {
                 <tbody>
                   {isLoading && (
                     <tr>
-                      <td colSpan={filterByGroup ? 9 : 7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                      <td colSpan={filterByGroup ? 10 : 8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                         Loading...
                       </td>
                     </tr>
                   )}
                   {!isLoading && error && (
                     <tr>
-                      <td colSpan={filterByGroup ? 9 : 7} className="px-4 py-8 text-center text-sm text-destructive">
+                      <td colSpan={filterByGroup ? 10 : 8} className="px-4 py-8 text-center text-sm text-destructive">
                         {(error as Error)?.message || "Failed to load data"}
                       </td>
                     </tr>
                   )}
                   {!isLoading && !error && paginatedUsers.length === 0 && (
                     <tr>
-                      <td colSpan={filterByGroup ? 9 : 7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                      <td colSpan={filterByGroup ? 10 : 8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                         No records found.
                       </td>
                     </tr>
@@ -400,6 +403,11 @@ export default function UsersPage() {
                           <div className="text-xs text-muted-foreground" data-testid={`text-email-${user.id}`}>
                             {user.email}
                           </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-sm" data-testid={`text-total-invested-${user.id}`}>
+                            {`$${Math.round(user.totalInvested ?? 0).toLocaleString("en-US")}`}
+                          </span>
                         </td>
                         <td className="px-4 py-3">
                           {user.recommendationsCount > 0 ? (

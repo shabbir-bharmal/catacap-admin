@@ -286,7 +286,7 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export async function runWeeklyKenStats(): Promise<void> {
+export async function runWeeklyKenStats(options?: { recipients?: string[] }): Promise<void> {
   const now = new Date();
   const stats = await gatherStats(now);
 
@@ -299,20 +299,27 @@ export async function runWeeklyKenStats(): Promise<void> {
   const fromEmail = await buildFromEmail();
   let subject = `CataCap Weekly Stats — week ending ${now.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric" })}`;
   let html = buildEmailHtml(stats);
-  let recipient = RECIPIENT;
+
+  // Default recipients = the legacy single RECIPIENT, but callers can override
+  // (e.g. one-off scripts that need to send the digest to the leadership team).
+  const overrideRecipients = (options?.recipients ?? [])
+    .map((e) => (e || "").trim())
+    .filter((e) => e.length > 0);
+  let recipients: string[] = overrideRecipients.length > 0 ? overrideRecipients : [RECIPIENT];
+  const originalRecipientsLabel = recipients.join(", ");
 
   const testOverride = process.env.TEST_EMAIL_OVERRIDE;
   if (testOverride) {
-    subject = `[TEST] ${subject} (Original recipient: ${recipient})`;
-    const notice = `<div style="background:#fff3cd;border:1px solid #ffc107;padding:10px;margin-bottom:15px;font-size:13px;color:#856404;border-radius:4px;"><strong>TEST MODE:</strong> This email was originally intended for <strong>${recipient}</strong></div>`;
+    subject = `[TEST] ${subject} (Original recipients: ${originalRecipientsLabel})`;
+    const notice = `<div style="background:#fff3cd;border:1px solid #ffc107;padding:10px;margin-bottom:15px;font-size:13px;color:#856404;border-radius:4px;"><strong>TEST MODE:</strong> This email was originally intended for <strong>${originalRecipientsLabel}</strong></div>`;
     html = notice + html;
-    recipient = testOverride;
+    recipients = [testOverride];
   }
 
   const resend = new Resend(apiKey);
   const { data, error } = await resend.emails.send({
     from: fromEmail,
-    to: [recipient],
+    to: recipients,
     subject,
     html,
   });
@@ -323,6 +330,8 @@ export async function runWeeklyKenStats(): Promise<void> {
   }
 
   console.log(
-    `[WEEKLY_KEN_STATS] Sent to ${recipient}${recipient !== RECIPIENT ? ` (original: ${RECIPIENT})` : ""} (id: ${data?.id})`,
+    `[WEEKLY_KEN_STATS] Sent to ${recipients.join(", ")}${
+      testOverride ? ` (original: ${originalRecipientsLabel})` : ""
+    } (id: ${data?.id})`,
   );
 }

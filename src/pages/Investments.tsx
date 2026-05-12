@@ -31,7 +31,6 @@ import { PaginationControls } from "../components/ui/pagination-controls";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { AuditLogModal } from "../components/AuditLogModal";
 import catacapLogo from "@assets/CataCap-Logo.png";
-import { getUrlBlobContainerImage } from "@/lib/image-utils";
 import { currency_format, formatDate } from "@/helpers/format";
 
 interface NoteEntry {
@@ -523,7 +522,6 @@ export default function InvestmentsPage() {
               <table className="w-full" data-testid="table-investments">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Image</th>
                     <SortHeader field="name" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Name
                     </SortHeader>
@@ -550,13 +548,13 @@ export default function InvestmentsPage() {
                 <tbody>
                   {isLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                         Loading investments...
                       </td>
                     </tr>
                   ) : paginatedInvestments.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                      <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                         No investments found.
                       </td>
                     </tr>
@@ -564,11 +562,6 @@ export default function InvestmentsPage() {
                     paginatedInvestments.map((inv) => (
                       <Fragment key={inv.id}>
                         <tr className="border-b last:border-b-0 odd:bg-card even:bg-muted/30 hover:bg-muted/20 transition-colors" data-testid={`row-investment-${inv.id}`}>
-                          <td className="px-4 py-3">
-                            <div className="h-12 w-16 flex items-center justify-center" data-testid={`img-investment-${inv.id}`}>
-                              <img src={getUrlBlobContainerImage(inv.imageFileName)} alt={inv.name} className="max-h-12 max-w-16 object-contain" />
-                            </div>
-                          </td>
                           <td className="px-4 py-3">
                             <span className="text-sm font-medium" data-testid={`text-name-${inv.id}`}>
                               {inv.name}
@@ -771,7 +764,7 @@ export default function InvestmentsPage() {
                         </tr>
                         {expandedRow === inv.id && (
                           <tr className="border-b" data-testid={`row-notes-${inv.id}`}>
-                            <td colSpan={9} className="p-4 bg-muted/30">
+                            <td colSpan={8} className="p-4 bg-muted/30">
                               <div className="overflow-x-auto rounded-lg border shadow-sm">
                                 <table className="w-full" data-testid={`table-notes-${inv.id}`}>
                                   <thead>
