@@ -1,0 +1,21 @@
+Release 12_05_2026
+==================
+
+Migrations
+----------
+- migrations/2026_05_12_update_notification_button_text.sql
+    Schema: none (data-only).
+    Intent: Rename the CTA button in the "Investment Update Notification"
+            email template from "🔗 View the investment" to "🔗 View File"
+            per product request.
+    Idempotency: REPLACE() returns the original string when the search needle
+                 is missing, and the WHERE clause's LIKE check skips the row
+                 entirely on re-runs.
+    Rollback:
+        BEGIN;
+        UPDATE email_templates
+        SET body_html = REPLACE(body_html, '🔗 View File', '🔗 View the investment'),
+            modified_at = NOW()
+        WHERE name = 'Investment Update Notification'
+          AND body_html LIKE '%🔗 View File%';
+        COMMIT;
