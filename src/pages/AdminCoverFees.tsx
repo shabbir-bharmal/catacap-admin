@@ -872,10 +872,13 @@ function ActivityPanel({ grantId }: { grantId: number }) {
   }
 
   const triggerStatusLabel = (s: string) => {
-    const v = (s || "").toLowerCase();
+    const v = (s || "").trim().toLowerCase();
+    if (v === "" || v === "pending") return "Pending";
     if (v === "in transit") return "In Transit";
     if (v === "received") return "Received";
-    return "Pending";
+    if (v === "rejected") return "Rejected";
+    if (v === "approved") return "Approved";
+    return s;
   };
 
   return (

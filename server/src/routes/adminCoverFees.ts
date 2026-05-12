@@ -193,14 +193,21 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
                 CONCAT(iu.first_name, ' ', iu.last_name) AS investor_full_name,
                 iu.email AS investor_email,
                 a.triggered_by_recommendation_id,
-                tr.status     AS trigger_status,
+                COALESCE(tpg.status, tr.status) AS trigger_status,
                 tr.amount     AS trigger_amount,
-                CASE WHEN tr.pending_grants_id IS NOT NULL THEN 'DAF Grant' ELSE NULL END AS trigger_payment_type,
+                CASE
+                  WHEN tr.pending_grants_id IS NOT NULL
+                       AND LOWER(TRIM(COALESCE(tpg.daf_provider, ''))) = 'foundation grant'
+                    THEN 'Foundation'
+                  WHEN tr.pending_grants_id IS NOT NULL THEN 'DAF Grant'
+                  ELSE NULL
+                END AS trigger_payment_type,
                 tr.date_created AS trigger_date
            FROM campaign_cover_fees_activity a
            LEFT JOIN campaigns c ON c.id = a.campaign_id
            LEFT JOIN users iu ON iu.id = a.triggered_by_user_id
            LEFT JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
+           LEFT JOIN pending_grants tpg ON tpg.id = tr.pending_grants_id
           WHERE a.cover_fee_id = $1
           ORDER BY a.created_at DESC
           LIMIT 500`,
