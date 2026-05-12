@@ -251,17 +251,17 @@ export default function AccountHistoryPage() {
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-sm" data-testid={`text-gross-amount-${entry.id}`}>
-                            {currency_format(entry.grossAmount, false, 2, "-")}
+                            {entry.grossAmount === null ? "—" : currency_format(entry.grossAmount, false, 2, "$0.00")}
                           </span>
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-sm" data-testid={`text-fees-${entry.id}`}>
-                            {currency_format(entry.fees, false, 2, "-")}
+                            {entry.fees === null ? "—" : currency_format(entry.fees, false, 2, "$0.00")}
                           </span>
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-sm" data-testid={`text-net-amount-${entry.id}`}>
-                            {currency_format(entry.netAmount, false, 2, "-")}
+                            {entry.netAmount === null ? "—" : currency_format(entry.netAmount, false, 2, "$0.00")}
                           </span>
                         </td>
                         <td className="px-4 py-3">

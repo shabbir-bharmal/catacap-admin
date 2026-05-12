@@ -239,8 +239,9 @@ export async function applySingleCoverFee(opts: {
       await client.query(
         `INSERT INTO account_balance_change_logs
            (user_id, payment_type, investment_name, campaign_id,
-            old_value, user_name, new_value, change_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+            old_value, user_name, new_value, change_date,
+            gross_amount, fees, net_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)`,
         [
           sponsor.id,
           `Cover Fees – ${poolRow.name || `Pool #${poolRow.id}`}`,
@@ -249,31 +250,54 @@ export async function applySingleCoverFee(opts: {
           sponsorBalance,
           sponsor.user_name || sponsorFullName,
           newBalance,
+          feeAmount,
+          0,
+          feeAmount,
         ],
       );
     } else {
-      const escrowSponsorRes = await client.query(
-        `SELECT account_balance, user_name FROM users WHERE id = $1`,
-        [poolRow.sponsor_user_id],
-      );
-      if (escrowSponsorRes.rows.length > 0) {
-        const escrowBalance = parseFloat(escrowSponsorRes.rows[0].account_balance) || 0;
+      // Escrow pools: also debit the sponsor's wallet by the fee amount
+      // so the Account History row shows a real Old → New balance change
+      // (matches live-wallet behavior).
+      let escrowFeeAmount = feeAmount;
+      if (sponsorBalance < escrowFeeAmount) {
+        escrowFeeAmount = Math.round(sponsorBalance * 100) / 100;
+      }
+      if (escrowFeeAmount > 0) {
+        const newSponsorBalance = parseFloat(
+          (sponsorBalance - escrowFeeAmount).toFixed(2),
+        );
+        await client.query(
+          `UPDATE users SET account_balance = $1 WHERE id = $2`,
+          [newSponsorBalance, sponsor.id],
+        );
         await client.query(
           `INSERT INTO account_balance_change_logs
              (user_id, payment_type, investment_name, campaign_id,
-              old_value, user_name, new_value, change_date, comment)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)`,
+              old_value, user_name, new_value, change_date, comment,
+              gross_amount, fees, net_amount)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
           [
-            poolRow.sponsor_user_id,
+            sponsor.id,
             `Cover Fees – escrow applied`,
             campaignName,
             campaignId,
-            escrowBalance,
-            escrowSponsorRes.rows[0].user_name || "",
-            escrowBalance,
-            `$${feeAmount.toFixed(2)} fee covered from escrow via pool "${poolRow.name || `Pool #${poolRow.id}`}"`,
+            sponsorBalance,
+            sponsor.user_name || sponsorFullName,
+            newSponsorBalance,
+            `$${escrowFeeAmount.toFixed(2)} fee covered from escrow via pool "${poolRow.name || `Pool #${poolRow.id}`}"`,
+            escrowFeeAmount,
+            0,
+            escrowFeeAmount,
           ],
         );
+        feeAmount = escrowFeeAmount;
+      } else {
+        await client.query("ROLLBACK");
+        console.warn(
+          `applyCoverFees: sponsor ${sponsor.id} has zero balance for escrow pool ${poolRow.id}, skipping`,
+        );
+        return 0;
       }
     }
 

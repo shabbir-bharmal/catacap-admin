@@ -95,9 +95,9 @@ router.get("/", async (req: Request, res: Response) => {
       paymentType: row.paymentType,
       investmentName: row.investmentName,
       comment: row.comment,
-      grossAmount: parseFloat(row.grossAmount) || 0,
-      fees: parseFloat(row.fees) || 0,
-      netAmount: parseFloat(row.netAmount) || 0,
+      grossAmount: row.grossAmount !== null ? parseFloat(row.grossAmount) : null,
+      fees: row.fees !== null ? parseFloat(row.fees) : null,
+      netAmount: row.netAmount !== null ? parseFloat(row.netAmount) : null,
       deletedAt: row.deletedAt,
       deletedBy: row.deletedBy,
     }));

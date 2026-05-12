@@ -22,9 +22,9 @@ export interface AccountHistoryEntry {
   oldValue: number;
   newValue: number;
   comment?: string;
-  grossAmount: number;
-  fees: number;
-  netAmount: number;
+  grossAmount: number | null;
+  fees: number | null;
+  netAmount: number | null;
 }
 
 export interface PaginatedAccountHistoryResponse {
