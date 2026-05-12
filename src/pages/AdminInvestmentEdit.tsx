@@ -4307,7 +4307,7 @@ export default function AdminInvestmentEdit() {
             }
           }}
         >
-          <DialogContent className="w-[95vw] sm:w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col p-0 relative">
+          <DialogContent className="w-[98vw] sm:w-[96vw] max-w-[1400px] h-[95vh] max-h-[95vh] overflow-hidden flex flex-col p-0 relative">
             {sendingEmailUpdateId !== null && (
               <div
                 className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm rounded-lg"
@@ -4326,22 +4326,48 @@ export default function AdminInvestmentEdit() {
                 with the Investment Owner CC&rsquo;d. Below is the email preview that will be sent to the investors.
               </p>
             </DialogHeader>
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-3 bg-muted/20">
               {emailPreviewLoading || !emailPreview ? (
                 <div className="text-sm text-muted-foreground py-12 text-center">Loading preview…</div>
               ) : (
-                <>
-                  <div className="rounded-md border overflow-hidden bg-white">
+                <div className="rounded-md border bg-white shadow-sm flex flex-col h-full min-h-[60vh]">
+                  <div className="border-b px-4 py-3 space-y-1 bg-white" data-testid="email-preview-header">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="text-[11px] uppercase tracking-wide text-muted-foreground shrink-0">Subject</span>
+                      <span className="text-base font-semibold text-foreground break-words" data-testid="text-email-preview-subject">
+                        {emailPreview.subject || emailUpdateTarget?.subject || "(no subject)"}
+                      </span>
+                    </div>
+                    {emailPreview.from && (
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="uppercase tracking-wide text-[10px] shrink-0">From</span>
+                        <span className="text-foreground break-all">{emailPreview.from}</span>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                      <span className="uppercase tracking-wide text-[10px] shrink-0">To</span>
+                      <span className="text-foreground">
+                        {emailPreview.recipientCount} investor{emailPreview.recipientCount === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    {emailPreview.cc && emailPreview.cc.length > 0 && (
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="uppercase tracking-wide text-[10px] shrink-0">Cc</span>
+                        <span className="text-foreground break-all">{emailPreview.cc.join(", ")}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0">
                     <iframe
                       title="Email preview"
                       srcDoc={emailPreview.bodyHtml}
                       sandbox=""
-                      className="w-full"
-                      style={{ height: "55vh", border: 0 }}
+                      className="w-full h-full"
+                      style={{ border: 0, display: "block" }}
                       data-testid="iframe-email-preview"
                     />
                   </div>
-                </>
+                </div>
               )}
             </div>
             <DialogFooter className="p-4 sm:p-6 pt-3 border-t bg-background">
