@@ -733,6 +733,12 @@ export default function AdminInvestmentEdit() {
   const openSendEmailDialog = async (item: CampaignUpdateItem) => {
     setEmailUpdateTarget(item);
     setEmailPreview(null);
+    // The edit page is very long; scroll to the top so the dialog (which is
+    // viewport-fixed but visually centered) lands in the user's current view
+    // instead of appearing far below the fold.
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
     if (!resolvedNumericId) return;
     setEmailPreviewLoading(true);
     try {
@@ -4307,7 +4313,7 @@ export default function AdminInvestmentEdit() {
             }
           }}
         >
-          <DialogContent className="w-[98vw] sm:w-[96vw] max-w-[1400px] h-[95vh] max-h-[95vh] overflow-hidden flex flex-col p-0 relative">
+          <DialogContent className="w-[98vw] sm:w-[96vw] max-w-[1400px] h-[95vh] max-h-[95vh] overflow-hidden flex flex-col p-0 !top-[2.5vh] !translate-y-0 relative">
             {sendingEmailUpdateId !== null && (
               <div
                 className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm rounded-lg"
