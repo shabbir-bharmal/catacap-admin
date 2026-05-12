@@ -37,6 +37,7 @@ interface Campaign { id: number; name: string; }
 interface CoverFeesPool {
   id: number;
   name: string;
+  displaySponsorName: string;
   sponsorUserId: string;
   sponsorEmail: string;
   sponsorFullName: string;
@@ -90,6 +91,7 @@ interface SponsorOption { id: string; email: string; fullName: string; accountBa
 
 const EMPTY_FORM = {
   name: "",
+  displaySponsorName: "",
   sponsorUserId: "",
   sponsorEmail: "",
   sponsorFullName: "",
@@ -428,6 +430,7 @@ function GrantFormDialog({
     try {
       const payload = {
         name: form.name.trim(),
+        displaySponsorName: form.displaySponsorName.trim(),
         sponsorUserId: form.sponsorUserId,
         totalCap: form.totalCap !== "" ? Number(form.totalCap) : null,
         perInvestmentCap: form.perInvestmentCap !== "" ? Number(form.perInvestmentCap) : null,
@@ -472,6 +475,19 @@ function GrantFormDialog({
               placeholder="e.g. Lily – Empower Her Fee Coverage 2026"
               data-testid="input-grant-name"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-sm">Name to show Investors</Label>
+            <Input
+              value={form.displaySponsorName}
+              onChange={(e) => upd("displaySponsorName", e.target.value)}
+              placeholder="e.g. The Kurtzig Family Foundation"
+              data-testid="input-display-sponsor-name"
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional. When set, this name replaces the sponsor's name on the public investment page (e.g. "...generously covered by <em>this name</em>..."). Leave blank to use the sponsor's real name.
+            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -1184,6 +1200,7 @@ export default function AdminCoverFees() {
     setEditTarget({
       id: g.id,
       name: g.name,
+      displaySponsorName: g.displaySponsorName || "",
       sponsorUserId: g.sponsorUserId,
       sponsorEmail: g.sponsorEmail,
       sponsorFullName: g.sponsorFullName,

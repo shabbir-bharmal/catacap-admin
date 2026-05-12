@@ -79,3 +79,18 @@ Hook points (fire-and-forget after commit, parallel to applyMatchGrants):
   - server/src/routes/adminRecommendations.ts   PUT /:id   newly approved/pending
   - server/src/routes/adminPendingGrants.ts     status update path
   - server/src/routes/adminOtherAssets.ts       status update path
+
+
+  6. 2026_05_09_cover_fees_display_sponsor_name.sql
+       Schema: ALTER TABLE campaign_cover_fees
+                 ADD COLUMN IF NOT EXISTS display_sponsor_name TEXT NULL.
+       Intent: Backs the new "Name to show Investors" field on the
+               admin Cover Fees Pool form. When set (non-blank), the
+               public /Campaign/cover-fees-status endpoint returns
+               this value as `sponsorName`, overriding the sponsor's
+               real first/last/user_name on the public investment
+               page banner ("...generously covered by <name>...").
+               Admin views (Excel export, activity panel) still show
+               the real sponsor name.
+       Idempotency: IF NOT EXISTS, transactional.
+       Rollback: DROP COLUMN IF EXISTS display_sponsor_name;

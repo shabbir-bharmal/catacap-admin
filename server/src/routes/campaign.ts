@@ -1100,6 +1100,7 @@ async function lookupCoverFeesStatus(campaignId: number, res: Response) {
   const result = await pool.query(
       `SELECT ccf.id, ccf.name, ccf.total_cap, ccf.amount_used,
               ccf.reserved_amount, ccf.expires_at,
+              ccf.display_sponsor_name,
               CONCAT(u.first_name, ' ', u.last_name) AS sponsor_full_name,
               u.user_name AS sponsor_user_name
          FROM campaign_cover_fees ccf
@@ -1133,8 +1134,14 @@ async function lookupCoverFeesStatus(campaignId: number, res: Response) {
       }) || result.rows[0];
     const remaining = computeRemaining(chosen);
     const isCovered = remaining == null || remaining > 0;
+    // Admin-set override wins over the sponsor's real name. Falls back
+    // to first/last → user_name → "Sponsor" for legacy pools that have
+    // no display override configured.
     const sponsorName =
-      ((chosen.sponsor_full_name || "").trim() || chosen.sponsor_user_name || "Sponsor");
+      ((chosen.display_sponsor_name || "").trim() ||
+        (chosen.sponsor_full_name || "").trim() ||
+        chosen.sponsor_user_name ||
+        "Sponsor");
     res.json({ isCovered, sponsorName, remainingEscrow: remaining });
 }
 

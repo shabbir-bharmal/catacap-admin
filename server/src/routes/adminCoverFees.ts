@@ -103,6 +103,7 @@ router.get("/", async (_req: Request, res: Response) => {
       pool.query(
         `SELECT ccf.id,
                 ccf.name,
+                ccf.display_sponsor_name,
                 ccf.sponsor_user_id,
                 u.email          AS sponsor_email,
                 CONCAT(u.first_name, ' ', u.last_name) AS sponsor_full_name,
@@ -143,6 +144,7 @@ router.get("/", async (_req: Request, res: Response) => {
         return {
           id: g.id,
           name: g.name || "",
+          displaySponsorName: g.display_sponsor_name || "",
           sponsorUserId: g.sponsor_user_id,
           sponsorEmail: g.sponsor_email || "",
           sponsorFullName:
@@ -343,8 +345,9 @@ router.post("/", async (req: Request, res: Response) => {
       `INSERT INTO campaign_cover_fees
          (name, sponsor_user_id, total_cap, fee_rate, per_investment_cap,
           is_active, notes, expires_at, reserved_amount,
-          cover_initial_fee, cover_lifecycle_fee, coverage_active_from)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NOW())
+          cover_initial_fee, cover_lifecycle_fee, coverage_active_from,
+          display_sponsor_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NOW(), $11)
        RETURNING id`,
       [
         poolName,
@@ -357,6 +360,7 @@ router.post("/", async (req: Request, res: Response) => {
         expiresAt,
         coverInitialFee,
         coverLifecycleFee,
+        (b.displaySponsorName || "").trim() || null,
       ],
     );
     const poolId = insertResult.rows[0].id;
@@ -505,6 +509,7 @@ router.put("/:id", async (req: Request, res: Response) => {
               reserved_amount      = $8,
               cover_initial_fee    = $10,
               cover_lifecycle_fee  = $11,
+              display_sponsor_name = $12,
               updated_at           = NOW()
         WHERE id = $9`,
       [
@@ -519,6 +524,7 @@ router.put("/:id", async (req: Request, res: Response) => {
         id,
         coverInitialFee,
         coverLifecycleFee,
+        (b.displaySponsorName || "").trim() || null,
       ],
     );
 
