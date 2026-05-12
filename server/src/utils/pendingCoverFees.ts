@@ -20,7 +20,7 @@ export type CoverFeeProjectionTrigger = {
   triggerEmail: string;
   triggerAmount: number;
   triggerDate: Date | string | null;
-  triggerStatus: "pending" | "in transit";
+  triggerStatus: "pending";
   pendingGrantId: number | null;
 };
 
@@ -108,7 +108,7 @@ async function fetchPendingTriggers(
       WHERE r.campaign_id = ANY($1::int[])
         AND COALESCE(r.is_deleted, false) = false
         AND COALESCE(pg.is_deleted, false) = false
-        AND LOWER(COALESCE(pg.status, '')) IN ('pending', 'in transit')
+        AND LOWER(COALESCE(pg.status, '')) = 'pending'
         AND r.amount::numeric > 0
         AND NOT EXISTS (
           SELECT 1 FROM campaign_cover_fees_activity a
@@ -155,7 +155,7 @@ async function fetchPendingTriggers(
         String(r.pg_daf_provider || "").trim().toLowerCase() === "foundation grant"
           ? r.pg_created_date || r.date_created || null
           : r.date_created || null,
-      triggerStatus: String(r.pg_status || "").toLowerCase() === "in transit" ? "in transit" : "pending",
+      triggerStatus: "pending",
       pendingGrantId: r.pending_grants_id != null ? Number(r.pending_grants_id) : null,
     });
   }

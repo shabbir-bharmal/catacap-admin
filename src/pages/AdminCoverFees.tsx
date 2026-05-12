@@ -23,7 +23,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axiosInstance from "../api/axios";
 import { currency_format, formatDate } from "../helpers/format";
-import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download, CheckCircle2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useDebounce } from "../hooks/useDebounce";
@@ -881,6 +882,73 @@ function ActivityPanel({ grantId }: { grantId: number }) {
     return s;
   };
 
+  const triggerTooltipCopy = (
+    paymentType: string,
+    status: string,
+    context: "covered" | "pending",
+  ) => {
+    const v = (status || "").trim().toLowerCase();
+    const subject = paymentType
+      ? `the donor's ${paymentType.toLowerCase()}`
+      : "the donor's direct recommendation";
+    const lifecycle = (() => {
+      switch (v) {
+        case "":
+        case "pending":
+          return `${subject} has not been marked In Transit yet`;
+        case "in transit":
+          return `${subject} is on its way but has not been received`;
+        case "received":
+          return `${subject} has been received`;
+        case "approved":
+          return `${subject} has been approved`;
+        case "rejected":
+          return `${subject} was rejected`;
+        default:
+          return `${subject} is in "${status}" state`;
+      }
+    })();
+    const tail =
+      context === "covered"
+        ? "This is independent of the coverage itself: the cover-fee has already been applied from the sponsor wallet (or escrow)."
+        : "This is a projection only — the cover-fee has NOT been applied yet. It will fire from the sponsor's escrow when this trigger lands.";
+    return `Trigger payment status — ${lifecycle}. ${tail}`;
+  };
+
+  const renderTriggerBadge = (
+    paymentType: string,
+    status: string,
+    context: "covered" | "pending" = "covered",
+  ) => {
+    const label = `Trigger: ${paymentType ? `${paymentType} · ` : ""}${triggerStatusLabel(status)}`;
+    return (
+      <Tooltip delayDuration={150}>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground cursor-help">
+            {label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+          {triggerTooltipCopy(paymentType, status, context)}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  const CoveredPill = () => (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 cursor-help">
+          <CheckCircle2 className="h-3 w-3" />
+          Covered
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+        The cover-fee has already been applied from the sponsor wallet (or escrow). The trigger badge below describes the donor's separate payment lifecycle, not the coverage status.
+      </TooltipContent>
+    </Tooltip>
+  );
+
   return (
     <div className="space-y-4">
       {items.length > 0 && (
@@ -914,13 +982,13 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                     {currency_format(a.donationAmount)}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    <div className="text-muted-foreground">
-                      {a.triggerPaymentType ? `${a.triggerPaymentType} · ` : ""}
-                      {a.triggerStatus ? triggerStatusLabel(a.triggerStatus) : ""}
+                    <div className="flex flex-col items-start gap-1">
+                      <CoveredPill />
+                      {renderTriggerBadge(a.triggerPaymentType || (a.triggeringRecommendationId != null ? "Direct" : ""), a.triggerStatus || "")}
+                      {a.triggeringRecommendationId != null && (
+                        <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
+                      )}
                     </div>
-                    {a.triggeringRecommendationId != null && (
-                      <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
-                    )}
                   </td>
                   <td className="px-3 py-2 text-right font-medium tabular-nums">
                     {currency_format(a.amount)}
@@ -992,9 +1060,8 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                     </td>
                     <td className="px-3 py-2 text-xs">
                       <div className="tabular-nums">{currency_format(p.triggerAmount)}</div>
-                      <div className="text-muted-foreground">
-                        {p.triggerType === "pending_grant" ? "DAF · " : "Rec · "}
-                        {triggerStatusLabel(p.triggerStatus)}
+                      <div className="mt-1">
+                        {renderTriggerBadge("DAF Grant", p.triggerStatus, "pending")}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-amber-900 dark:text-amber-200">
