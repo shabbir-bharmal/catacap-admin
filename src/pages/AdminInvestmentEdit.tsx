@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import dayjs from "dayjs";
+import quarterOfYear from "dayjs/plugin/quarterOfYear";
+dayjs.extend(quarterOfYear);
 import { formatDate, formatDateISO, formatUSD } from "@/helpers/format";
 import { useParams, useLocation, useSearch } from "wouter";
 import { AdminLayout } from "../components/AdminLayout";
@@ -728,6 +730,28 @@ export default function AdminInvestmentEdit() {
     };
   };
 
+  const openSendEmailDialog = async (item: CampaignUpdateItem) => {
+    setEmailUpdateTarget(item);
+    setEmailPreview(null);
+    if (!resolvedNumericId) return;
+    setEmailPreviewLoading(true);
+    try {
+      const res = await getCampaignUpdateEmailPreview(resolvedNumericId, item.id);
+      if (res.success === false) throw new Error(res.message || "Could not load preview.");
+      setEmailPreview({
+        subject: res.subject || "",
+        bodyHtml: res.bodyHtml || "",
+        from: res.from || "",
+        cc: res.cc || [],
+        recipientCount: res.recipientCount || 0,
+      });
+    } catch (err: any) {
+      toast({ title: "Preview failed", description: err?.message || "Could not load email preview.", variant: "destructive" });
+    } finally {
+      setEmailPreviewLoading(false);
+    }
+  };
+
   const openEditUpdateForm = (item: CampaignUpdateItem) => {
     setEditingUpdateId(item.id);
     const existing = (item.attachments || []).map(mapExistingAttachment);
@@ -844,20 +868,11 @@ export default function AdminInvestmentEdit() {
     if (!updateForm.description || !updateForm.description.replace(/<[^>]+>/g, "").trim()) {
       errs.description = "Description is required.";
     }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (updateForm.startDate) {
-      const s = new Date(updateForm.startDate);
-      s.setHours(0, 0, 0, 0);
-      if (!isNaN(s.getTime()) && s < today) {
-        errs.startDate = "Start date cannot be in the past.";
-      }
-    }
     if (updateForm.startDate && updateForm.endDate) {
       const s = new Date(updateForm.startDate).getTime();
       const e = new Date(updateForm.endDate).getTime();
-      if (!isNaN(s) && !isNaN(e) && e <= s) {
-        errs.endDate = "End date must be after the start date.";
+      if (!isNaN(s) && !isNaN(e) && e < s) {
+        errs.endDate = "End of period must be on or after the start of the period.";
       }
     }
     setUpdateFormErrors(errs);
@@ -895,8 +910,13 @@ export default function AdminInvestmentEdit() {
         toast({ title: "Saved", description: "Update saved successfully." });
       } else {
         const result = await createCampaignUpdate(resolvedNumericId, payload);
-        if (result.success === false) throw new Error(result.message || "Failed to create update.");
-        toast({ title: "Created", description: "Update created and investors notified." });
+        if (result.success === false || !result.item) throw new Error(result.message || "Failed to create update.");
+        toast({ title: "Saved", description: "Review the preview, then send when you're ready." });
+        setUpdateFormOpen(false);
+        resetUpdateForm();
+        await loadCampaignUpdates();
+        await openSendEmailDialog(result.item);
+        return;
       }
       setUpdateFormOpen(false);
       resetUpdateForm();
@@ -3626,8 +3646,8 @@ export default function AdminInvestmentEdit() {
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">File</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Subject</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Description</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Start Date</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">End Date</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Period Start</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Period End</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Actions</th>
                       </tr>
                     </thead>
@@ -3719,27 +3739,7 @@ export default function AdminInvestmentEdit() {
                                   size="icon"
                                   variant="outline"
                                   className="h-8 w-8 rounded-none border-r-0 text-[#0ab39c] hover:text-[#0ab39c] hover:bg-[#0ab39c]/5"
-                                  onClick={async () => {
-                                    setEmailUpdateTarget(item);
-                                    setEmailPreview(null);
-                                    if (!resolvedNumericId) return;
-                                    setEmailPreviewLoading(true);
-                                    try {
-                                      const res = await getCampaignUpdateEmailPreview(resolvedNumericId, item.id);
-                                      if (res.success === false) throw new Error(res.message || "Could not load preview.");
-                                      setEmailPreview({
-                                        subject: res.subject || "",
-                                        bodyHtml: res.bodyHtml || "",
-                                        from: res.from || "",
-                                        cc: res.cc || [],
-                                        recipientCount: res.recipientCount || 0,
-                                      });
-                                    } catch (err: any) {
-                                      toast({ title: "Preview failed", description: err?.message || "Could not load email preview.", variant: "destructive" });
-                                    } finally {
-                                      setEmailPreviewLoading(false);
-                                    }
-                                  }}
+                                  onClick={() => openSendEmailDialog(item)}
                                   disabled={sendingEmailUpdateId === item.id}
                                   data-testid={`button-send-update-email-${item.id}`}
                                   title="Send email to all investors"
@@ -3912,6 +3912,12 @@ export default function AdminInvestmentEdit() {
                   Up to three stats your investors will care about most — these render as
                   large, scannable tiles next to the update. Examples: <em>Monthly Revenue / $42K (▲ 18% MoM)</em>;
                   &nbsp;<em>Customers Served / 12,400</em>; <em>CO₂ Avoided / 380 tons</em>. Leave blank to skip.
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-semibold text-[#405189]">Tip: </span>
+                  These numbers should reflect what happened during the <strong>reporting period</strong> you set
+                  below (e.g. last month, last quarter, year-to-date). Tell investors the time window in the label
+                  itself if it helps — for example <em>Revenue (Q1 2026)</em> or <em>New Customers (last 30 days)</em>.
                 </p>
                 <div className="space-y-2">
                   {updateForm.impactHighlights.map((row, idx) => (
@@ -4158,94 +4164,121 @@ export default function AdminInvestmentEdit() {
                 </div>
               </details>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label className="text-sm flex items-center gap-1.5">
-                    Start Date
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-start-date">
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" align="start" className="max-w-xs">
-                        The date this update starts being shown to investors. In-app notifications are sent on this date.
-                      </TooltipContent>
-                    </Tooltip>
-                  </Label>
-                  <Popover open={updateStartOpen} onOpenChange={setUpdateStartOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.startDate && "text-muted-foreground")} data-testid="button-update-start-date">
-                        <CalendarIcon className="mr-2 h-4 w-4" />
-                        {updateForm.startDate ? formatDate(updateForm.startDate, "") : "MM/DD/YYYY"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={updateForm.startDate ? new Date(updateForm.startDate) : undefined}
-                        onSelect={(date) => {
-                          setUpdateForm((p) => {
-                            const next = { ...p, startDate: date ? date.toISOString() : "" };
-                            if (date && p.endDate && new Date(p.endDate) <= date) {
-                              next.endDate = "";
-                            }
-                            return next;
-                          });
-                          setUpdateStartOpen(false);
-                        }}
-                        disabled={(date) => {
-                          const today = new Date();
-                          today.setHours(0, 0, 0, 0);
-                          return date < today;
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  {updateFormErrors.startDate && <p className="text-[#f06548] text-xs">{updateFormErrors.startDate}</p>}
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-semibold">Reporting period</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    What time window does this update cover? Pick the start and end of the period
+                    your headline, key numbers, and progress describe — for example the past month,
+                    quarter, or year. These dates are usually in the past.
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-sm flex items-center gap-1.5">
-                    End Date
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-end-date">
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" align="start" className="max-w-xs">
-                        The date this update stops being shown to investors. After this date the update is no longer visible.
-                      </TooltipContent>
-                    </Tooltip>
-                  </Label>
-                  <Popover open={updateEndOpen} onOpenChange={setUpdateEndOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.endDate && "text-muted-foreground")} data-testid="button-update-end-date">
-                        <CalendarIcon className="mr-2 h-4 w-4" />
-                        {updateForm.endDate ? formatDate(updateForm.endDate, "") : "MM/DD/YYYY"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={updateForm.endDate ? new Date(updateForm.endDate) : undefined}
-                        onSelect={(date) => { setUpdateForm((p) => ({ ...p, endDate: date ? date.toISOString() : "" })); setUpdateEndOpen(false); }}
-                        disabled={(date) => {
-                          const minDate = new Date();
-                          minDate.setHours(0, 0, 0, 0);
-                          if (updateForm.startDate) {
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {([
+                    { label: "This month", start: dayjs().startOf("month"), end: dayjs() },
+                    { label: "Last month", start: dayjs().subtract(1, "month").startOf("month"), end: dayjs().subtract(1, "month").endOf("month") },
+                    { label: "This quarter", start: dayjs().startOf("quarter"), end: dayjs() },
+                    { label: "Last quarter", start: dayjs().subtract(1, "quarter").startOf("quarter"), end: dayjs().subtract(1, "quarter").endOf("quarter") },
+                    { label: "Year to date", start: dayjs().startOf("year"), end: dayjs() },
+                    { label: "Last year", start: dayjs().subtract(1, "year").startOf("year"), end: dayjs().subtract(1, "year").endOf("year") },
+                  ] as const).map((preset) => (
+                    <Button
+                      key={preset.label}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => setUpdateForm((p) => ({
+                        ...p,
+                        startDate: preset.start.toDate().toISOString(),
+                        endDate: preset.end.toDate().toISOString(),
+                      }))}
+                      data-testid={`button-update-period-preset-${preset.label.toLowerCase().replace(/\s+/g, "-")}`}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                  <div className="space-y-1.5">
+                    <Label className="text-sm flex items-center gap-1.5">
+                      Period starts
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-start-date">
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="start" className="max-w-xs">
+                          The first day of the time window this update describes (e.g. start of last month or last quarter).
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <Popover open={updateStartOpen} onOpenChange={setUpdateStartOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.startDate && "text-muted-foreground")} data-testid="button-update-start-date">
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {updateForm.startDate ? formatDate(updateForm.startDate, "") : "MM/DD/YYYY"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={updateForm.startDate ? new Date(updateForm.startDate) : undefined}
+                          onSelect={(date) => {
+                            setUpdateForm((p) => {
+                              const next = { ...p, startDate: date ? date.toISOString() : "" };
+                              if (date && p.endDate && new Date(p.endDate) < date) {
+                                next.endDate = "";
+                              }
+                              return next;
+                            });
+                            setUpdateStartOpen(false);
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                    {updateFormErrors.startDate && <p className="text-[#f06548] text-xs">{updateFormErrors.startDate}</p>}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm flex items-center gap-1.5">
+                      Period ends
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-end-date">
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="start" className="max-w-xs">
+                          The last day of the time window this update describes. Use today for an "as of now" snapshot.
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <Popover open={updateEndOpen} onOpenChange={setUpdateEndOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.endDate && "text-muted-foreground")} data-testid="button-update-end-date">
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {updateForm.endDate ? formatDate(updateForm.endDate, "") : "MM/DD/YYYY"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={updateForm.endDate ? new Date(updateForm.endDate) : undefined}
+                          onSelect={(date) => { setUpdateForm((p) => ({ ...p, endDate: date ? date.toISOString() : "" })); setUpdateEndOpen(false); }}
+                          disabled={(date) => {
+                            if (!updateForm.startDate) return false;
                             const start = new Date(updateForm.startDate);
                             start.setHours(0, 0, 0, 0);
-                            if (start > minDate) minDate.setTime(start.getTime());
-                          }
-                          return date <= minDate;
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  {updateFormErrors.endDate && <p className="text-[#f06548] text-xs">{updateFormErrors.endDate}</p>}
+                            return date < start;
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                    {updateFormErrors.endDate && <p className="text-[#f06548] text-xs">{updateFormErrors.endDate}</p>}
+                  </div>
                 </div>
               </div>
             </div>
@@ -4311,12 +4344,27 @@ export default function AdminInvestmentEdit() {
                 Cancel
               </Button>
               <Button
+                variant="outline"
+                onClick={() => {
+                  if (!emailUpdateTarget) return;
+                  const target = emailUpdateTarget;
+                  setEmailUpdateTarget(null);
+                  setEmailPreview(null);
+                  openEditUpdateForm(target);
+                }}
+                disabled={sendingEmailUpdateId !== null || !emailUpdateTarget}
+                data-testid="button-edit-update-from-preview"
+              >
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Update
+              </Button>
+              <Button
                 onClick={confirmSendUpdateEmail}
                 disabled={sendingEmailUpdateId !== null || emailPreviewLoading || !emailPreview}
                 className="bg-[#405189] hover:bg-[#364574] text-white"
                 data-testid="button-confirm-send-update-email"
               >
-                {sendingEmailUpdateId !== null ? "Sending…" : "Send email"}
+                {sendingEmailUpdateId !== null ? "Sending…" : "Send Update Now"}
               </Button>
             </DialogFooter>
           </DialogContent>
