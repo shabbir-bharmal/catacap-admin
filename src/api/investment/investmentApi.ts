@@ -102,6 +102,17 @@ export async function fetchInvestmentById(idOrSlug: string | number): Promise<an
     return response.data;
 }
 
+export interface CoverFeesStatus {
+    isCovered: boolean;
+    sponsorName: string | null;
+    remainingEscrow: number | null;
+}
+
+export async function fetchCampaignCoverFeesStatus(campaignId: number | string): Promise<CoverFeesStatus> {
+    const response = await axiosInstance.get<CoverFeesStatus>(`/api/Campaign/cover-fees-status/${campaignId}`);
+    return response.data;
+}
+
 export async function updateInvestment(investmentId: number, data: any): Promise<any> {
     const response = await axiosInstance.put(`/api/admin/investment/${investmentId}`, data, {
         headers: {
