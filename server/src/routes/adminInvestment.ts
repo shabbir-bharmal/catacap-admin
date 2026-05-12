@@ -979,7 +979,12 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       return;
     }
 
-    const [rowsResult, summaryResult, nameResult, matchInfo, projections] = await Promise.all([
+    // recTotalResult is the authoritative "total raised" for the campaign —
+    // SUM(recommendations.amount) with the same filter used by the
+    // /investments listing's Balance column. summaryResult.total_investors
+    // still comes from unified_investors so standalone pending grants count
+    // toward the unique-investor headcount.
+    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections] = await Promise.all([
       pool.query(
         `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
          SELECT source_id, source_type, name, email, amount, date_created, status,
@@ -993,6 +998,17 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
          SELECT COALESCE(SUM(amount), 0) AS total_amount,
                 COUNT(DISTINCT email_key) AS total_investors
            FROM unified_investors`,
+        [id],
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount), 0) AS total_amount
+           FROM recommendations
+          WHERE campaign_id = $1
+            AND amount > 0
+            AND user_email IS NOT NULL
+            AND TRIM(user_email) <> ''
+            AND LOWER(status) IN ('approved', 'pending')
+            AND (is_deleted IS NULL OR is_deleted = false)`,
         [id],
       ),
       pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
@@ -1093,9 +1109,9 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       return (a.name || "").localeCompare(b.name || "");
     });
 
-    const baseTotalAmount = parseFloat(summaryResult.rows[0]?.total_amount) || 0;
     const baseTotalInvestors = parseInt(summaryResult.rows[0]?.total_investors) || 0;
-    const totalAmount = Math.round((baseTotalAmount + projectedTotal) * 100) / 100;
+    const recTotalAmount = parseFloat(recTotalResult.rows[0]?.total_amount) || 0;
+    const totalAmount = Math.round(recTotalAmount * 100) / 100;
 
     // For distinct-investor count, fold projection donor emails in.
     const baseEmails = new Set<string>();
@@ -1137,7 +1153,10 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       return;
     }
 
-    const [rowsResult, summaryResult, nameResult, matchInfo, projections] = await Promise.all([
+    // Mirror the JSON endpoint: total raised = SUM(recommendations.amount)
+    // for this campaign (matches the /investments Balance column). The
+    // distinct-investor count still comes from unified_investors.
+    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections] = await Promise.all([
       pool.query(
         `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
          SELECT source_id, source_type, name, email, amount, date_created, status,
@@ -1153,6 +1172,17 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
            FROM unified_investors`,
         [id],
       ),
+      pool.query(
+        `SELECT COALESCE(SUM(amount), 0) AS total_amount
+           FROM recommendations
+          WHERE campaign_id = $1
+            AND amount > 0
+            AND user_email IS NOT NULL
+            AND TRIM(user_email) <> ''
+            AND LOWER(status) IN ('approved', 'pending')
+            AND (is_deleted IS NULL OR is_deleted = false)`,
+        [id],
+      ),
       pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
       fetchMatchInfoForCampaign(id),
       projectPendingMatchesForCampaign(id),
@@ -1163,10 +1193,10 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       return;
     }
 
-    const baseTotalAmount = parseFloat(summaryResult.rows[0]?.total_amount) || 0;
     const baseTotalInvestors = parseInt(summaryResult.rows[0]?.total_investors) || 0;
     const projectedTotal = projections.reduce((s, p) => s + p.projectedAmount, 0);
-    const totalAmount = Math.round((baseTotalAmount + projectedTotal) * 100) / 100;
+    const recTotalAmount = parseFloat(recTotalResult.rows[0]?.total_amount) || 0;
+    const totalAmount = Math.round(recTotalAmount * 100) / 100;
 
     const baseEmails = new Set<string>();
     for (const r of rowsResult.rows) {
