@@ -733,12 +733,6 @@ export default function AdminInvestmentEdit() {
   const openSendEmailDialog = async (item: CampaignUpdateItem) => {
     setEmailUpdateTarget(item);
     setEmailPreview(null);
-    // The edit page is very long; scroll to the top so the dialog (which is
-    // viewport-fixed but visually centered) lands in the user's current view
-    // instead of appearing far below the fold.
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "auto" });
-    }
     if (!resolvedNumericId) return;
     setEmailPreviewLoading(true);
     try {
@@ -4304,19 +4298,14 @@ export default function AdminInvestmentEdit() {
           </DialogContent>
         </Dialog>
 
-        <Dialog
-          open={emailUpdateTarget !== null}
-          onOpenChange={(open) => {
-            if (!open && sendingEmailUpdateId === null) {
-              setEmailUpdateTarget(null);
-              setEmailPreview(null);
-            }
-          }}
-        >
-          <DialogContent className="w-[98vw] sm:w-[96vw] max-w-[1400px] h-[95vh] max-h-[95vh] overflow-hidden flex flex-col p-0 !top-[2.5vh] !translate-y-0 relative">
+        {emailUpdateTarget !== null && (
+          <div
+            className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden"
+            data-testid="page-send-update-email-preview"
+          >
             {sendingEmailUpdateId !== null && (
               <div
-                className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm rounded-lg"
+                className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm"
                 data-testid="overlay-sending-update-email"
               >
                 <Loader2 className="h-8 w-8 animate-spin text-[#405189]" />
@@ -4324,19 +4313,30 @@ export default function AdminInvestmentEdit() {
                 <p className="text-xs text-muted-foreground">Please don’t close this window.</p>
               </div>
             )}
-            <DialogHeader className="p-4 sm:p-6 pb-3 border-b space-y-2">
-              <DialogTitle>Send email to investors?</DialogTitle>
+            <div className="px-4 sm:px-6 py-4 border-b bg-background space-y-2 shrink-0">
+              <div className="flex items-center justify-between gap-4">
+                <h1 className="text-lg sm:text-xl font-semibold text-foreground">Send email to investors?</h1>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setEmailUpdateTarget(null); setEmailPreview(null); }}
+                  disabled={sendingEmailUpdateId !== null}
+                  data-testid="button-close-send-update-email-page"
+                >
+                  Close
+                </Button>
+              </div>
               <p className="text-sm text-muted-foreground">
                 This will email all investors of this investment about the update
                 {emailUpdateTarget?.subject ? <> &ldquo;<strong className="text-foreground">{emailUpdateTarget.subject}</strong>&rdquo;</> : null},
                 with the Investment Owner CC&rsquo;d. Below is the email preview that will be sent to the investors.
               </p>
-            </DialogHeader>
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-3 bg-muted/20">
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 bg-muted/20">
               {emailPreviewLoading || !emailPreview ? (
                 <div className="text-sm text-muted-foreground py-12 text-center">Loading preview…</div>
               ) : (
-                <div className="rounded-md border bg-white shadow-sm flex flex-col h-full min-h-[60vh]">
+                <div className="rounded-md border bg-white shadow-sm flex flex-col h-full min-h-[60vh] mx-auto max-w-[1400px]">
                   <div className="border-b px-4 py-3 space-y-1 bg-white" data-testid="email-preview-header">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                       <span className="text-[11px] uppercase tracking-wide text-muted-foreground shrink-0">Subject</span>
@@ -4376,7 +4376,7 @@ export default function AdminInvestmentEdit() {
                 </div>
               )}
             </div>
-            <DialogFooter className="p-4 sm:p-6 pt-3 border-t bg-background">
+            <div className="px-4 sm:px-6 py-3 border-t bg-background shrink-0 flex flex-wrap justify-end gap-2">
               <Button
                 variant="outline"
                 onClick={() => { setEmailUpdateTarget(null); setEmailPreview(null); }}
@@ -4408,9 +4408,9 @@ export default function AdminInvestmentEdit() {
               >
                 {sendingEmailUpdateId !== null ? "Sending…" : "Send Update Now"}
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </div>
+          </div>
+        )}
 
         <Dialog
           open={deleteUpdateTarget !== null}
