@@ -212,7 +212,7 @@ export default function InvestmentInvestors() {
 
   return (
     <AdminLayout>
-      <div className="container mx-auto px-4 py-6 max-w-6xl">
+      <div className="w-full px-4 py-6">
         <div className="mb-4">
           <Button
             variant="ghost"
