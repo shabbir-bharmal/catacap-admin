@@ -331,27 +331,39 @@ export default function RecommendationsPage() {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-[300px] p-0 bg-popover" align="start">
-                    <Command className="bg-transparent">
+                    <Command
+                      className="bg-transparent"
+                      filter={(value, search) => {
+                        const normalizedSearch = search.trim().toLowerCase();
+                        if (!normalizedSearch) return 1;
+                        return value.toLowerCase().includes(normalizedSearch) ? 1 : 0;
+                      }}
+                    >
                       <CommandInput
                         placeholder="Search investment..."
                         value={investmentSearchQuery}
                         onValueChange={setInvestmentSearchQuery}
                       />
+                      <div
+                        role="option"
+                        aria-selected={selectedInvestmentIds.length === 0}
+                        onClick={() => {
+                          setSelectedInvestmentIds([]);
+                          setCurrentPage(1);
+                        }}
+                        className="relative flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 mx-1 my-1 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
+                        data-testid="option-all-investments"
+                      >
+                        <Check className={`h-4 w-4 ${selectedInvestmentIds.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                        All Investments
+                      </div>
                       <CommandList ref={investmentListRef} className="max-h-[264px]">
                         <CommandEmpty>No investment found.</CommandEmpty>
                         <CommandGroup>
-                          <CommandItem
-                            onSelect={() => {
-                              setSelectedInvestmentIds([]);
-                              setCurrentPage(1);
-                            }}
-                          >
-                            <Check className={`h-4 w-4 ${selectedInvestmentIds.length === 0 ? "opacity-100" : "opacity-0"}`} />
-                            All Investments
-                          </CommandItem>
                           {investmentOptions.map((opt) => (
                             <CommandItem
                               key={opt.id}
+                              value={`${opt.name} __${opt.id}`}
                               onSelect={() => {
                                 setSelectedInvestmentIds((prev) => {
                                   const isSelected = prev.includes(opt.id);
