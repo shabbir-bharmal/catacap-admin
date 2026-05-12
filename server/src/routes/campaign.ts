@@ -1113,7 +1113,12 @@ async function lookupCoverFeesStatus(campaignId: number, res: Response) {
       [campaignId],
     );
     if (result.rows.length === 0) {
-      res.json({ isCovered: false, sponsorName: null, remainingEscrow: null });
+      res.json({
+        isCovered: false,
+        sponsorName: null,
+        remainingEscrow: null,
+        processingFeeDisclaimer: null,
+      });
       return;
     }
     const computeRemaining = (r: any) => {
@@ -1142,7 +1147,20 @@ async function lookupCoverFeesStatus(campaignId: number, res: Response) {
         (chosen.sponsor_full_name || "").trim() ||
         chosen.sponsor_user_name ||
         "Sponsor");
-    res.json({ isCovered, sponsorName, remainingEscrow: remaining });
+    // The Cover Fees program ONLY covers the 5% CataCap platform fee.
+    // Stripe's credit-card / ACH processing fees are still deducted from
+    // the donor's contribution, so we surface a disclaimer the public
+    // page can render alongside the "100% covered" banner. The string
+    // is intentionally generic (no provider name) so the public site
+    // can style/word it however it likes.
+    const processingFeeDisclaimer =
+      "Note: if you pay by credit card or ACH, the payment processor's transaction fee will still be deducted from your contribution. This program only covers the CataCap platform fee.";
+    res.json({
+      isCovered,
+      sponsorName,
+      remainingEscrow: remaining,
+      processingFeeDisclaimer,
+    });
 }
 
 router.get("/cover-fees-status/:campaignId", async (req: Request, res: Response) => {
@@ -1173,7 +1191,12 @@ router.get("/cover-fees-status/by-slug/:slug", async (req: Request, res: Respons
       [slug],
     );
     if (slugRes.rows.length === 0) {
-      res.json({ isCovered: false, sponsorName: null, remainingEscrow: null });
+      res.json({
+        isCovered: false,
+        sponsorName: null,
+        remainingEscrow: null,
+        processingFeeDisclaimer: null,
+      });
       return;
     }
     await lookupCoverFeesStatus(parseInt(slugRes.rows[0].reference_id, 10), res);

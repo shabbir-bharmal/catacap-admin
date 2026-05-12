@@ -23,7 +23,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axiosInstance from "../api/axios";
 import { currency_format, formatDate } from "../helpers/format";
-import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download, CheckCircle2 } from "lucide-react";
+import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download, CheckCircle2, Info } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -467,6 +468,16 @@ function GrantFormDialog({
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          <Alert className="border-blue-200 bg-blue-50 text-blue-900">
+            <Info className="h-4 w-4 text-blue-600" />
+            <AlertDescription className="text-xs leading-relaxed">
+              <strong>Scope:</strong> this program only covers the <strong>5% CataCap platform fee</strong>.
+              If the donor pays by <strong>credit card or ACH</strong>, the payment processor's
+              transaction fee is still deducted from their contribution and is <strong>not</strong> covered
+              by this pool. The public investment page surfaces this disclaimer to donors automatically.
+            </AlertDescription>
+          </Alert>
+
           <div className="space-y-1.5">
             <Label className="text-sm">Pool Label</Label>
             <Input
