@@ -39,7 +39,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import BannerCropper from "@/components/BannerCropper";
 import { MultiSelectPopover } from "@/components/MultiSelectPopover";
 import { UserEmailCombobox } from "@/components/UserEmailCombobox";
-import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus, Bell, Eye, Sparkles, Users as UsersIcon } from "lucide-react";
+import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus, Bell, Eye, Sparkles, Users as UsersIcon, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QRCodeCanvas } from "qrcode.react";
 
@@ -4307,7 +4307,17 @@ export default function AdminInvestmentEdit() {
             }
           }}
         >
-          <DialogContent className="w-[95vw] sm:w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col p-0">
+          <DialogContent className="w-[95vw] sm:w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col p-0 relative">
+            {sendingEmailUpdateId !== null && (
+              <div
+                className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm rounded-lg"
+                data-testid="overlay-sending-update-email"
+              >
+                <Loader2 className="h-8 w-8 animate-spin text-[#405189]" />
+                <p className="text-sm font-medium text-foreground">Sending update to investors…</p>
+                <p className="text-xs text-muted-foreground">Please don’t close this window.</p>
+              </div>
+            )}
             <DialogHeader className="p-4 sm:p-6 pb-3 border-b space-y-2">
               <DialogTitle>Send email to investors?</DialogTitle>
               <p className="text-sm text-muted-foreground">
