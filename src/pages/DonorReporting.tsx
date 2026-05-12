@@ -4,7 +4,8 @@ import { AdminLayout } from "../components/AdminLayout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, Download, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Search, Download, TrendingUp, TrendingDown, Minus, HelpCircle } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { currency_format } from "@/helpers/format";
 import { useDebounce } from "../hooks/useDebounce";
 import { useSort } from "../hooks/useSort";
@@ -213,6 +214,34 @@ export default function DonorReportingPage() {
                 <Download className="h-3.5 w-3.5 mr-1.5" />
                 {isExporting ? "Exporting..." : "Export CSV"}
               </Button>
+              <TooltipProvider delayDuration={150}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="How are these values calculated?"
+                      data-testid="tooltip-donor-reporting-help"
+                      className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <HelpCircle className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" align="end" className="max-w-sm text-xs leading-relaxed space-y-2">
+                    <p>
+                      <span className="font-semibold">$ Increase</span> = Total Assets Today &minus; Total Assets {cutoffLabel} (per donor, rounded to cents).
+                    </p>
+                    <p>
+                      <span className="font-semibold">% Increase</span> = ($ Increase &divide; Total Assets {cutoffLabel}) &times; 100. If the {cutoffLabel} total was $0 and today is greater than $0, shows +100%; if both are $0, shows 0%.
+                    </p>
+                    <p>
+                      <span className="font-semibold">Inv % Change</span> = ((Investments Today &minus; Investments {cutoffLabel}) &divide; Investments {cutoffLabel}) &times; 100, rounded to two decimals. If the {cutoffLabel} count was 0 and today is greater than 0, shows +100%; if both are 0, shows 0%.
+                    </p>
+                    <p>
+                      <span className="font-semibold">Overall Assets Increase</span> = sum of Total Assets Today across all donors &minus; sum of Total Assets {cutoffLabel}, with the percentage computed against the summed {cutoffLabel} total using the same zero-cutoff rule.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </CardHeader>
           <CardContent className="p-0">
