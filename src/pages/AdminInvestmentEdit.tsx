@@ -56,7 +56,7 @@ import { fetchCountries, fetchInvestmentById, fetchInvestmentData, updateInvestm
 import { fetchActiveEmailTemplateByCategory, fetchEmailTemplatePreview } from "@/api/email-template/emailTemplateApi";
 import { fetchAllGroups, GroupUpdatePayload } from "@/api/group/groupApi";
 import { fetchAllAdminUsers, AdminUserItem } from "@/api/user/userApi";
-import { fetchStaticValues, StaticValueItem } from "@/api/site-configuration/siteConfigurationApi";
+import { fetchStaticValues, fetchInvestmentTypeCategories, StaticValueItem, InvestmentTypeCategoryItem } from "@/api/site-configuration/siteConfigurationApi";
 import { defaultImage, getUrlBlobContainerImage } from "@/lib/image-utils";
 
 const CLOSED_NOT_INVESTED_STAGE = "4";
@@ -73,10 +73,15 @@ const US_STATES = [
   "Wisconsin", "Wyoming", "District of Columbia",
 ];
 
-const INVESTMENT_TYPE_CATEGORY_OPTIONS = [
-  { value: "funds", label: "Funds" },
-  { value: "direct_investments", label: "Direct Investments" },
-];
+/**
+ * Legacy values that used to live in `campaigns.investment_type_category`
+ * before this dropdown became admin-managed. Kept so a campaign saved
+ * before the seed migration ran still picks the correct entry.
+ */
+const LEGACY_INVESTMENT_TYPE_CATEGORY_MAP: Record<string, string> = {
+  funds: "Fund",
+  direct_investments: "Direct Investment",
+};
 
 const DEBT_FREQUENCY_OPTIONS = [
   { value: "monthly", label: "Monthly" },
@@ -526,6 +531,8 @@ export default function AdminInvestmentEdit() {
   const [investmentNotes, setInvestmentNotes] = useState<InvestmentNote[]>([]);
   const [softCircleDonors, setSoftCircleDonors] = useState<{ donorName: string; amount: number }[]>([]);
   const [staticTerms, setStaticTerms] = useState<StaticValueItem[]>([]);
+  const [investmentTypeCategoryOptions, setInvestmentTypeCategoryOptions] = useState<InvestmentTypeCategoryItem[]>([]);
+  const [investmentTypeSelectOpen, setInvestmentTypeSelectOpen] = useState(false);
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [profileFile, setProfileFile] = useState<File | null>(null);
@@ -1119,11 +1126,12 @@ export default function AdminInvestmentEdit() {
       setLoading(true);
       try {
         const fetchId = apiId!;
-        const [countriesData, groupsData, investmentDetail, staticTermsData] = await Promise.all([
+        const [countriesData, groupsData, investmentDetail, staticTermsData, investmentTypeCategoriesData] = await Promise.all([
           fetchCountries(),
           fetchAllGroups(),
           fetchInvestmentById(fetchId),
           fetchStaticValues(),
+          fetchInvestmentTypeCategories().catch(() => [] as InvestmentTypeCategoryItem[]),
         ]);
 
         let investmentData: any = null;
@@ -1152,6 +1160,7 @@ export default function AdminInvestmentEdit() {
         setAllTagOptions(investmentData?.investmentTag || []);
         setApprovedByOptions(investmentData?.approvedBy || []);
         setStaticTerms(staticTermsData || []);
+        setInvestmentTypeCategoryOptions(investmentTypeCategoriesData || []);
 
         try {
           const admins = await fetchAllAdminUsers();
@@ -1277,7 +1286,7 @@ export default function AdminInvestmentEdit() {
       isPartOfFund: data.isPartOfFund ?? false,
       investmentTagValues: tagValues,
       addedTotalAdminRaised: data.addedTotalAdminRaised != null ? String(data.addedTotalAdminRaised) : "",
-      investmentTypeCategory: data.investmentTypeCategory ?? "",
+      investmentTypeCategory: LEGACY_INVESTMENT_TYPE_CATEGORY_MAP[data.investmentTypeCategory ?? ""] ?? (data.investmentTypeCategory ?? ""),
       equityValuation: data.equityValuation != null ? String(data.equityValuation) : "",
       equitySecurityType: data.equitySecurityType ?? "",
       fundTerm: data.fundTerm ?? "",
@@ -3527,10 +3536,36 @@ export default function AdminInvestmentEdit() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label className="text-sm">Investment Type</Label>
-                    <Select value={formData.investmentTypeCategory} onValueChange={(val) => upd("investmentTypeCategory", val)}>
+                    <Select
+                      value={formData.investmentTypeCategory || undefined}
+                      onValueChange={(val) => upd("investmentTypeCategory", val)}
+                      open={investmentTypeSelectOpen}
+                      onOpenChange={setInvestmentTypeSelectOpen}
+                    >
                       <SelectTrigger data-testid="select-investment-type-category"><SelectValue placeholder="Select Investment Type" /></SelectTrigger>
                       <SelectContent>
-                        {INVESTMENT_TYPE_CATEGORY_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                        {(() => {
+                          const options = [...investmentTypeCategoryOptions].sort((a, b) => a.name.localeCompare(b.name));
+                          const current = formData.investmentTypeCategory;
+                          if (current && !options.some((o) => o.name === current)) {
+                            options.push({ id: -1, name: current });
+                          }
+                          return options.map((o) => (
+                            <SelectItem
+                              key={`${o.id}-${o.name}`}
+                              value={o.name}
+                              onPointerDown={(e) => {
+                                if (formData.investmentTypeCategory === o.name) {
+                                  e.preventDefault();
+                                  upd("investmentTypeCategory", "");
+                                  setInvestmentTypeSelectOpen(false);
+                                }
+                              }}
+                            >
+                              {o.name}
+                            </SelectItem>
+                          ));
+                        })()}
                       </SelectContent>
                     </Select>
                   </div>
