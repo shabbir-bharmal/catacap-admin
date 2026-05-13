@@ -753,7 +753,12 @@ export async function reverseCoverFeesByPaymentRef(
       [proportionalFee, activity.cover_fee_id],
     );
 
-    // ── Donor-side audit row (informational; donor balance unchanged) ──
+    // ── Donor-side audit row (informational; donor wallet unchanged) ──
+    // The Old / New value columns intentionally mirror the SPONSOR's
+    // wallet movement (matching the "Cover Fees – escrow applied" row's
+    // Old/New on the apply path) so admins reading this row see the
+    // same fee amount moving back to the cover-fees pool / sponsor.
+    // The donor's actual wallet is NOT touched by this row.
     if (activity.triggered_by_user_id) {
       const donorRes = await client.query(
         `SELECT id, user_name, first_name, last_name, account_balance
@@ -762,7 +767,6 @@ export async function reverseCoverFeesByPaymentRef(
       );
       if (donorRes.rows.length > 0) {
         const donor = donorRes.rows[0];
-        const donorBalance = parseFloat(donor.account_balance) || 0;
         const donorName =
           donor.user_name ||
           `${donor.first_name || ""} ${donor.last_name || ""}`.trim();
@@ -779,14 +783,12 @@ export async function reverseCoverFeesByPaymentRef(
             // Account History — not the sponsor's pool name.
             investmentName,
             activity.campaign_id,
-            donorBalance,
+            // Old/New = sponsor's wallet before/after the credit-back
+            // (mirror of the apply-side "Cover Fees – escrow applied"
+            // row, which shows sponsor's wallet before/after debit).
+            sponsorBalance,
             donorName,
-            donorBalance,
-            // Plain-English audit row (donor balance is intentionally
-            // unchanged — the donor was never charged the fee, the
-            // sponsor covered it). This row exists purely so the donor
-            // can see in their history that the cover-fees benefit on
-            // their refunded donation has been undone.
+            newSponsorBalance,
             `Refund issued for ${investmentName} – $${proportionalFee.toFixed(2)} cover-fees benefit reversed (donor balance unchanged)`,
             proportionalFee,
             0,
@@ -1135,7 +1137,12 @@ export async function reverseCoverFeesByRecommendation(args: {
         [remainingFee, activity.cover_fee_id],
       );
 
-      // ── Donor-side audit row (informational; balance unchanged) ───
+      // ── Donor-side audit row (informational; donor wallet unchanged) ───
+      // The Old / New value columns intentionally mirror the SPONSOR's
+      // wallet movement (matching the "Cover Fees – escrow applied"
+      // row's Old/New on the apply path) so admins reading this row see
+      // the same fee amount moving back to the cover-fees pool / sponsor.
+      // The donor's actual wallet is NOT touched by this row.
       if (activity.triggered_by_user_id) {
         const donorRes = await client.query(
           `SELECT id, user_name, first_name, last_name, account_balance
@@ -1144,7 +1151,6 @@ export async function reverseCoverFeesByRecommendation(args: {
         );
         if (donorRes.rows.length > 0) {
           const donor = donorRes.rows[0];
-          const donorBalance = parseFloat(donor.account_balance) || 0;
           const donorName =
             donor.user_name ||
             `${donor.first_name || ""} ${donor.last_name || ""}`.trim();
@@ -1161,14 +1167,12 @@ export async function reverseCoverFeesByRecommendation(args: {
               // donor's Account History — not the sponsor's pool name.
               investmentName,
               activity.campaign_id,
-              donorBalance,
+              // Old/New = sponsor's wallet before/after the credit-back
+              // (mirror of the apply-side "Cover Fees – escrow applied"
+              // row, which shows sponsor's wallet before/after debit).
+              sponsorBalance,
               donorName,
-              donorBalance,
-              // Plain-English audit row (donor balance is intentionally
-              // unchanged — the donor was never charged the fee, the
-              // sponsor covered it). This row exists purely so the
-              // donor can see in their history that the cover-fees
-              // benefit on their rejected recommendation was undone.
+              newSponsorBalance,
               `Recommendation rejected for ${investmentName} – $${remainingFee.toFixed(2)} cover-fees benefit reversed (donor balance unchanged)`,
               remainingFee,
               0,
