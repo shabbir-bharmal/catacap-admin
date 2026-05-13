@@ -207,7 +207,11 @@ router.get("/:type", async (req: Request, res: Response) => {
         res.json([]);
     }
   } catch (err) {
-    console.error("SiteConfig Get error:", err);
+    const code = (err as { code?: string } | null)?.code;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `SiteConfig Get error: type=${String(req.params.type)} code=${code ?? "n/a"} message=${message}`,
+    );
     res.status(500).json({ message: "Internal server error" });
   }
 });

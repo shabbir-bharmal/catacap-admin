@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import dayjs from "dayjs";
+import quarterOfYear from "dayjs/plugin/quarterOfYear";
+dayjs.extend(quarterOfYear);
 import { formatDate, formatDateISO, formatUSD } from "@/helpers/format";
 import { useParams, useLocation, useSearch } from "wouter";
 import { AdminLayout } from "../components/AdminLayout";
@@ -37,7 +39,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import BannerCropper from "@/components/BannerCropper";
 import { MultiSelectPopover } from "@/components/MultiSelectPopover";
 import { UserEmailCombobox } from "@/components/UserEmailCombobox";
-import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus, Bell, Eye, Sparkles, Users as UsersIcon } from "lucide-react";
+import { CalendarIcon, ArrowLeft, Download, ChevronDown, Copy, QrCode, Mail, User, Briefcase, ImageIcon, Settings, ArrowRight, CheckCircle2, Check, Pencil, Trash2, HelpCircle, FileText, Clock, X as XIcon, Plus, Bell, Eye, Sparkles, Users as UsersIcon, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QRCodeCanvas } from "qrcode.react";
 
@@ -728,6 +730,28 @@ export default function AdminInvestmentEdit() {
     };
   };
 
+  const openSendEmailDialog = async (item: CampaignUpdateItem) => {
+    setEmailUpdateTarget(item);
+    setEmailPreview(null);
+    if (!resolvedNumericId) return;
+    setEmailPreviewLoading(true);
+    try {
+      const res = await getCampaignUpdateEmailPreview(resolvedNumericId, item.id);
+      if (res.success === false) throw new Error(res.message || "Could not load preview.");
+      setEmailPreview({
+        subject: res.subject || "",
+        bodyHtml: res.bodyHtml || "",
+        from: res.from || "",
+        cc: res.cc || [],
+        recipientCount: res.recipientCount || 0,
+      });
+    } catch (err: any) {
+      toast({ title: "Preview failed", description: err?.message || "Could not load email preview.", variant: "destructive" });
+    } finally {
+      setEmailPreviewLoading(false);
+    }
+  };
+
   const openEditUpdateForm = (item: CampaignUpdateItem) => {
     setEditingUpdateId(item.id);
     const existing = (item.attachments || []).map(mapExistingAttachment);
@@ -844,20 +868,11 @@ export default function AdminInvestmentEdit() {
     if (!updateForm.description || !updateForm.description.replace(/<[^>]+>/g, "").trim()) {
       errs.description = "Description is required.";
     }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (updateForm.startDate) {
-      const s = new Date(updateForm.startDate);
-      s.setHours(0, 0, 0, 0);
-      if (!isNaN(s.getTime()) && s < today) {
-        errs.startDate = "Start date cannot be in the past.";
-      }
-    }
     if (updateForm.startDate && updateForm.endDate) {
       const s = new Date(updateForm.startDate).getTime();
       const e = new Date(updateForm.endDate).getTime();
-      if (!isNaN(s) && !isNaN(e) && e <= s) {
-        errs.endDate = "End date must be after the start date.";
+      if (!isNaN(s) && !isNaN(e) && e < s) {
+        errs.endDate = "End of period must be on or after the start of the period.";
       }
     }
     setUpdateFormErrors(errs);
@@ -895,8 +910,13 @@ export default function AdminInvestmentEdit() {
         toast({ title: "Saved", description: "Update saved successfully." });
       } else {
         const result = await createCampaignUpdate(resolvedNumericId, payload);
-        if (result.success === false) throw new Error(result.message || "Failed to create update.");
-        toast({ title: "Created", description: "Update created and investors notified." });
+        if (result.success === false || !result.item) throw new Error(result.message || "Failed to create update.");
+        toast({ title: "Saved", description: "Review the preview, then send when you're ready." });
+        setUpdateFormOpen(false);
+        resetUpdateForm();
+        await loadCampaignUpdates();
+        await openSendEmailDialog(result.item);
+        return;
       }
       setUpdateFormOpen(false);
       resetUpdateForm();
@@ -3626,8 +3646,8 @@ export default function AdminInvestmentEdit() {
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">File</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Subject</th>
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Description</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Start Date</th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">End Date</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Period Start</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Period End</th>
                         <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider whitespace-nowrap">Actions</th>
                       </tr>
                     </thead>
@@ -3719,27 +3739,7 @@ export default function AdminInvestmentEdit() {
                                   size="icon"
                                   variant="outline"
                                   className="h-8 w-8 rounded-none border-r-0 text-[#0ab39c] hover:text-[#0ab39c] hover:bg-[#0ab39c]/5"
-                                  onClick={async () => {
-                                    setEmailUpdateTarget(item);
-                                    setEmailPreview(null);
-                                    if (!resolvedNumericId) return;
-                                    setEmailPreviewLoading(true);
-                                    try {
-                                      const res = await getCampaignUpdateEmailPreview(resolvedNumericId, item.id);
-                                      if (res.success === false) throw new Error(res.message || "Could not load preview.");
-                                      setEmailPreview({
-                                        subject: res.subject || "",
-                                        bodyHtml: res.bodyHtml || "",
-                                        from: res.from || "",
-                                        cc: res.cc || [],
-                                        recipientCount: res.recipientCount || 0,
-                                      });
-                                    } catch (err: any) {
-                                      toast({ title: "Preview failed", description: err?.message || "Could not load email preview.", variant: "destructive" });
-                                    } finally {
-                                      setEmailPreviewLoading(false);
-                                    }
-                                  }}
+                                  onClick={() => openSendEmailDialog(item)}
                                   disabled={sendingEmailUpdateId === item.id}
                                   data-testid={`button-send-update-email-${item.id}`}
                                   title="Send email to all investors"
@@ -3912,6 +3912,12 @@ export default function AdminInvestmentEdit() {
                   Up to three stats your investors will care about most — these render as
                   large, scannable tiles next to the update. Examples: <em>Monthly Revenue / $42K (▲ 18% MoM)</em>;
                   &nbsp;<em>Customers Served / 12,400</em>; <em>CO₂ Avoided / 380 tons</em>. Leave blank to skip.
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-semibold text-[#405189]">Tip: </span>
+                  These numbers should reflect what happened during the <strong>reporting period</strong> you set
+                  below (e.g. last month, last quarter, year-to-date). Tell investors the time window in the label
+                  itself if it helps — for example <em>Revenue (Q1 2026)</em> or <em>New Customers (last 30 days)</em>.
                 </p>
                 <div className="space-y-2">
                   {updateForm.impactHighlights.map((row, idx) => (
@@ -4158,94 +4164,121 @@ export default function AdminInvestmentEdit() {
                 </div>
               </details>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label className="text-sm flex items-center gap-1.5">
-                    Start Date
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-start-date">
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" align="start" className="max-w-xs">
-                        The date this update starts being shown to investors. In-app notifications are sent on this date.
-                      </TooltipContent>
-                    </Tooltip>
-                  </Label>
-                  <Popover open={updateStartOpen} onOpenChange={setUpdateStartOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.startDate && "text-muted-foreground")} data-testid="button-update-start-date">
-                        <CalendarIcon className="mr-2 h-4 w-4" />
-                        {updateForm.startDate ? formatDate(updateForm.startDate, "") : "MM/DD/YYYY"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={updateForm.startDate ? new Date(updateForm.startDate) : undefined}
-                        onSelect={(date) => {
-                          setUpdateForm((p) => {
-                            const next = { ...p, startDate: date ? date.toISOString() : "" };
-                            if (date && p.endDate && new Date(p.endDate) <= date) {
-                              next.endDate = "";
-                            }
-                            return next;
-                          });
-                          setUpdateStartOpen(false);
-                        }}
-                        disabled={(date) => {
-                          const today = new Date();
-                          today.setHours(0, 0, 0, 0);
-                          return date < today;
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  {updateFormErrors.startDate && <p className="text-[#f06548] text-xs">{updateFormErrors.startDate}</p>}
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-semibold">Reporting period</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    What time window does this update cover? Pick the start and end of the period
+                    your headline, key numbers, and progress describe — for example the past month,
+                    quarter, or year. These dates are usually in the past.
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-sm flex items-center gap-1.5">
-                    End Date
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-end-date">
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" align="start" className="max-w-xs">
-                        The date this update stops being shown to investors. After this date the update is no longer visible.
-                      </TooltipContent>
-                    </Tooltip>
-                  </Label>
-                  <Popover open={updateEndOpen} onOpenChange={setUpdateEndOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.endDate && "text-muted-foreground")} data-testid="button-update-end-date">
-                        <CalendarIcon className="mr-2 h-4 w-4" />
-                        {updateForm.endDate ? formatDate(updateForm.endDate, "") : "MM/DD/YYYY"}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0" align="start">
-                      <Calendar
-                        mode="single"
-                        selected={updateForm.endDate ? new Date(updateForm.endDate) : undefined}
-                        onSelect={(date) => { setUpdateForm((p) => ({ ...p, endDate: date ? date.toISOString() : "" })); setUpdateEndOpen(false); }}
-                        disabled={(date) => {
-                          const minDate = new Date();
-                          minDate.setHours(0, 0, 0, 0);
-                          if (updateForm.startDate) {
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {([
+                    { label: "This month", start: dayjs().startOf("month"), end: dayjs() },
+                    { label: "Last month", start: dayjs().subtract(1, "month").startOf("month"), end: dayjs().subtract(1, "month").endOf("month") },
+                    { label: "This quarter", start: dayjs().startOf("quarter"), end: dayjs() },
+                    { label: "Last quarter", start: dayjs().subtract(1, "quarter").startOf("quarter"), end: dayjs().subtract(1, "quarter").endOf("quarter") },
+                    { label: "Year to date", start: dayjs().startOf("year"), end: dayjs() },
+                    { label: "Last year", start: dayjs().subtract(1, "year").startOf("year"), end: dayjs().subtract(1, "year").endOf("year") },
+                  ] as const).map((preset) => (
+                    <Button
+                      key={preset.label}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => setUpdateForm((p) => ({
+                        ...p,
+                        startDate: preset.start.toDate().toISOString(),
+                        endDate: preset.end.toDate().toISOString(),
+                      }))}
+                      data-testid={`button-update-period-preset-${preset.label.toLowerCase().replace(/\s+/g, "-")}`}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                  <div className="space-y-1.5">
+                    <Label className="text-sm flex items-center gap-1.5">
+                      Period starts
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-start-date">
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="start" className="max-w-xs">
+                          The first day of the time window this update describes (e.g. start of last month or last quarter).
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <Popover open={updateStartOpen} onOpenChange={setUpdateStartOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.startDate && "text-muted-foreground")} data-testid="button-update-start-date">
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {updateForm.startDate ? formatDate(updateForm.startDate, "") : "MM/DD/YYYY"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={updateForm.startDate ? new Date(updateForm.startDate) : undefined}
+                          onSelect={(date) => {
+                            setUpdateForm((p) => {
+                              const next = { ...p, startDate: date ? date.toISOString() : "" };
+                              if (date && p.endDate && new Date(p.endDate) < date) {
+                                next.endDate = "";
+                              }
+                              return next;
+                            });
+                            setUpdateStartOpen(false);
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                    {updateFormErrors.startDate && <p className="text-[#f06548] text-xs">{updateFormErrors.startDate}</p>}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm flex items-center gap-1.5">
+                      Period ends
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button type="button" className="text-muted-foreground hover:text-foreground" data-testid="tooltip-update-end-date">
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="start" className="max-w-xs">
+                          The last day of the time window this update describes. Use today for an "as of now" snapshot.
+                        </TooltipContent>
+                      </Tooltip>
+                    </Label>
+                    <Popover open={updateEndOpen} onOpenChange={setUpdateEndOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !updateForm.endDate && "text-muted-foreground")} data-testid="button-update-end-date">
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {updateForm.endDate ? formatDate(updateForm.endDate, "") : "MM/DD/YYYY"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={updateForm.endDate ? new Date(updateForm.endDate) : undefined}
+                          onSelect={(date) => { setUpdateForm((p) => ({ ...p, endDate: date ? date.toISOString() : "" })); setUpdateEndOpen(false); }}
+                          disabled={(date) => {
+                            if (!updateForm.startDate) return false;
                             const start = new Date(updateForm.startDate);
                             start.setHours(0, 0, 0, 0);
-                            if (start > minDate) minDate.setTime(start.getTime());
-                          }
-                          return date <= minDate;
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
-                  {updateFormErrors.endDate && <p className="text-[#f06548] text-xs">{updateFormErrors.endDate}</p>}
+                            return date < start;
+                          }}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                    {updateFormErrors.endDate && <p className="text-[#f06548] text-xs">{updateFormErrors.endDate}</p>}
+                  </div>
                 </div>
               </div>
             </div>
@@ -4265,43 +4298,85 @@ export default function AdminInvestmentEdit() {
           </DialogContent>
         </Dialog>
 
-        <Dialog
-          open={emailUpdateTarget !== null}
-          onOpenChange={(open) => {
-            if (!open && sendingEmailUpdateId === null) {
-              setEmailUpdateTarget(null);
-              setEmailPreview(null);
-            }
-          }}
-        >
-          <DialogContent className="w-[95vw] sm:w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col p-0">
-            <DialogHeader className="p-4 sm:p-6 pb-3 border-b space-y-2">
-              <DialogTitle>Send email to investors?</DialogTitle>
+        {emailUpdateTarget !== null && (
+          <div
+            className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden"
+            data-testid="page-send-update-email-preview"
+          >
+            {sendingEmailUpdateId !== null && (
+              <div
+                className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-sm"
+                data-testid="overlay-sending-update-email"
+              >
+                <Loader2 className="h-8 w-8 animate-spin text-[#405189]" />
+                <p className="text-sm font-medium text-foreground">Sending update to investors…</p>
+                <p className="text-xs text-muted-foreground">Please don’t close this window.</p>
+              </div>
+            )}
+            <div className="px-4 sm:px-6 py-4 border-b bg-background space-y-2 shrink-0">
+              <div className="flex items-center justify-between gap-4">
+                <h1 className="text-lg sm:text-xl font-semibold text-foreground">Send email to investors?</h1>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setEmailUpdateTarget(null); setEmailPreview(null); }}
+                  disabled={sendingEmailUpdateId !== null}
+                  data-testid="button-close-send-update-email-page"
+                >
+                  Close
+                </Button>
+              </div>
               <p className="text-sm text-muted-foreground">
                 This will email all investors of this investment about the update
                 {emailUpdateTarget?.subject ? <> &ldquo;<strong className="text-foreground">{emailUpdateTarget.subject}</strong>&rdquo;</> : null},
                 with the Investment Owner CC&rsquo;d. Below is the email preview that will be sent to the investors.
               </p>
-            </DialogHeader>
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 bg-muted/20">
               {emailPreviewLoading || !emailPreview ? (
                 <div className="text-sm text-muted-foreground py-12 text-center">Loading preview…</div>
               ) : (
-                <>
-                  <div className="rounded-md border overflow-hidden bg-white">
+                <div className="rounded-md border bg-white shadow-sm flex flex-col h-full min-h-[60vh] mx-auto max-w-[1400px]">
+                  <div className="border-b px-4 py-3 space-y-1 bg-white" data-testid="email-preview-header">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="text-[11px] uppercase tracking-wide text-muted-foreground shrink-0">Subject</span>
+                      <span className="text-base font-semibold text-foreground break-words" data-testid="text-email-preview-subject">
+                        {emailPreview.subject || emailUpdateTarget?.subject || "(no subject)"}
+                      </span>
+                    </div>
+                    {emailPreview.from && (
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="uppercase tracking-wide text-[10px] shrink-0">From</span>
+                        <span className="text-foreground break-all">{emailPreview.from}</span>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                      <span className="uppercase tracking-wide text-[10px] shrink-0">To</span>
+                      <span className="text-foreground">
+                        {emailPreview.recipientCount} investor{emailPreview.recipientCount === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    {emailPreview.cc && emailPreview.cc.length > 0 && (
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="uppercase tracking-wide text-[10px] shrink-0">Cc</span>
+                        <span className="text-foreground break-all">{emailPreview.cc.join(", ")}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0">
                     <iframe
                       title="Email preview"
                       srcDoc={emailPreview.bodyHtml}
                       sandbox=""
-                      className="w-full"
-                      style={{ height: "55vh", border: 0 }}
+                      className="w-full h-full"
+                      style={{ border: 0, display: "block" }}
                       data-testid="iframe-email-preview"
                     />
                   </div>
-                </>
+                </div>
               )}
             </div>
-            <DialogFooter className="p-4 sm:p-6 pt-3 border-t bg-background">
+            <div className="px-4 sm:px-6 py-3 border-t bg-background shrink-0 flex flex-wrap justify-end gap-2">
               <Button
                 variant="outline"
                 onClick={() => { setEmailUpdateTarget(null); setEmailPreview(null); }}
@@ -4311,16 +4386,31 @@ export default function AdminInvestmentEdit() {
                 Cancel
               </Button>
               <Button
+                variant="outline"
+                onClick={() => {
+                  if (!emailUpdateTarget) return;
+                  const target = emailUpdateTarget;
+                  setEmailUpdateTarget(null);
+                  setEmailPreview(null);
+                  openEditUpdateForm(target);
+                }}
+                disabled={sendingEmailUpdateId !== null || !emailUpdateTarget}
+                data-testid="button-edit-update-from-preview"
+              >
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Update
+              </Button>
+              <Button
                 onClick={confirmSendUpdateEmail}
                 disabled={sendingEmailUpdateId !== null || emailPreviewLoading || !emailPreview}
                 className="bg-[#405189] hover:bg-[#364574] text-white"
                 data-testid="button-confirm-send-update-email"
               >
-                {sendingEmailUpdateId !== null ? "Sending…" : "Send email"}
+                {sendingEmailUpdateId !== null ? "Sending…" : "Send Update Now"}
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </div>
+          </div>
+        )}
 
         <Dialog
           open={deleteUpdateTarget !== null}

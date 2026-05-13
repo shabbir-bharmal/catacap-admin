@@ -43,23 +43,30 @@ function buildConnectionString(): string | undefined {
   }
 }
 
+// Pool sizing: the Site Configuration page fires 12 parallel requests via
+// `Promise.allSettled`. The default `pg` pool max of 10 forces 2 of those
+// requests to queue, and any background scheduler activity can push the queue
+// past the default `connectionTimeoutMillis`, surfacing as intermittent 500s
+// with no obvious SQL error. Bumping `max` to 20 plus explicit timeouts
+// covers the burst with headroom for schedulers.
 const pool = new pg.Pool({
   connectionString: buildConnectionString(),
   ssl: { rejectUnauthorized: false },
+  max: 20,
+  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: 30_000,
 });
 
-// Backstop for any code path that creates a Client outside of `buildConnectionString`'s
-// reach (or if the server ignored the startup `options` for any reason): force every
-// new pooled connection to UTC. The pool emits `connect` once per new client. The
-// custom TIMESTAMP_OID parser returns naive (no-offset) wall-clock strings, and the
-// frontend / server both treat those strings as UTC, so any non-UTC session timezone
-// would silently drift by the session's offset (e.g. 5h30m on an Asia/Kolkata-hosted
-// Postgres) — making scheduler "Run Now" rows show absurd start times and durations.
-pool.on("connect", (client) => {
-  client.query("SET TIME ZONE 'UTC'").catch((err) => {
-    console.error("Failed to SET TIME ZONE 'UTC' on new pool connection:", err);
-  });
-});
+// NOTE: We intentionally do NOT register a `pool.on("connect")` listener that
+// fires `client.query("SET TIME ZONE 'UTC'")` — the pool does not await the
+// listener, so the very first user query on a freshly-created pooled client
+// would race against the unawaited SET, producing the
+// `Calling client.query() when the client is already executing a query`
+// deprecation warning, and on newer `pg` builds the same race surfaces as a
+// hard query error (one of the root causes of the intermittent 500s on
+// /admin/site-configuration). The session timezone is set during the Postgres
+// startup handshake via `options=-c TimeZone=UTC` in `buildConnectionString()`
+// above, which runs before the connection is handed to any query.
 
 pool.on("error", (err) => {
   console.error("Unexpected database pool error:", err);
@@ -763,7 +770,11 @@ export async function testConnection(): Promise<void> {
       );
     }
 
-    await client.query("SET statement_timeout = '3s'");
+    try {
+      await client.query("SET statement_timeout = '3s'");
+    } catch (err) {
+      console.warn("[migration] failed to apply statement_timeout (non-fatal):", err);
+    }
 
     const steps: [string, () => Promise<void>][] = [
       ["runSoftDeleteMigration", () => runSoftDeleteMigration(client)],
@@ -790,8 +801,15 @@ export async function testConnection(): Promise<void> {
       }
     }
 
-    await client.query("SET statement_timeout = '0'");
   } finally {
+    // Always reset statement_timeout before returning the client to the pool —
+    // otherwise a 3s cap could leak onto a long-running query that picks up
+    // this same pooled client later.
+    try {
+      await client.query("SET statement_timeout = '0'");
+    } catch (err) {
+      console.warn("[migration] failed to reset statement_timeout (non-fatal):", err);
+    }
     client.release();
   }
 }
