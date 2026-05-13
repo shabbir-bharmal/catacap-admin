@@ -21,6 +21,7 @@ import {
   fetchStaticValues,
   fetchConfigurations,
   fetchTransactionTypes,
+  fetchInvestmentTypeCategories,
   fetchNewsTypes,
   fetchNewsAudiences,
   fetchStatistics,
@@ -37,6 +38,7 @@ import {
   SpecialFilterItem,
   StaticValueItem,
   TransactionTypeItem,
+  InvestmentTypeCategoryItem,
   NewsTypeItem,
   NewsAudienceItem,
   StatisticsItem,
@@ -48,7 +50,7 @@ import {
   ConfigItemInvestment
 } from "../api/site-configuration/siteConfigurationApi";
 
-const TABS = ["Sourced By", "Themes", "Special Filters", "Configuration", "Contact Info", "Transaction Type", "News Type", "News Audience", "Statistics", "Meta Information", "DAF Providers"] as const;
+const TABS = ["Sourced By", "Themes", "Special Filters", "Configuration", "Contact Info", "Transaction Type", "Investment Type", "News Type", "News Audience", "Statistics", "Meta Information", "DAF Providers"] as const;
 
 const CONTACT_INFO_SECTIONS = [
   { key: "emails", label: "Emails" },
@@ -72,6 +74,7 @@ export default function SiteConfiguration() {
   const [staticValues, setStaticValues] = useState<(StaticValueItem & { configType: SiteConfigType })[]>([]);
   const [configurations, setConfigurations] = useState<(StaticValueItem & { configType: SiteConfigType })[]>([]);
   const [transactionTypes, setTransactionTypes] = useState<TransactionTypeItem[]>([]);
+  const [investmentTypeCategories, setInvestmentTypeCategories] = useState<InvestmentTypeCategoryItem[]>([]);
   const [newsTypes, setNewsTypes] = useState<NewsTypeItem[]>([]);
   const [newsAudiences, setNewsAudiences] = useState<NewsAudienceItem[]>([]);
   const [statistics, setStatistics] = useState<StatisticsItem[]>([]);
@@ -111,6 +114,7 @@ export default function SiteConfiguration() {
         setStaticValues(data.staticValues.map(v => ({ ...v, configType: "investment-terms" as SiteConfigType })));
         setConfigurations(data.configurations.map(v => ({ ...v, configType: "Configuration" as SiteConfigType })));
         setTransactionTypes(data.transactionTypes);
+        setInvestmentTypeCategories(data.investmentTypeCategories);
         setNewsTypes(data.newsTypes);
         setNewsAudiences(data.newsAudiences);
         setStatistics(data.statistics);
@@ -210,6 +214,8 @@ export default function SiteConfiguration() {
         return "Add Configuration";
       case "Transaction Type":
         return "Add Transaction Type";
+      case "Investment Type":
+        return "Add Investment Type";
       case "News Type":
         return "Add News Type";
       case "News Audience":
@@ -266,6 +272,11 @@ export default function SiteConfiguration() {
       }
       case "Transaction Type": {
         const item = transactionTypes.find((i) => i.id === id);
+        if (item) setEditingItem({ id, field1: item.name, field2: "", field3: "", imagePreview: "", imageFileName: "" });
+        break;
+      }
+      case "Investment Type": {
+        const item = investmentTypeCategories.find((i) => i.id === id);
         if (item) setEditingItem({ id, field1: item.name, field2: "", field3: "", imagePreview: "", imageFileName: "" });
         break;
       }
@@ -431,6 +442,9 @@ export default function SiteConfiguration() {
         case "Transaction Type":
           setTransactionTypes(await fetchTransactionTypes());
           break;
+        case "Investment Type":
+          setInvestmentTypeCategories(await fetchInvestmentTypeCategories());
+          break;
         case "News Type":
           setNewsTypes(await fetchNewsTypes());
           break;
@@ -486,6 +500,8 @@ export default function SiteConfiguration() {
         return "Configuration";
       case "Transaction Type":
         return "transaction-type";
+      case "Investment Type":
+        return "investment-type-category";
       case "News Type":
         return "news-type";
       case "News Audience":
@@ -526,6 +542,9 @@ export default function SiteConfiguration() {
         }
         case "Transaction Type":
           setTransactionTypes((prev) => prev.filter((i) => i.id !== id));
+          break;
+        case "Investment Type":
+          setInvestmentTypeCategories((prev) => prev.filter((i) => i.id !== id));
           break;
         case "News Type":
           setNewsTypes((prev) => prev.filter((i) => i.id !== id));
@@ -594,6 +613,8 @@ export default function SiteConfiguration() {
         return `${action} Configuration`;
       case "Transaction Type":
         return `${action} Transaction Type`;
+      case "Investment Type":
+        return `${action} Investment Type`;
       case "News Type":
         return `${action} News Type`;
       case "News Audience":
@@ -1184,6 +1205,56 @@ export default function SiteConfiguration() {
                               </td>
                             </tr>
                           ))}
+                        {activeTab === "Investment Type" &&
+                          investmentTypeCategories.map((item) => (
+                            <tr key={item.id} className="border-b last:border-b-0 hover:bg-muted/20 transition-colors" data-testid={`row-item-${item.id}`}>
+                              <td className="px-4 py-3">
+                                <span className="text-sm" data-testid={`text-name-${item.id}`}>
+                                  {item.name}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <div className="flex items-center justify-end">
+                                  <div className="inline-flex rounded-md shadow-sm">
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          size="icon"
+                                          variant="outline"
+                                          className={cn(
+                                            "h-8 w-8 text-[#405189] hover:text-[#405189] hover:bg-[#405189]/5",
+                                            hasActionPermission("site configuration", "delete") ? "rounded-r-none border-r-0" : ""
+                                          )}
+                                          onClick={() => openEdit(item.id)}
+                                          data-testid={`button-edit-${item.id}`}
+                                        >
+                                          <Pencil className="h-4 w-4" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>Edit Item</TooltipContent>
+                                    </Tooltip>
+
+                                    {hasActionPermission("site configuration", "delete") && (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <Button
+                                            size="icon"
+                                            variant="outline"
+                                            className="h-8 w-8 rounded-l-none text-[#f06548] hover:text-[#f06548] hover:bg-[#f06548]/5"
+                                            onClick={() => openDelete(item.id, item.name)}
+                                            data-testid={`button-delete-${item.id}`}
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Delete Item</TooltipContent>
+                                      </Tooltip>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
                         {activeTab === "Transaction Type" &&
                           transactionTypes.map((item) => (
                             <tr key={item.id} className="border-b last:border-b-0 hover:bg-muted/20 transition-colors" data-testid={`row-item-${item.id}`}>
@@ -1390,6 +1461,7 @@ export default function SiteConfiguration() {
                           (activeTab === "Themes" && themes.length === 0) ||
                           (activeTab === "Special Filters" && specialFilters.length === 0) ||
                           (activeTab === "Transaction Type" && transactionTypes.length === 0) ||
+                          (activeTab === "Investment Type" && investmentTypeCategories.length === 0) ||
                           (activeTab === "News Type" && newsTypes.length === 0) ||
                           (activeTab === "News Audience" && newsAudiences.length === 0) ||
                           (activeTab === "DAF Providers" && dafProviders.length === 0)) && (

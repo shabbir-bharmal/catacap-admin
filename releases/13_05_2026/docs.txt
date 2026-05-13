@@ -3,6 +3,7 @@ Release 13_05_2026
 
 Migrations
 ----------
+<<<<<<< HEAD
 - migrations/001_cover_fees_refund_reversal.sql
     Schema:
       * Adds reversed_fee_amount NUMERIC NOT NULL DEFAULT 0,
@@ -37,4 +38,30 @@ Migrations
           DROP COLUMN IF EXISTS fully_reversed_at,
           DROP COLUMN IF EXISTS last_reversed_reason,
           DROP COLUMN IF EXISTS payment_ref;
+- migrations/2026_05_13_investment_type_category_seed.sql
+    Schema: none (data-only — uses existing site_configurations table).
+    Intent: Seed the new admin-managed "Investment Type" dropdown shown on
+            /raisemoney/edit/:id. Inserts three site_configurations rows
+            with type='InvestmentTypeCategory' (Fund, Direct Investment,
+            Structured Vehicle) and backfills campaigns.investment_type_category
+            from the legacy hard-coded values ("funds" -> "Fund",
+            "direct_investments" -> "Direct Investment") so saved
+            campaigns continue to display the right entry once the
+            dropdown is sourced from this list.
+    Idempotency: each seed INSERT is gated by a NOT EXISTS subquery on
+                 (type, TRIM(value)) restricted to non-deleted rows, and
+                 the two UPDATEs only match rows that still hold the
+                 legacy lowercase values, so re-runs are no-ops. The
+                 whole script runs inside a single transaction.
+    Rollback:
+        BEGIN;
+        UPDATE campaigns
+          SET investment_type_category = 'funds'
+          WHERE investment_type_category = 'Fund';
+        UPDATE campaigns
+          SET investment_type_category = 'direct_investments'
+          WHERE investment_type_category = 'Direct Investment';
+        DELETE FROM site_configurations
+          WHERE type = 'InvestmentTypeCategory'
+            AND value IN ('Fund', 'Direct Investment', 'Structured Vehicle');
         COMMIT;
