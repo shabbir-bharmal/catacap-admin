@@ -674,6 +674,8 @@ export async function reverseCoverFeesByPaymentRef(
     const poolRow = poolRes.rows[0];
     const poolName: string =
       poolRow.name || `Pool #${poolRow.id}`;
+    const poolReservedAmount = parseFloat(poolRow.reserved_amount) || 0;
+    const poolAmountUsed = parseFloat(poolRow.amount_used) || 0;
 
     // Investment Name displayed in Account History should be the
     // campaign the donor backed, not the cover-fees pool name.
@@ -702,10 +704,6 @@ export async function reverseCoverFeesByPaymentRef(
     }
     const sponsor = sponsorRes.rows[0];
     const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
-    const sponsorFullName =
-      `${sponsor.first_name || ""} ${sponsor.last_name || ""}`.trim() ||
-      sponsor.user_name ||
-      "";
 
     // Credit the sponsor's wallet by the reversed fee. Mirrors the
     // matching debit in applySingleCoverFee (both escrow + live-wallet
@@ -717,32 +715,6 @@ export async function reverseCoverFeesByPaymentRef(
       `UPDATE users SET account_balance = $1 WHERE id = $2`,
       [newSponsorBalance, sponsor.id],
     );
-    await client.query(
-      `INSERT INTO account_balance_change_logs
-         (user_id, payment_type, investment_name, campaign_id,
-          old_value, user_name, new_value, change_date, comment,
-          gross_amount, fees, net_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
-      [
-        sponsor.id,
-        "Cover Fees Sponsorship Reversal",
-        // Use the campaign name (what the donor sees) instead of the
-        // pool name so admins reading the sponsor's Account History can
-        // tie the credit back to a specific investment.
-        investmentName,
-        activity.campaign_id,
-        sponsorBalance,
-        sponsor.user_name || sponsorFullName,
-        newSponsorBalance,
-        // Plain-English: the sponsor was originally debited the fee
-        // when the donation cleared; the donation was now refunded by
-        // Stripe, so we credit the sponsor back.
-        `Refund issued for ${investmentName} – $${proportionalFee.toFixed(2)} cover-fee credit returned to sponsor`,
-        proportionalFee,
-        0,
-        proportionalFee,
-      ],
-    );
 
     // ── Decrement pool amount_used (clamped at 0 via GREATEST) ────────
     await client.query(
@@ -753,7 +725,19 @@ export async function reverseCoverFeesByPaymentRef(
       [proportionalFee, activity.cover_fee_id],
     );
 
-    // ── Donor-side audit row (informational; donor balance unchanged) ──
+    // ── Donor-side audit row (informational; donor wallet unchanged) ──
+    // For escrow-backed pools (`reserved_amount > 0`), the Old / New
+    // value columns reflect the POOL's escrow remaining
+    // (`reserved_amount − amount_used`) before and after the reversal,
+    // matching the "$X remaining" figure admins see on the Cover Fees
+    // page. For live-wallet (non-escrow) pools the Old / New columns
+    // continue to mirror the sponsor's wallet movement, since there is
+    // no escrow remaining to reference. The sponsor's wallet really is
+    // credited back (see UPDATE above), but we intentionally do NOT
+    // write a sponsor-side audit row — that reversal is already
+    // recorded on the cover-pools revert table, and a duplicate
+    // Account-History entry would confuse admins. The donor's actual
+    // wallet is NOT touched by this row.
     if (activity.triggered_by_user_id) {
       const donorRes = await client.query(
         `SELECT id, user_name, first_name, last_name, account_balance
@@ -762,10 +746,22 @@ export async function reverseCoverFeesByPaymentRef(
       );
       if (donorRes.rows.length > 0) {
         const donor = donorRes.rows[0];
-        const donorBalance = parseFloat(donor.account_balance) || 0;
         const donorName =
           donor.user_name ||
           `${donor.first_name || ""} ${donor.last_name || ""}`.trim();
+        const isEscrowPool = poolReservedAmount > 0;
+        const poolRemainingBefore = parseFloat(
+          (poolReservedAmount - poolAmountUsed).toFixed(2),
+        );
+        // amount_used is decremented by `proportionalFee` and clamped at
+        // 0, so the actual decrement may be smaller if the pool already
+        // had less than `proportionalFee` used.
+        const actualPoolDecrement = Math.min(poolAmountUsed, proportionalFee);
+        const poolRemainingAfter = parseFloat(
+          (poolRemainingBefore + actualPoolDecrement).toFixed(2),
+        );
+        const donorOldValue = isEscrowPool ? poolRemainingBefore : sponsorBalance;
+        const donorNewValue = isEscrowPool ? poolRemainingAfter : newSponsorBalance;
         await client.query(
           `INSERT INTO account_balance_change_logs
              (user_id, payment_type, investment_name, campaign_id,
@@ -779,14 +775,13 @@ export async function reverseCoverFeesByPaymentRef(
             // Account History — not the sponsor's pool name.
             investmentName,
             activity.campaign_id,
-            donorBalance,
+            // Old/New = pool's escrow remaining before/after the
+            // reversal for escrow pools (matches the "$X remaining" on
+            // Cover Fees page); for live-wallet pools, sponsor wallet
+            // before/after the credit-back.
+            donorOldValue,
             donorName,
-            donorBalance,
-            // Plain-English audit row (donor balance is intentionally
-            // unchanged — the donor was never charged the fee, the
-            // sponsor covered it). This row exists purely so the donor
-            // can see in their history that the cover-fees benefit on
-            // their refunded donation has been undone.
+            donorNewValue,
             `Refund issued for ${investmentName} – $${proportionalFee.toFixed(2)} cover-fees benefit reversed (donor balance unchanged)`,
             proportionalFee,
             0,
@@ -1064,6 +1059,8 @@ export async function reverseCoverFeesByRecommendation(args: {
       if (poolRes.rows.length === 0) continue;
       const poolRow = poolRes.rows[0];
       const poolName: string = poolRow.name || `Pool #${poolRow.id}`;
+      const poolReservedAmount = parseFloat(poolRow.reserved_amount) || 0;
+      const poolAmountUsed = parseFloat(poolRow.amount_used) || 0;
 
       // Investment Name displayed in Account History should be the
       // campaign the donor recommended, not the cover-fees pool name.
@@ -1084,10 +1081,6 @@ export async function reverseCoverFeesByRecommendation(args: {
       if (sponsorRes.rows.length === 0) continue;
       const sponsor = sponsorRes.rows[0];
       const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
-      const sponsorFullName =
-        `${sponsor.first_name || ""} ${sponsor.last_name || ""}`.trim() ||
-        sponsor.user_name ||
-        "";
 
       // Credit the sponsor's wallet by the reversed fee. Mirrors the
       // matching debit in applySingleCoverFee (both escrow + live-wallet
@@ -1099,32 +1092,6 @@ export async function reverseCoverFeesByRecommendation(args: {
         `UPDATE users SET account_balance = $1 WHERE id = $2`,
         [newSponsorBalance, sponsor.id],
       );
-      await client.query(
-        `INSERT INTO account_balance_change_logs
-           (user_id, payment_type, investment_name, campaign_id,
-            old_value, user_name, new_value, change_date, comment,
-            gross_amount, fees, net_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
-        [
-          sponsor.id,
-          "Cover Fees Sponsorship Reversal",
-          // Use the campaign name (what the donor sees) instead of the
-          // pool name so admins reading the sponsor's Account History
-          // can tie the credit back to a specific investment.
-          investmentName,
-          activity.campaign_id,
-          sponsorBalance,
-          sponsor.user_name || sponsorFullName,
-          newSponsorBalance,
-          // Plain-English: the recommendation that triggered this
-          // cover-fee was rejected, so we reverse the original sponsor
-          // debit and credit them back the fee amount.
-          `Recommendation rejected for ${investmentName} – $${remainingFee.toFixed(2)} cover-fee credit returned to sponsor`,
-          remainingFee,
-          0,
-          remainingFee,
-        ],
-      );
 
       // ── Decrement pool amount_used (clamped at 0) ─────────────────
       await client.query(
@@ -1135,7 +1102,19 @@ export async function reverseCoverFeesByRecommendation(args: {
         [remainingFee, activity.cover_fee_id],
       );
 
-      // ── Donor-side audit row (informational; balance unchanged) ───
+      // ── Donor-side audit row (informational; donor wallet unchanged) ───
+      // For escrow-backed pools (`reserved_amount > 0`), the Old / New
+      // value columns reflect the POOL's escrow remaining
+      // (`reserved_amount − amount_used`) before and after the
+      // reversal, matching the "$X remaining" figure admins see on the
+      // Cover Fees page. For live-wallet (non-escrow) pools the Old /
+      // New columns continue to mirror the sponsor's wallet movement,
+      // since there is no escrow remaining to reference. The sponsor's
+      // wallet really is credited back (see UPDATE above), but we
+      // intentionally do NOT write a sponsor-side audit row — that
+      // reversal is already recorded on the cover-pools revert table,
+      // and a duplicate Account-History entry would confuse admins.
+      // The donor's actual wallet is NOT touched by this row.
       if (activity.triggered_by_user_id) {
         const donorRes = await client.query(
           `SELECT id, user_name, first_name, last_name, account_balance
@@ -1144,10 +1123,22 @@ export async function reverseCoverFeesByRecommendation(args: {
         );
         if (donorRes.rows.length > 0) {
           const donor = donorRes.rows[0];
-          const donorBalance = parseFloat(donor.account_balance) || 0;
           const donorName =
             donor.user_name ||
             `${donor.first_name || ""} ${donor.last_name || ""}`.trim();
+          const isEscrowPool = poolReservedAmount > 0;
+          const poolRemainingBefore = parseFloat(
+            (poolReservedAmount - poolAmountUsed).toFixed(2),
+          );
+          // amount_used is decremented by `remainingFee` and clamped at
+          // 0, so the actual decrement may be smaller if the pool had
+          // less than `remainingFee` used.
+          const actualPoolDecrement = Math.min(poolAmountUsed, remainingFee);
+          const poolRemainingAfter = parseFloat(
+            (poolRemainingBefore + actualPoolDecrement).toFixed(2),
+          );
+          const donorOldValue = isEscrowPool ? poolRemainingBefore : sponsorBalance;
+          const donorNewValue = isEscrowPool ? poolRemainingAfter : newSponsorBalance;
           await client.query(
             `INSERT INTO account_balance_change_logs
                (user_id, payment_type, investment_name, campaign_id,
@@ -1161,14 +1152,13 @@ export async function reverseCoverFeesByRecommendation(args: {
               // donor's Account History — not the sponsor's pool name.
               investmentName,
               activity.campaign_id,
-              donorBalance,
+              // Old/New = pool's escrow remaining before/after for
+              // escrow pools (matches the "$X remaining" on Cover Fees
+              // page); for live-wallet pools, sponsor wallet
+              // before/after the credit-back.
+              donorOldValue,
               donorName,
-              donorBalance,
-              // Plain-English audit row (donor balance is intentionally
-              // unchanged — the donor was never charged the fee, the
-              // sponsor covered it). This row exists purely so the
-              // donor can see in their history that the cover-fees
-              // benefit on their rejected recommendation was undone.
+              donorNewValue,
               `Recommendation rejected for ${investmentName} – $${remainingFee.toFixed(2)} cover-fees benefit reversed (donor balance unchanged)`,
               remainingFee,
               0,
