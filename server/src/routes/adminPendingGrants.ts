@@ -14,6 +14,7 @@ import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembersh
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
 import { sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
+import { applyCoverFees } from "../utils/coverFees.js";
 import ExcelJS from "exceljs";
 
 const router = Router();
@@ -935,6 +936,15 @@ router.put("/:id", async (req: Request, res: Response) => {
         investorEmail: matchAfterCommit.email,
         campaignName: matchAfterCommit.campaignName,
       }).catch((err) => console.error("applyMatchGrants (pendingGrants) error:", err?.message || err));
+      applyCoverFees({
+        campaignId: matchAfterCommit.campaignId,
+        investorUserId: matchAfterCommit.userId,
+        triggeringRecommendationId: matchAfterCommit.recId,
+        investmentAmount: matchAfterCommit.amount,
+        investorEmail: matchAfterCommit.email,
+        campaignName: matchAfterCommit.campaignName,
+        kind: "lifecycle",
+      }).catch((err) => console.error("applyCoverFees (pendingGrants) error:", err?.message || err));
     }
 
     res.json({ success: true, message: `Grant set ${data.status}` });

@@ -1,0 +1,44 @@
+Release 09_05_2026 — Cover Fees donor program
+==============================================
+
+Migrations (apply in order):
+
+1. 2026_05_09_add_cover_fees_module.sql
+   Inserts a `cover-fees` row into the `modules` table so RBAC can
+   gate the new admin page.
+   - Idempotent: ON CONFLICT DO NOTHING on (name).
+   - Rollback: DELETE FROM modules WHERE name = 'cover-fees';
+
+2. 2026_05_09_campaign_cover_fees.sql
+   Creates the core Cover Fees schema:
+     - campaign_cover_fees             (one row per sponsor pool)
+     - campaign_cover_fees_campaigns   (pool ↔ investment join)
+     - campaign_cover_fees_activity    (one row per fee covered, with
+       UNIQUE (cover_fee_id, triggered_by_recommendation_id) for
+       idempotent application)
+   Plus supporting indexes on the activity and join tables.
+   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS.
+   - Rollback: DROP TABLE IF EXISTS campaign_cover_fees_activity,
+       campaign_cover_fees_campaigns, campaign_cover_fees CASCADE;
+
+3. 2026_05_09_canceled_cover_fees_pairs.sql
+   Tombstone table mirroring matching's canceled_match_pairs. When an
+   admin cancels coverage, the (cover_fee_id, triggered_by_rec) pair
+   is recorded here so retroactive sweeps and pending projections
+   exclude it from being silently re-applied.
+   - Idempotent: CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS.
+   - Rollback: DROP TABLE IF EXISTS canceled_cover_fees_pairs;
+
+4. 2026_05_09_cover_fees_phase_toggles.sql
+   Adds two per-pool boolean toggles:
+     - cover_initial_fee   BOOLEAN NOT NULL DEFAULT TRUE
+     - cover_lifecycle_fee BOOLEAN NOT NULL DEFAULT TRUE
+   These let a sponsor pool opt into covering only the initial 5%
+   donation fee, only the fees on later disbursements / payments to the
+   investment over its lifetime, or both. Defaults preserve previous
+   behavior (both phases covered).
+   - Idempotent: ADD COLUMN IF NOT EXISTS, wrapped in BEGIN/COMMIT.
+   - Rollback:
+       ALTER TABLE campaign_cover_fees
+         DROP COLUMN IF EXISTS cover_lifecycle_fee,
+         DROP COLUMN IF EXISTS cover_initial_fee;

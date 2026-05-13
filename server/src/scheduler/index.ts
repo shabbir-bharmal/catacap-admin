@@ -7,6 +7,7 @@ import { runWelcomeSeries } from "./welcomeSeries.js";
 import { runWeeklyKenStats } from "./weeklyKenStats.js";
 import { runCampaignUpdateNotifications } from "./campaignUpdateNotifications.js";
 import { runExpireMatchGrants } from "./expireMatchGrants.js";
+import { runExpireCoverFees } from "./expireCoverFees.js";
 import { runBackupDatabase } from "./backupDatabase.js";
 
 const LOCK_KEYS: Record<string, number> = {
@@ -18,6 +19,7 @@ const LOCK_KEYS: Record<string, number> = {
   CampaignUpdateNotifications: 900005,
   ExpireMatchGrants: 900006,
   BackupDatabase: 900007,
+  ExpireCoverFees: 900008,
 };
 
 type JobResult = Record<string, unknown> | void;
@@ -30,6 +32,7 @@ const JOB_RUNNERS: Record<string, () => Promise<JobResult>> = {
   WeeklyKenStats: runWeeklyKenStats,
   ExpireMatchGrants: runExpireMatchGrants,
   BackupDatabase: runBackupDatabase,
+  ExpireCoverFees: runExpireCoverFees,
 };
 
 const WEEKLY_JOBS: Record<string, number> = {
@@ -183,6 +186,7 @@ function getDefaultConfigs(): SchedulerConfigRow[] {
     { job_name: "WeeklyKenStats", hour: 12, minute: 0, timezone: "America/Los_Angeles", is_enabled: true },
     { job_name: "CampaignUpdateNotifications", hour: 6, minute: 0, timezone: "America/New_York", is_enabled: true },
     { job_name: "ExpireMatchGrants", hour: 1, minute: 0, timezone: "America/New_York", is_enabled: true },
+    { job_name: "ExpireCoverFees", hour: 1, minute: 15, timezone: "America/New_York", is_enabled: true },
     { job_name: "BackupDatabase", hour: 3, minute: 30, timezone: "America/New_York", is_enabled: true },
   ];
 }

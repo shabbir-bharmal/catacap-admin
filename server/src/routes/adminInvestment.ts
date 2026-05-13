@@ -971,6 +971,48 @@ async function fetchMatchInfoForCampaign(campaignId: number) {
   return { asMatch, triggeredBy };
 }
 
+async function fetchCoverFeeInfoForCampaign(campaignId: number) {
+  // Active cover-fees pools attached to this campaign. Mirrors the
+  // filtering used by applyCoverFees in utils/coverFees.ts: pool must be
+  // active and not yet expired. We surface these so admins can see, from
+  // the investment page, whether the platform fee is being covered and
+  // by whom.
+  const result = await pool.query(
+    `SELECT ccf.id,
+            ccf.name,
+            ccf.reserved_amount,
+            ccf.amount_used,
+            ccf.total_cap,
+            ccf.expires_at,
+            ccf.sponsor_user_id,
+            COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''),
+                     u.user_name, u.email) AS sponsor_name,
+            u.email AS sponsor_email
+       FROM campaign_cover_fees ccf
+       JOIN campaign_cover_fees_campaigns ccfc
+            ON ccfc.cover_fee_id = ccf.id
+       LEFT JOIN users u ON u.id = ccf.sponsor_user_id
+      WHERE ccfc.campaign_id = $1
+        AND ccf.is_active = TRUE
+        AND (ccf.expires_at IS NULL OR ccf.expires_at > NOW())
+        AND ccf.coverage_active_from <= NOW()
+      ORDER BY ccf.id ASC`,
+    [campaignId],
+  );
+
+  return result.rows.map((r: any) => ({
+    id: Number(r.id),
+    name: r.name || `Cover-fees #${r.id}`,
+    sponsorName: r.sponsor_name || null,
+    sponsorEmail: r.sponsor_email || null,
+    sponsorUserId: r.sponsor_user_id || null,
+    reservedAmount: parseFloat(r.reserved_amount) || 0,
+    amountUsed: parseFloat(r.amount_used) || 0,
+    totalCap: r.total_cap != null ? parseFloat(r.total_cap) : null,
+    expiresAt: r.expires_at || null,
+  }));
+}
+
 router.get("/:id/investors", async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -984,7 +1026,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
     // /investments listing's Balance column. summaryResult.total_investors
     // still comes from unified_investors so standalone pending grants count
     // toward the unique-investor headcount.
-    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections] = await Promise.all([
+    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections, coverFees] = await Promise.all([
       pool.query(
         `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
          SELECT source_id, source_type, name, email, amount, date_created, status,
@@ -1014,6 +1056,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
       fetchMatchInfoForCampaign(id),
       projectPendingMatchesForCampaign(id),
+      fetchCoverFeeInfoForCampaign(id),
     ]);
 
     const items: any[] = rowsResult.rows.map((r: any) => {
@@ -1137,6 +1180,7 @@ router.get("/:id/investors", async (req: Request, res: Response) => {
       totalAmount,
       pendingMatchAmount: Math.round(projectedTotal * 100) / 100,
       pendingMatchCount: projections.length,
+      coverFees,
       items,
     });
   } catch (err) {
@@ -1153,10 +1197,7 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       return;
     }
 
-    // Mirror the JSON endpoint: total raised = SUM(recommendations.amount)
-    // for this campaign (matches the /investments Balance column). The
-    // distinct-investor count still comes from unified_investors.
-    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections] = await Promise.all([
+    const [rowsResult, summaryResult, recTotalResult, nameResult, matchInfo, projections, coverFees, coverFeeActivityResult] = await Promise.all([
       pool.query(
         `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
          SELECT source_id, source_type, name, email, amount, date_created, status,
@@ -1186,6 +1227,18 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       pool.query(`SELECT name FROM campaigns WHERE id = $1`, [id]),
       fetchMatchInfoForCampaign(id),
       projectPendingMatchesForCampaign(id),
+      fetchCoverFeeInfoForCampaign(id),
+      pool.query(
+        `SELECT a.triggered_by_recommendation_id AS rec_id,
+                a.fee_amount,
+                ccf.id AS pool_id,
+                ccf.name AS pool_name
+           FROM campaign_cover_fees_activity a
+           JOIN campaign_cover_fees ccf ON ccf.id = a.cover_fee_id
+          WHERE a.campaign_id = $1
+            AND a.triggered_by_recommendation_id IS NOT NULL`,
+        [id],
+      ),
     ]);
 
     if (rowsResult.rows.length === 0 && projections.length === 0) {
@@ -1193,6 +1246,21 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       return;
     }
 
+    // Per-recommendation fee coverage (an investor row may be covered by
+    // multiple pools — sum amounts and list all pool names).
+    const coverFeeByRec: Record<number, { totalFee: number; poolNames: string[] }> = {};
+    for (const row of coverFeeActivityResult.rows) {
+      const recId = Number(row.rec_id);
+      const fee = parseFloat(row.fee_amount) || 0;
+      const poolName = row.pool_name || `Cover-fees #${row.pool_id}`;
+      if (!coverFeeByRec[recId]) coverFeeByRec[recId] = { totalFee: 0, poolNames: [] };
+      coverFeeByRec[recId].totalFee += fee;
+      if (!coverFeeByRec[recId].poolNames.includes(poolName)) {
+        coverFeeByRec[recId].poolNames.push(poolName);
+      }
+    }
+
+    const baseTotalAmount = parseFloat(summaryResult.rows[0]?.total_amount) || 0;
     const baseTotalInvestors = parseInt(summaryResult.rows[0]?.total_investors) || 0;
     const projectedTotal = projections.reduce((s, p) => s + p.projectedAmount, 0);
     const recTotalAmount = parseFloat(recTotalResult.rows[0]?.total_amount) || 0;
@@ -1245,7 +1313,7 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
     // Build the export rows: actual rows first, then projected match rows
     // appended (each annotated as "Projected match from <grant>").
     const exportRows: Array<{
-      name: string; email: string; status: string; date: Date | null; amount: number; matchText: string; methodText: string;
+      name: string; email: string; status: string; date: Date | null; amount: number; matchText: string; methodText: string; feeCovered: number; feeCoveredText: string;
     }> = [];
     // Mirror the JSON endpoint's payment-method classification so the Excel
     // matches what the Investors tab shows (wallet / DAF / Foundation /
@@ -1268,14 +1336,18 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
       return "Wallet";
     };
     for (const r of rowsResult.rows) {
+      const sourceId = Number(r.source_id);
+      const cf = r.source_type === "recommendation" ? coverFeeByRec[sourceId] : undefined;
       exportRows.push({
         name: r.name || "Anonymous",
         email: r.email || "",
         status: r.status,
         date: r.date_created ? new Date(r.date_created) : null,
         amount: parseFloat(r.amount) || 0,
-        matchText: buildMatchText(Number(r.source_id), r.source_type),
-        methodText: methodLabel(r.payment_method, Number(r.source_id), r.source_type, r.daf_provider, r.daf_name),
+        matchText: buildMatchText(sourceId, r.source_type),
+        methodText: methodLabel(r.payment_method, sourceId, r.source_type, r.daf_provider, r.daf_name),
+        feeCovered: cf ? cf.totalFee : 0,
+        feeCoveredText: cf ? `${fmtUsd(cf.totalFee)} (${cf.poolNames.join(", ")})` : "",
       });
     }
     for (const p of projections) {
@@ -1288,6 +1360,8 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
         amount: p.projectedAmount,
         matchText: `Projected match from "${p.grantName}" for ${who}'s ${fmtUsd(p.trigger.triggerAmount)}`,
         methodText: "Match Grant (projected)",
+        feeCovered: 0,
+        feeCoveredText: "",
       });
     }
     exportRows.sort((a, b) => {
@@ -1298,9 +1372,10 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Investors");
 
+    const TOTAL_COLS = 10;
     const titleRow = worksheet.addRow([campaignName]);
     titleRow.getCell(1).font = { bold: true, size: 14 };
-    worksheet.mergeCells(titleRow.number, 1, titleRow.number, 9);
+    worksheet.mergeCells(titleRow.number, 1, titleRow.number, TOTAL_COLS);
 
     const summaryParts: string[] = [
       `${totalInvestors} investor${totalInvestors === 1 ? "" : "s"}`,
@@ -1312,20 +1387,51 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
     }
     const summaryRow = worksheet.addRow([summaryParts.join(" · ")]);
     summaryRow.getCell(1).font = { italic: true };
-    worksheet.mergeCells(summaryRow.number, 1, summaryRow.number, 9);
+    worksheet.mergeCells(summaryRow.number, 1, summaryRow.number, TOTAL_COLS);
+
+    // Active cover-fees pools attached to this campaign (sponsor, escrow
+    // remaining, total cap). Mirrors the on-screen CoverFeesAnnotation.
+    if (coverFees.length > 0) {
+      worksheet.addRow([]);
+      const cfHeader = worksheet.addRow(["Active Cover-Fees Pools"]);
+      cfHeader.getCell(1).font = { bold: true };
+      worksheet.mergeCells(cfHeader.number, 1, cfHeader.number, TOTAL_COLS);
+
+      const cfTableHeader = worksheet.addRow(["Pool", "Sponsor", "Escrow Remaining", "Used So Far", "Total Cap", "Expires"]);
+      cfTableHeader.eachCell((cell) => { cell.font = { bold: true }; });
+
+      for (const cf of coverFees) {
+        const sponsor = cf.sponsorName || cf.sponsorEmail || "Unknown sponsor";
+        const remaining = Math.max(cf.reservedAmount - cf.amountUsed, 0);
+        const cfRow = worksheet.addRow([
+          cf.name,
+          sponsor,
+          Math.round(remaining * 100) / 100,
+          Math.round(cf.amountUsed * 100) / 100,
+          cf.totalCap != null ? Math.round(cf.totalCap * 100) / 100 : "",
+          cf.expiresAt ? new Date(cf.expiresAt) : "",
+        ]);
+        cfRow.getCell(3).numFmt = "$#,##0.00";
+        cfRow.getCell(4).numFmt = "$#,##0.00";
+        if (cf.totalCap != null) cfRow.getCell(5).numFmt = "$#,##0.00";
+        if (cf.expiresAt) cfRow.getCell(6).numFmt = "mm/dd/yyyy";
+      }
+    }
 
     worksheet.addRow([]);
 
-    const headerRow = worksheet.addRow(["#", "Name", "Email", "Method", "Status", "Date", "Amount Invested", "% of Total", "Match"]);
+    const headerRow = worksheet.addRow(["#", "Name", "Email", "Method", "Status", "Date", "Amount Invested", "% of Total", "Fees Covered", "Match"]);
     headerRow.eachCell((cell) => { cell.font = { bold: true }; });
 
     const statusLabel = (s: string) =>
       s === "in transit" ? "In Transit" : s === "received" ? "Received" : "Pending";
 
     let rank = 0;
+    let feesCoveredTotal = 0;
     for (const r of exportRows) {
       rank += 1;
       const pct = totalAmount > 0 ? r.amount / totalAmount : 0;
+      feesCoveredTotal += r.feeCovered || 0;
       const dataRow = worksheet.addRow([
         rank,
         r.name || "Anonymous",
@@ -1335,18 +1441,32 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
         r.date,
         Math.round(r.amount * 100) / 100,
         pct,
+        r.feeCoveredText,
         r.matchText,
       ]);
       dataRow.getCell(6).numFmt = "mm/dd/yyyy";
       dataRow.getCell(7).numFmt = "$#,##0.00";
       dataRow.getCell(8).numFmt = "0.00%";
       dataRow.getCell(9).alignment = { wrapText: true, vertical: "top" };
+      dataRow.getCell(10).alignment = { wrapText: true, vertical: "top" };
     }
 
-    const totalsRow = worksheet.addRow(["", "Total", "", "", "", "", Math.round(totalAmount * 100) / 100, 1, ""]);
+    const totalsRow = worksheet.addRow([
+      "",
+      "Total",
+      "",
+      "",
+      "",
+      "",
+      Math.round(totalAmount * 100) / 100,
+      1,
+      feesCoveredTotal > 0 ? Math.round(feesCoveredTotal * 100) / 100 : "",
+      "",
+    ]);
     totalsRow.eachCell((cell) => { cell.font = { bold: true }; });
     totalsRow.getCell(7).numFmt = "$#,##0.00";
     totalsRow.getCell(8).numFmt = "0.00%";
+    if (feesCoveredTotal > 0) totalsRow.getCell(9).numFmt = "$#,##0.00";
 
     worksheet.columns.forEach((col, idx) => {
       col.alignment = { horizontal: idx === 0 || (idx >= 6 && idx <= 7) ? "right" : "left", vertical: "top" };
@@ -1355,8 +1475,8 @@ router.get("/:id/investors/export", async (req: Request, res: Response) => {
         const len = String(cell.value ?? "").length;
         if (len > maxLen) maxLen = len;
       });
-      // Cap the Match column width so very long descriptions don't blow out the layout
-      col.width = idx === 8 ? Math.min(maxLen + 4, 70) : maxLen + 4;
+      // Cap wide text columns (Fees Covered, Match) so long descriptions don't blow out the layout
+      col.width = idx === 8 || idx === 9 ? Math.min(maxLen + 4, 70) : maxLen + 4;
     });
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

@@ -48,6 +48,7 @@ import ArchivedRecordsDetail from "./pages/ArchivedRecordsDetail";
 import Schedulers from "./pages/Schedulers";
 import Analytics from "./pages/Analytics";
 import AdminMatching from "./pages/AdminMatching";
+import AdminCoverFees from "./pages/AdminCoverFees";
 import SchemaChangeLogs from "./pages/SchemaChangeLogs";
 
 
@@ -100,6 +101,7 @@ function Router() {
         <ProtectedRoute path="/archived-records/:type" component={ArchivedRecordsDetail} moduleName="site configuration" />
         <ProtectedRoute path="/db-schema-logs" component={SchemaChangeLogs} moduleName="db schema logs" />
         <ProtectedRoute path="/matching" component={AdminMatching} moduleName="recommendation" />
+        <ProtectedRoute path="/cover-fees" component={AdminCoverFees} moduleName="cover-fees" />
 
         <ProtectedRoute path="/profile" component={AdminUserProfile} />
         <ProtectedRoute component={AdminNotFound} />

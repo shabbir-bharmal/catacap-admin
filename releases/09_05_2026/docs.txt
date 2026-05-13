@@ -1,0 +1,81 @@
+Release: 09_05_2026
+====================
+
+Feature: Cover Fees (sponsor-funded 5% CataCap fee coverage)
+-------------------------------------------------------------
+
+Mirrors Investment Matching (campaign_match_grants from 30_04_2026 +
+canceled_match_pairs from 07_05_2026) but instead of the sponsor matching
+1:1 the donor's contribution, the sponsor pre-funds an escrow pool from
+which a fixed 5% CataCap platform fee is debited each time an eligible
+donation lands on a covered investment.
+
+Migrations (apply in order):
+
+  1. 2026_05_09_campaign_cover_fees.sql
+       Schema: creates 3 tables
+         - public.campaign_cover_fees             (sponsor pool config)
+             id SERIAL PK, name TEXT, sponsor_user_id VARCHAR(450) FK→users.id,
+             total_cap NUMERIC(15,2) NULL (NULL = unlimited),
+             amount_used NUMERIC(15,2) DEFAULT 0,
+             reserved_amount NUMERIC(15,2) DEFAULT 0 (escrowed at creation),
+             fee_rate NUMERIC(6,4) DEFAULT 0.0500 (5%),
+             per_investment_cap NUMERIC(15,2) NULL (optional max fee per
+                                                   donation),
+             is_active BOOL, notes TEXT, expires_at TIMESTAMP,
+             retroactive_from TIMESTAMP, created_at, updated_at.
+         - public.campaign_cover_fees_campaigns   (junction)
+             cover_fee_id FK → campaign_cover_fees(id) ON DELETE CASCADE,
+             campaign_id FK → campaigns(id) ON DELETE CASCADE,
+             UNIQUE(cover_fee_id, campaign_id).
+         - public.campaign_cover_fees_activity    (audit log of fees covered)
+             cover_fee_id FK → campaign_cover_fees(id) ON DELETE CASCADE,
+             campaign_id, triggered_by_user_id, triggered_by_recommendation_id,
+             fee_amount, donation_amount, created_at.
+             UNIQUE(cover_fee_id, triggered_by_recommendation_id) WHERE NOT NULL
+               (idempotency / no double-cover for same triggering recommendation).
+       Intent: Underlies admin Cover Fees CRUD/activity/cancel/retroactive
+               and the public read endpoint that surfaces coverage status
+               to the frontend.
+       Idempotency: CREATE TABLE/INDEX IF NOT EXISTS, guarded ALTER for
+                    foreign-key constraints, transactional.
+       Rollback: DROP TABLE statements at the bottom of the file (commented).
+
+  2. 2026_05_09_canceled_cover_fees_pairs.sql
+       Schema: creates 1 table
+         - public.canceled_cover_fees_pairs
+             cover_fee_id, triggered_by_recommendation_id, campaign_id,
+             fee_amount, canceled_by, canceled_at, note.
+             Partial UNIQUE(cover_fee_id, triggered_by_recommendation_id)
+             WHERE triggered_by_recommendation_id IS NOT NULL.
+       Intent: Tombstone table so the retroactive sweep and the per-pool
+               pending-fee projection do NOT resurrect a cancelled cover
+               on the next refresh. Direct mirror of canceled_match_pairs.
+       Idempotency: CREATE TABLE/INDEX IF NOT EXISTS, transactional.
+       Rollback: DROP TABLE (commented at bottom).
+
+  3. 2026_05_09_add_cover_fees_module.sql
+       Schema: INSERT into public.modules (name='cover-fees',
+               category='site-config', sort_order=25). No DDL.
+       Intent: Register the new admin page in the RBAC catalog so the Roles
+               & Permissions UI can grant view/manage access. Mirrors the
+               db-schema-logs registration in 02_05_2026.
+       Idempotency: NOT EXISTS guard on name='cover-fees' (no UNIQUE on
+                    public.modules.name in the .NET-managed schema).
+                    Re-running is a no-op.
+       Rollback: DELETE FROM public.modules WHERE name = 'cover-fees';
+
+Code that depends on these migrations:
+  - server/src/utils/coverFees.ts          (apply / single-pool / retro sweep)
+  - server/src/utils/pendingCoverFees.ts   (projection of pending fees)
+  - server/src/routes/adminCoverFees.ts    (admin CRUD + activity + cancel + export)
+  - server/src/routes/campaign.ts          (public GET /cover-fees-status/:id)
+  - server/src/scheduler/expireCoverFees.ts (daily expiry job)
+  - src/pages/AdminCoverFees.tsx           (admin UI)
+  - src/config/adminSidebar.ts             (sidebar entry, RBAC module='cover-fees')
+  - src/App.tsx                            (protected route /cover-fees)
+
+Hook points (fire-and-forget after commit, parallel to applyMatchGrants):
+  - server/src/routes/adminRecommendations.ts   PUT /:id   newly approved/pending
+  - server/src/routes/adminPendingGrants.ts     status update path
+  - server/src/routes/adminOtherAssets.ts       status update path
