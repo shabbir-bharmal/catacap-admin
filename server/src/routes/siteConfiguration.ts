@@ -16,6 +16,7 @@ const SITE_CONFIG_TYPES = {
   NewsAudience: "NewsAudience",
   MetaInformation: "MetaInformation",
   ContactInfo: "ContactInfo",
+  InvestmentTypeCategory: "InvestmentTypeCategory",
 } as const;
 
 function getDeletedFilter(isDeleted: boolean | undefined): string {
@@ -119,6 +120,17 @@ router.get("/:type", async (req: Request, res: Response) => {
            WHERE x.type = $1 AND ${softDelete}
            ORDER BY x.value`,
           [SITE_CONFIG_TYPES.TransactionType]
+        );
+        res.json(result.rows);
+        return;
+      }
+
+      case "investment-type-category": {
+        const result = await pool.query(
+          `SELECT x.id, x.value FROM site_configurations x
+           WHERE x.type = $1 AND ${softDelete}
+           ORDER BY x.value`,
+          [SITE_CONFIG_TYPES.InvestmentTypeCategory]
         );
         res.json(result.rows);
         return;
@@ -342,6 +354,22 @@ router.delete("/:type/:id", async (req: Request, res: Response) => {
         if (inUse.rows.length > 0) { res.json({ success: false, message: "Cannot delete this transaction type, it's being used in investments." }); return; }
         await softDeleteRecord("site_configurations", id, userId);
         result = { success: true, message: "Transaction type deleted successfully." };
+        break;
+      }
+
+      case "investment-type-category": {
+        const entity = await pool.query(
+          `SELECT id, value FROM site_configurations WHERE id = $1 AND type = $2`,
+          [id, SITE_CONFIG_TYPES.InvestmentTypeCategory]
+        );
+        if (entity.rows.length === 0) { res.json({ success: false, message: "Record not found." }); return; }
+        const inUse = await pool.query(
+          `SELECT 1 FROM campaigns WHERE investment_type_category = $1 LIMIT 1`,
+          [entity.rows[0].value]
+        );
+        if (inUse.rows.length > 0) { res.json({ success: false, message: "Cannot delete this investment type, it's being used in investments." }); return; }
+        await softDeleteRecord("site_configurations", id, userId);
+        result = { success: true, message: "Investment type deleted successfully." };
         break;
       }
 
@@ -731,6 +759,20 @@ async function createByType(type: string, dto: any): Promise<{ success: boolean;
       return { success: true, message: "Transaction type created successfully." };
     }
 
+    case "investment-type-category": {
+      if (!dto.value?.trim()) return { success: false, message: "Investment type is required." };
+      const dup = await pool.query(
+        `SELECT 1 FROM site_configurations WHERE type = $1 AND TRIM(value) = $2 AND (is_deleted IS NULL OR is_deleted = false)`,
+        [SITE_CONFIG_TYPES.InvestmentTypeCategory, dto.value.trim()]
+      );
+      if (dup.rows.length > 0) return { success: false, message: "Entered investment type value already exists." };
+      await pool.query(
+        `INSERT INTO site_configurations (key, value, type) VALUES ($1, $2, $3)`,
+        [dto.value.trim(), dto.value.trim(), SITE_CONFIG_TYPES.InvestmentTypeCategory]
+      );
+      return { success: true, message: "Investment type created successfully." };
+    }
+
     case "news-type": {
       if (!dto.value?.trim()) return { success: false, message: "News type is required." };
       const dup = await pool.query(
@@ -947,20 +989,31 @@ async function updateByType(type: string, dto: any): Promise<{ success: boolean;
     }
 
     case "transaction-type":
+    case "investment-type-category":
     case "news-type":
     case "news-audience": {
       if (!dto.value?.trim()) return { success: false, message: `${type.replace(/-/g, " ")} is required.` };
       const configType = type === "transaction-type" ? SITE_CONFIG_TYPES.TransactionType
+        : type === "investment-type-category" ? SITE_CONFIG_TYPES.InvestmentTypeCategory
         : type === "news-type" ? SITE_CONFIG_TYPES.NewsType : SITE_CONFIG_TYPES.NewsAudience;
-      const entity = await pool.query(`SELECT id FROM site_configurations WHERE id = $1 AND type = $2`, [id, configType]);
+      const entity = await pool.query(`SELECT id, value FROM site_configurations WHERE id = $1 AND type = $2`, [id, configType]);
       if (entity.rows.length === 0) return { success: false, message: "Record not found." };
       const dup = await pool.query(
         `SELECT 1 FROM site_configurations WHERE type = $1 AND TRIM(value) = $2 AND id != $3 AND (is_deleted IS NULL OR is_deleted = false)`,
         [configType, dto.value.trim(), id]
       );
       if (dup.rows.length > 0) return { success: false, message: `Entered ${type.replace(/-/g, " ")} value already exists.` };
-      await pool.query(`UPDATE site_configurations SET key = $1, value = $2 WHERE id = $3`, [dto.value.trim(), dto.value.trim(), id]);
+      const previousValue = entity.rows[0].value as string | null;
+      const newValue = dto.value.trim();
+      await pool.query(`UPDATE site_configurations SET key = $1, value = $2 WHERE id = $3`, [newValue, newValue, id]);
+      if (type === "investment-type-category" && previousValue && previousValue !== newValue) {
+        await pool.query(
+          `UPDATE campaigns SET investment_type_category = $1 WHERE investment_type_category = $2`,
+          [newValue, previousValue]
+        );
+      }
       const successMsg = type === "transaction-type" ? "Transaction type updated successfully."
+        : type === "investment-type-category" ? "Investment type updated successfully."
         : type === "news-type" ? "News type updated successfully." : "News audience updated successfully.";
       return { success: true, message: successMsg };
     }

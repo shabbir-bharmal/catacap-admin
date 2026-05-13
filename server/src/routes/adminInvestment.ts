@@ -2479,7 +2479,7 @@ router.put("/:id", async (req: Request, res: Response) => {
         campaign.isPartOfFund ?? existing.is_part_of_fund,
         campaign.associatedFundId ?? existing.associated_fund_id,
         campaign.featuredInvestment ?? existing.featured_investment,
-        campaign.investmentTypeCategory ?? existing.investment_type_category,
+        Object.prototype.hasOwnProperty.call(campaign, "investmentTypeCategory") ? campaign.investmentTypeCategory : existing.investment_type_category,
         campaign.equityValuation ?? existing.equity_valuation,
         campaign.equitySecurityType ?? existing.equity_security_type,
         campaign.fundTerm ?? existing.fund_term,

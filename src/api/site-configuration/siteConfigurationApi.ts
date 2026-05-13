@@ -7,6 +7,7 @@ export type SiteConfigType =
     | "themes"
     | "special-filters"
     | "transaction-type"
+    | "investment-type-category"
     | "investment-terms"
     | "news-type"
     | "news-audience"
@@ -64,6 +65,11 @@ export interface StaticValueItem {
 }
 
 export interface TransactionTypeItem {
+    id: number;
+    name: string;
+}
+
+export interface InvestmentTypeCategoryItem {
     id: number;
     name: string;
 }
@@ -157,6 +163,11 @@ export async function fetchTransactionTypes(): Promise<TransactionTypeItem[]> {
     return raw.map((item) => ({ id: item.id, name: item.value }));
 }
 
+export async function fetchInvestmentTypeCategories(): Promise<InvestmentTypeCategoryItem[]> {
+    const raw = await fetchRaw<RawValueItem>("investment-type-category");
+    return raw.map((item) => ({ id: item.id, name: item.value }));
+}
+
 /** Static key/value entries – accessed via the `investment-terms` endpoint */
 export async function fetchStaticValues(): Promise<StaticValueItem[]> {
     return fetchRaw<RawStaticValueItem>("investment-terms");
@@ -227,6 +238,7 @@ export interface AllSiteConfigurations {
     themes: ThemeItem[];
     specialFilters: SpecialFilterItem[];
     transactionTypes: TransactionTypeItem[];
+    investmentTypeCategories: InvestmentTypeCategoryItem[];
     staticValues: StaticValueItem[];
     configurations: StaticValueItem[];
     newsTypes: NewsTypeItem[];
@@ -247,6 +259,7 @@ export async function fetchAllSiteConfigurations(): Promise<AllSiteConfiguration
         themesRes,
         specialFiltersRes,
         transactionTypesRes,
+        investmentTypeCategoriesRes,
         staticValuesRes,
         configurationsRes,
         newsTypesRes,
@@ -261,6 +274,7 @@ export async function fetchAllSiteConfigurations(): Promise<AllSiteConfiguration
             fetchThemes(),
             fetchSpecialFilters(),
             fetchTransactionTypes(),
+            fetchInvestmentTypeCategories(),
             fetchStaticValues(),
             fetchConfigurations(),
             fetchNewsTypes(),
@@ -276,6 +290,7 @@ export async function fetchAllSiteConfigurations(): Promise<AllSiteConfiguration
         themes: themesRes.status === "fulfilled" ? themesRes.value : [],
         specialFilters: specialFiltersRes.status === "fulfilled" ? specialFiltersRes.value : [],
         transactionTypes: transactionTypesRes.status === "fulfilled" ? transactionTypesRes.value : [],
+        investmentTypeCategories: investmentTypeCategoriesRes.status === "fulfilled" ? investmentTypeCategoriesRes.value : [],
         staticValues: staticValuesRes.status === "fulfilled" ? staticValuesRes.value : [],
         configurations: configurationsRes.status === "fulfilled" ? configurationsRes.value : [],
         newsTypes: newsTypesRes.status === "fulfilled" ? newsTypesRes.value : [],
