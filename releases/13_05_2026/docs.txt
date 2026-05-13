@@ -1,0 +1,40 @@
+Release 13_05_2026
+==================
+
+Migrations
+----------
+- migrations/001_cover_fees_refund_reversal.sql
+    Schema:
+      * Adds reversed_fee_amount NUMERIC NOT NULL DEFAULT 0,
+        fully_reversed_at TIMESTAMPTZ, last_reversed_reason TEXT, and
+        payment_ref TEXT to campaign_cover_fees_activity.
+      * Adds partial index idx_ccfa_unreversed (cover_fee_id) WHERE
+        fully_reversed_at IS NULL, plus idx_ccfa_payment_ref for
+        webhook lookups.
+      * Creates cover_fees_refund_reversals (activity_id,
+        refund_idempotency_key, refund_amount, fee_reversed_amount,
+        reason, created_at) with a UNIQUE (activity_id,
+        refund_idempotency_key) index as the authoritative per-refund
+        idempotency record (works even when no donor / sponsor audit
+        row gets written because the proportional reversal rounds to
+        $0).
+    Intent: Backs Task #465 ("Cover Fees Refund Reversal"). When a
+            Stripe card / ACH donation is refunded — fully OR partially
+            — the sponsor pool is restored proportionally and the
+            donor's Account-History row is paired with a matching
+            "Cover Fees – escrow reversed" entry sized to the refund.
+    Idempotency: All ALTER / CREATE statements use IF NOT EXISTS or
+                 guarded DO blocks. The reversal table's UNIQUE index
+                 makes duplicate Stripe webhook deliveries no-ops at
+                 the database layer regardless of helper short-circuits.
+    Rollback (uncomment block at top of the SQL file):
+        BEGIN;
+        DROP TABLE IF EXISTS cover_fees_refund_reversals;
+        DROP INDEX IF EXISTS idx_ccfa_unreversed;
+        DROP INDEX IF EXISTS idx_ccfa_payment_ref;
+        ALTER TABLE campaign_cover_fees_activity
+          DROP COLUMN IF EXISTS reversed_fee_amount,
+          DROP COLUMN IF EXISTS fully_reversed_at,
+          DROP COLUMN IF EXISTS last_reversed_reason,
+          DROP COLUMN IF EXISTS payment_ref;
+        COMMIT;

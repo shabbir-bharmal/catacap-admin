@@ -210,6 +210,10 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
                     THEN tpg.created_date
                   ELSE tr.date_created
                 END AS trigger_date
+                ,
+                a.fully_reversed_at,
+                a.reversed_fee_amount,
+                a.last_reversed_reason
            FROM campaign_cover_fees_activity a
            LEFT JOIN campaigns c ON c.id = a.campaign_id
            LEFT JOIN users iu ON iu.id = a.triggered_by_user_id
@@ -237,6 +241,10 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerAmount: r.trigger_amount != null ? parseFloat(r.trigger_amount) : null,
         triggerPaymentType: r.trigger_payment_type || "",
         triggerDate: r.trigger_date || null,
+        reversed: r.fully_reversed_at != null,
+        reversedAt: r.fully_reversed_at || null,
+        reversedAmount: parseFloat(r.reversed_fee_amount) || 0,
+        reversedReason: r.last_reversed_reason || null,
       })),
       pendingItems: projections.map((p, idx) => ({
         id: `pending-${id}-${idx}`,

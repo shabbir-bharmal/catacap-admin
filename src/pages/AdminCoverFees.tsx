@@ -71,6 +71,10 @@ interface ActivityEntry {
   triggerAmount?: number | null;
   triggerPaymentType?: string;
   triggerDate?: string | null;
+  reversed?: boolean;
+  reversedAt?: string | null;
+  reversedAmount?: number;
+  reversedReason?: string | null;
 }
 interface PendingActivityEntry {
   id: string;
@@ -1010,10 +1014,21 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                   </td>
                   <td className="px-3 py-2 text-xs">
                     <div className="flex flex-col items-start gap-1">
-                      <CoveredPill />
+                      {a.reversed ? (
+                        <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
+                          Reversed
+                        </Badge>
+                      ) : (
+                        <CoveredPill />
+                      )}
                       {renderTriggerBadge(a.triggerPaymentType || (a.triggeringRecommendationId != null ? "Direct" : ""), a.triggerStatus || "")}
                       {a.triggeringRecommendationId != null && (
                         <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
+                      )}
+                      {a.reversed && a.reversedReason && (
+                        <div className="text-[10px] text-muted-foreground italic">
+                          {a.reversedReason}
+                        </div>
                       )}
                     </div>
                   </td>
