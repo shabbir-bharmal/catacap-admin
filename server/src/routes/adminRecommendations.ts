@@ -6,7 +6,7 @@ import { restoreOwningUsersForRecordsInTx } from "../utils/userRestore.js";
 import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembership.js";
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
-import { applyCoverFees } from "../utils/coverFees.js";
+import { applyCoverFees, reverseCoverFeesByRecommendation } from "../utils/coverFees.js";
 import ExcelJS from "exceljs";
 
 const router = Router();
@@ -331,6 +331,17 @@ router.put("/:id", async (req: Request, res: Response) => {
         [rejectionMemo, loginUserId, id]
       );
 
+      // Reverse any sponsor-paid cover-fees that were applied for this
+      // recommendation. Symmetric to refunding the donor's wallet above:
+      // sponsor wallet is credited back, pool's amount_used is decremented,
+      // and paired audit rows are written. Idempotent — a duplicate revert
+      // is a no-op via cover_fees_refund_reversals.
+      await reverseCoverFeesByRecommendation({
+        recommendationId: id,
+        reason: `Recommendation #${id} reverted`,
+        client,
+      });
+
       // Cascade-reject any pending match recommendations triggered by this one
       const pendingMatches = await client.query(
         `SELECT a.id AS activity_id, a.donor_recommendation_id, a.match_grant_id, a.amount,
@@ -349,6 +360,13 @@ router.put("/:id", async (req: Request, res: Response) => {
           `UPDATE recommendations SET status = 'rejected', rejection_date = NOW() WHERE id = $1`,
           [m.donor_recommendation_id]
         );
+        // Cascade cover-fees reversal for this donor match recommendation
+        // too (any sponsor pool that covered fees on the match itself).
+        await reverseCoverFeesByRecommendation({
+          recommendationId: m.donor_recommendation_id,
+          reason: `Pending match recommendation #${m.donor_recommendation_id} reverted (parent rec #${id} rejected)`,
+          client,
+        });
         // Unwind amount_used on the grant
         const matchAmt = parseFloat(m.amount) || 0;
         await client.query(

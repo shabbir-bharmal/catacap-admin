@@ -688,8 +688,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
           await client.query(
             `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, group_id)
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`,
+             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, group_id, gross_amount, fees, net_amount)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11)`,
             [
               grant.uid,
               `Recommendation created using group balance, ${loginUserName}`,
@@ -699,6 +699,9 @@ router.put("/:id", async (req: Request, res: Response) => {
               grant.campaign_name,
               grant.camp_id,
               gab.group_id,
+              deduction,
+              0,
+              deduction,
             ]
           );
 
@@ -719,8 +722,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
           await client.query(
             `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id)
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)`,
+             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, gross_amount, fees, net_amount)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
             [
               grant.uid,
               `${grantType}, ${loginUserName}`,
@@ -729,6 +732,9 @@ router.put("/:id", async (req: Request, res: Response) => {
               curBalance - amountToDeduct,
               grant.campaign_name,
               grant.camp_id,
+              amountToDeduct,
+              0,
+              amountToDeduct,
             ]
           );
 
@@ -792,10 +798,13 @@ router.put("/:id", async (req: Request, res: Response) => {
             const currentBalance = (await client.query(`SELECT account_balance FROM users WHERE id = $1`, [grant.uid])).rows[0].account_balance;
             const curBal = parseFloat(currentBalance) || 0;
 
+            const revertGross = pendingGrantAmount;
+            const revertNet = parseFloat(existingLog.pg_amount_after_fees) || 0;
+            const revertFees = revertGross - revertNet;
             await client.query(
               `INSERT INTO account_balance_change_logs
-               (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference)
-               VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)`,
+               (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference, gross_amount, fees, net_amount)
+               VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
               [
                 grant.uid,
                 `Pending grant reverted, id = ${id}`,
@@ -804,6 +813,9 @@ router.put("/:id", async (req: Request, res: Response) => {
                 curBal + revertAmount,
                 id,
                 existingLog.reference,
+                revertGross,
+                revertFees >= 0 ? revertFees : 0,
+                revertNet,
               ]
             );
 
@@ -840,8 +852,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
               await client.query(
                 `INSERT INTO account_balance_change_logs
-                 (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference, investment_name, campaign_id)
-                 VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9)`,
+                 (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference, investment_name, campaign_id, gross_amount, fees, net_amount)
+                 VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12)`,
                 [
                   grant.uid,
                   `Recommendation reverted due to pending grant rollback, id = ${recommendation.id}`,
@@ -852,6 +864,9 @@ router.put("/:id", async (req: Request, res: Response) => {
                   existingLog.reference,
                   recommendation.camp_name,
                   recommendation.camp_id,
+                  recAmount,
+                  0,
+                  recAmount,
                 ]
               );
 
@@ -861,10 +876,13 @@ router.put("/:id", async (req: Request, res: Response) => {
             const curBal2 = (await client.query(`SELECT account_balance FROM users WHERE id = $1`, [grant.uid])).rows[0];
             const curBalance2 = parseFloat(curBal2.account_balance) || 0;
 
+            const revertGross2 = pendingGrantAmount;
+            const revertNet2 = amountAfterFees;
+            const revertFees2 = revertGross2 - revertNet2;
             await client.query(
               `INSERT INTO account_balance_change_logs
-               (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference)
-               VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)`,
+               (user_id, payment_type, old_value, user_name, new_value, change_date, pending_grants_id, reference, gross_amount, fees, net_amount)
+               VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
               [
                 grant.uid,
                 `Pending grant reverted, id = ${id}`,
@@ -873,6 +891,9 @@ router.put("/:id", async (req: Request, res: Response) => {
                 curBalance2 - amountAfterFees,
                 id,
                 existingLog.reference,
+                revertGross2,
+                revertFees2 >= 0 ? revertFees2 : 0,
+                revertNet2,
               ]
             );
 

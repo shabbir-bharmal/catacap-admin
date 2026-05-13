@@ -52,7 +52,7 @@ const STEPS = [
   { id: 5, label: "Updates", icon: Mail },
 ];
 
-import { fetchCountries, fetchInvestmentById, fetchInvestmentData, updateInvestment, exportInvestmentRecommendations, fetchAllInvestmentNameList, sendInvestmentQrCodeEmail, fetchInvestmentNotes, exportInvestmentNotesApi, downloadInvestmentDocument, fetchCampaignUpdates, createCampaignUpdate, updateCampaignUpdate, deleteCampaignUpdate, sendCampaignUpdateEmail, getCampaignUpdateEmailPreview, fetchCampaignUpdateEmailLogs, type CampaignUpdateItem, type CampaignUpdateAttachmentItem, type CampaignUpdateAttachmentInput, type CampaignUpdateEmailLogItem } from "@/api/investment/investmentApi";
+import { fetchCountries, fetchInvestmentById, fetchInvestmentData, updateInvestment, exportInvestmentRecommendations, fetchAllInvestmentNameList, sendInvestmentQrCodeEmail, fetchInvestmentNotes, exportInvestmentNotesApi, downloadInvestmentDocument, fetchCampaignUpdates, createCampaignUpdate, updateCampaignUpdate, deleteCampaignUpdate, sendCampaignUpdateEmail, getCampaignUpdateEmailPreview, fetchCampaignUpdateEmailLogs, fetchCampaignCoverFeesStatus, type CoverFeesStatus, type CampaignUpdateItem, type CampaignUpdateAttachmentItem, type CampaignUpdateAttachmentInput, type CampaignUpdateEmailLogItem } from "@/api/investment/investmentApi";
 import { fetchActiveEmailTemplateByCategory, fetchEmailTemplatePreview } from "@/api/email-template/emailTemplateApi";
 import { fetchAllGroups, GroupUpdatePayload } from "@/api/group/groupApi";
 import { fetchAllAdminUsers, AdminUserItem } from "@/api/user/userApi";
@@ -492,6 +492,26 @@ export default function AdminInvestmentEdit() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [investmentName, setInvestmentName] = useState("");
   const [resolvedNumericId, setResolvedNumericId] = useState<number | null>(null);
+  const [coverFeesStatus, setCoverFeesStatus] = useState<CoverFeesStatus | null>(null);
+
+  useEffect(() => {
+    if (!resolvedNumericId) {
+      setCoverFeesStatus(null);
+      return;
+    }
+    let cancelled = false;
+    fetchCampaignCoverFeesStatus(resolvedNumericId)
+      .then((data) => {
+        if (!cancelled) setCoverFeesStatus(data);
+      })
+      .catch((err) => {
+        console.error("Failed to load cover-fees status:", err);
+        if (!cancelled) setCoverFeesStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedNumericId]);
   const [formData, setFormData] = useState<FormData>(defaultFormData);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [investmentOwnerValid, setInvestmentOwnerValid] = useState(true);
@@ -2069,6 +2089,25 @@ export default function AdminInvestmentEdit() {
             </h4>
           </div>
         </div>
+
+        {coverFeesStatus?.isCovered && (
+          <div
+            className="mb-4 flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/40 dark:text-emerald-100"
+            data-testid="banner-cover-fees-status"
+          >
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+            <div className="flex-1">
+              <div className="font-medium" data-testid="text-cover-fees-sponsor">
+                5% CataCap fee covered by {coverFeesStatus.sponsorName || "Sponsor"}
+              </div>
+              {coverFeesStatus.remainingEscrow != null && coverFeesStatus.remainingEscrow > 0 && coverFeesStatus.remainingEscrow < 1000 && (
+                <div className="text-xs text-emerald-800/80 dark:text-emerald-200/80 mt-0.5" data-testid="text-cover-fees-remaining">
+                  Remaining escrow: {formatUSD(coverFeesStatus.remainingEscrow)}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Stepper UI */}
         <Card className="rounded-b-none rounded-t-xl">

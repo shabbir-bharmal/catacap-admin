@@ -23,7 +23,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axiosInstance from "../api/axios";
 import { currency_format, formatDate } from "../helpers/format";
-import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, GitMerge, Activity, ChevronDown, ChevronRight, Search, Loader2, Clock, Download, CheckCircle2, Info } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useDebounce } from "../hooks/useDebounce";
@@ -36,6 +38,7 @@ interface Campaign { id: number; name: string; }
 interface CoverFeesPool {
   id: number;
   name: string;
+  displaySponsorName: string;
   sponsorUserId: string;
   sponsorEmail: string;
   sponsorFullName: string;
@@ -68,6 +71,10 @@ interface ActivityEntry {
   triggerAmount?: number | null;
   triggerPaymentType?: string;
   triggerDate?: string | null;
+  reversed?: boolean;
+  reversedAt?: string | null;
+  reversedAmount?: number;
+  reversedReason?: string | null;
 }
 interface PendingActivityEntry {
   id: string;
@@ -89,6 +96,7 @@ interface SponsorOption { id: string; email: string; fullName: string; accountBa
 
 const EMPTY_FORM = {
   name: "",
+  displaySponsorName: "",
   sponsorUserId: "",
   sponsorEmail: "",
   sponsorFullName: "",
@@ -427,6 +435,7 @@ function GrantFormDialog({
     try {
       const payload = {
         name: form.name.trim(),
+        displaySponsorName: form.displaySponsorName.trim(),
         sponsorUserId: form.sponsorUserId,
         totalCap: form.totalCap !== "" ? Number(form.totalCap) : null,
         perInvestmentCap: form.perInvestmentCap !== "" ? Number(form.perInvestmentCap) : null,
@@ -463,6 +472,16 @@ function GrantFormDialog({
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          <Alert className="border-blue-200 bg-blue-50 text-blue-900">
+            <Info className="h-4 w-4 text-blue-600" />
+            <AlertDescription className="text-xs leading-relaxed">
+              <strong>Scope:</strong> this program only covers the <strong>5% CataCap platform fee</strong>.
+              If the donor pays by <strong>credit card or ACH</strong>, the payment processor's
+              transaction fee is still deducted from their contribution and is <strong>not</strong> covered
+              by this pool. The public investment page surfaces this disclaimer to donors automatically.
+            </AlertDescription>
+          </Alert>
+
           <div className="space-y-1.5">
             <Label className="text-sm">Pool Label</Label>
             <Input
@@ -471,6 +490,19 @@ function GrantFormDialog({
               placeholder="e.g. Lily – Empower Her Fee Coverage 2026"
               data-testid="input-grant-name"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-sm">Name to show Investors</Label>
+            <Input
+              value={form.displaySponsorName}
+              onChange={(e) => upd("displaySponsorName", e.target.value)}
+              placeholder="e.g. The Kurtzig Family Foundation"
+              data-testid="input-display-sponsor-name"
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional. When set, this name replaces the sponsor's name on the public investment page (e.g. "...generously covered by <em>this name</em>..."). Leave blank to use the sponsor's real name.
+            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -872,11 +904,81 @@ function ActivityPanel({ grantId }: { grantId: number }) {
   }
 
   const triggerStatusLabel = (s: string) => {
-    const v = (s || "").toLowerCase();
+    const v = (s || "").trim().toLowerCase();
+    if (v === "" || v === "pending") return "Pending";
     if (v === "in transit") return "In Transit";
     if (v === "received") return "Received";
-    return "Pending";
+    if (v === "rejected") return "Rejected";
+    if (v === "approved") return "Approved";
+    return s;
   };
+
+  const triggerTooltipCopy = (
+    paymentType: string,
+    status: string,
+    context: "covered" | "pending",
+  ) => {
+    const v = (status || "").trim().toLowerCase();
+    const subject = paymentType
+      ? `the donor's ${paymentType.toLowerCase()}`
+      : "the donor's direct recommendation";
+    const lifecycle = (() => {
+      switch (v) {
+        case "":
+        case "pending":
+          return `${subject} has not been marked In Transit yet`;
+        case "in transit":
+          return `${subject} is on its way but has not been received`;
+        case "received":
+          return `${subject} has been received`;
+        case "approved":
+          return `${subject} has been approved`;
+        case "rejected":
+          return `${subject} was rejected`;
+        default:
+          return `${subject} is in "${status}" state`;
+      }
+    })();
+    const tail =
+      context === "covered"
+        ? "This is independent of the coverage itself: the cover-fee has already been applied from the sponsor wallet (or escrow)."
+        : "This is a projection only — the cover-fee has NOT been applied yet. It will fire from the sponsor's escrow when this trigger lands.";
+    return `Trigger payment status — ${lifecycle}. ${tail}`;
+  };
+
+  const renderTriggerBadge = (
+    paymentType: string,
+    status: string,
+    context: "covered" | "pending" = "covered",
+  ) => {
+    const label = `Trigger: ${paymentType ? `${paymentType} · ` : ""}${triggerStatusLabel(status)}`;
+    return (
+      <Tooltip delayDuration={150}>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground cursor-help">
+            {label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+          {triggerTooltipCopy(paymentType, status, context)}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  const CoveredPill = () => (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 cursor-help">
+          <CheckCircle2 className="h-3 w-3" />
+          Covered
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+        The cover-fee has already been applied from the sponsor wallet (or escrow). The trigger badge below describes the donor's separate payment lifecycle, not the coverage status.
+      </TooltipContent>
+    </Tooltip>
+  );
 
   return (
     <div className="space-y-4">
@@ -911,13 +1013,24 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                     {currency_format(a.donationAmount)}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    <div className="text-muted-foreground">
-                      {a.triggerPaymentType ? `${a.triggerPaymentType} · ` : ""}
-                      {a.triggerStatus ? triggerStatusLabel(a.triggerStatus) : ""}
+                    <div className="flex flex-col items-start gap-1">
+                      {a.reversed ? (
+                        <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
+                          Reversed
+                        </Badge>
+                      ) : (
+                        <CoveredPill />
+                      )}
+                      {renderTriggerBadge(a.triggerPaymentType || (a.triggeringRecommendationId != null ? "Direct" : ""), a.triggerStatus || "")}
+                      {a.triggeringRecommendationId != null && (
+                        <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
+                      )}
+                      {a.reversed && a.reversedReason && (
+                        <div className="text-[10px] text-muted-foreground italic">
+                          {a.reversedReason}
+                        </div>
+                      )}
                     </div>
-                    {a.triggeringRecommendationId != null && (
-                      <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
-                    )}
                   </td>
                   <td className="px-3 py-2 text-right font-medium tabular-nums">
                     {currency_format(a.amount)}
@@ -989,9 +1102,8 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                     </td>
                     <td className="px-3 py-2 text-xs">
                       <div className="tabular-nums">{currency_format(p.triggerAmount)}</div>
-                      <div className="text-muted-foreground">
-                        {p.triggerType === "pending_grant" ? "DAF · " : "Rec · "}
-                        {triggerStatusLabel(p.triggerStatus)}
+                      <div className="mt-1">
+                        {renderTriggerBadge("DAF Grant", p.triggerStatus, "pending")}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-amber-900 dark:text-amber-200">
@@ -1060,10 +1172,15 @@ export default function AdminCoverFees() {
   const [editTarget, setEditTarget] = useState<(typeof EMPTY_FORM & { id?: number }) | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CoverFeesPool | null>(null);
+  const [exportingIds, setExportingIds] = useState<Set<number>>(new Set());
 
   const handleExport = async (g: CoverFeesPool) => {
-    setExportingId(g.id);
+    setExportingIds((prev) => {
+      const next = new Set(prev);
+      next.add(g.id);
+      return next;
+    });
     try {
       const response = await axiosInstance.get(`/api/admin/cover-fees/${g.id}/export`, {
         responseType: "blob",
@@ -1085,7 +1202,11 @@ export default function AdminCoverFees() {
     } catch (err: any) {
       toast({ title: "Export failed", description: err?.message || "Unknown error", variant: "destructive" });
     } finally {
-      setExportingId(null);
+      setExportingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(g.id);
+        return next;
+      });
     }
   };
 
@@ -1114,6 +1235,7 @@ export default function AdminCoverFees() {
     setEditTarget({
       id: g.id,
       name: g.name,
+      displaySponsorName: g.displaySponsorName || "",
       sponsorUserId: g.sponsorUserId,
       sponsorEmail: g.sponsorEmail,
       sponsorFullName: g.sponsorFullName,
@@ -1137,6 +1259,7 @@ export default function AdminCoverFees() {
     try {
       await axiosInstance.delete(`/api/admin/cover-fees/${id}`);
       toast({ title: "Deleted", description: "Cover Fees pool removed." });
+      setDeleteTarget(null);
       refresh();
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1342,11 +1465,11 @@ export default function AdminCoverFees() {
                           variant="ghost"
                           size="icon"
                           onClick={() => handleExport(g)}
-                          disabled={exportingId === g.id}
+                          disabled={exportingIds.has(g.id)}
                           title="Download Excel report"
                           data-testid={`button-export-${g.id}`}
                         >
-                          {exportingId === g.id ? (
+                          {exportingIds.has(g.id) ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Download className="h-4 w-4" />
@@ -1365,7 +1488,7 @@ export default function AdminCoverFees() {
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
-                          onClick={() => handleDelete(g.id)}
+                          onClick={() => setDeleteTarget(g)}
                           disabled={deletingId === g.id}
                           title="Delete"
                           data-testid={`button-delete-${g.id}`}
@@ -1407,6 +1530,60 @@ export default function AdminCoverFees() {
           onSaved={refresh}
         />
       )}
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => {
+          if (!o && deletingId === null) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-delete-cover-fees-pool">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this Cover Fees Pool?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <div>
+                  This will permanently delete the pool{" "}
+                  <strong>{deleteTarget?.name || (deleteTarget ? `Pool #${deleteTarget.id}` : "")}</strong>.
+                </div>
+                <div className="text-muted-foreground">
+                  This action cannot be undone.
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="button-delete-cover-fees-pool-cancel"
+              disabled={deletingId !== null}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deletingId !== null}
+              onClick={(e) => {
+                if (deletingId !== null || !deleteTarget) {
+                  e.preventDefault();
+                  return;
+                }
+                e.preventDefault();
+                handleDelete(deleteTarget.id);
+              }}
+              data-testid="button-delete-cover-fees-pool-confirm"
+            >
+              {deletingId !== null ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Deleting…
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AdminLayout>
   );
 }

@@ -20,7 +20,7 @@ export type CoverFeeProjectionTrigger = {
   triggerEmail: string;
   triggerAmount: number;
   triggerDate: Date | string | null;
-  triggerStatus: "pending" | "in transit";
+  triggerStatus: "pending";
   pendingGrantId: number | null;
 };
 
@@ -99,14 +99,16 @@ async function fetchPendingTriggers(
     `SELECT r.id, r.user_id, r.user_email, r.user_full_name,
             r.amount::numeric AS amount, r.date_created,
             r.campaign_id, c.name AS campaign_name,
-            r.pending_grants_id, pg.status AS pg_status
+            r.pending_grants_id, pg.status AS pg_status,
+            pg.created_date AS pg_created_date,
+            pg.daf_provider AS pg_daf_provider
        FROM recommendations r
        JOIN pending_grants pg ON pg.id = r.pending_grants_id
        JOIN campaigns c        ON c.id = r.campaign_id
       WHERE r.campaign_id = ANY($1::int[])
         AND COALESCE(r.is_deleted, false) = false
         AND COALESCE(pg.is_deleted, false) = false
-        AND LOWER(COALESCE(pg.status, '')) IN ('pending', 'in transit')
+        AND LOWER(COALESCE(pg.status, '')) = 'pending'
         AND r.amount::numeric > 0
         AND NOT EXISTS (
           SELECT 1 FROM campaign_cover_fees_activity a
@@ -149,8 +151,11 @@ async function fetchPendingTriggers(
       triggerName: (r.user_full_name || "").trim() || r.user_email || "Anonymous",
       triggerEmail: r.user_email || "",
       triggerAmount: parseFloat(r.amount) || 0,
-      triggerDate: r.date_created || null,
-      triggerStatus: String(r.pg_status || "").toLowerCase() === "in transit" ? "in transit" : "pending",
+      triggerDate:
+        String(r.pg_daf_provider || "").trim().toLowerCase() === "foundation grant"
+          ? r.pg_created_date || r.date_created || null
+          : r.date_created || null,
+      triggerStatus: "pending",
       pendingGrantId: r.pending_grants_id != null ? Number(r.pending_grants_id) : null,
     });
   }

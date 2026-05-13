@@ -103,6 +103,7 @@ router.get("/", async (_req: Request, res: Response) => {
       pool.query(
         `SELECT ccf.id,
                 ccf.name,
+                ccf.display_sponsor_name,
                 ccf.sponsor_user_id,
                 u.email          AS sponsor_email,
                 CONCAT(u.first_name, ' ', u.last_name) AS sponsor_full_name,
@@ -143,6 +144,7 @@ router.get("/", async (_req: Request, res: Response) => {
         return {
           id: g.id,
           name: g.name || "",
+          displaySponsorName: g.display_sponsor_name || "",
           sponsorUserId: g.sponsor_user_id,
           sponsorEmail: g.sponsor_email || "",
           sponsorFullName:
@@ -193,14 +195,30 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
                 CONCAT(iu.first_name, ' ', iu.last_name) AS investor_full_name,
                 iu.email AS investor_email,
                 a.triggered_by_recommendation_id,
-                tr.status     AS trigger_status,
+                COALESCE(tpg.status, tr.status) AS trigger_status,
                 tr.amount     AS trigger_amount,
-                CASE WHEN tr.pending_grants_id IS NOT NULL THEN 'DAF Grant' ELSE NULL END AS trigger_payment_type,
-                tr.date_created AS trigger_date
+                CASE
+                  WHEN tr.pending_grants_id IS NOT NULL
+                       AND LOWER(TRIM(COALESCE(tpg.daf_provider, ''))) = 'foundation grant'
+                    THEN 'Foundation'
+                  WHEN tr.pending_grants_id IS NOT NULL THEN 'DAF Grant'
+                  ELSE NULL
+                END AS trigger_payment_type,
+                CASE
+                  WHEN tr.pending_grants_id IS NOT NULL
+                       AND LOWER(TRIM(COALESCE(tpg.daf_provider, ''))) = 'foundation grant'
+                    THEN tpg.created_date
+                  ELSE tr.date_created
+                END AS trigger_date
+                ,
+                a.fully_reversed_at,
+                a.reversed_fee_amount,
+                a.last_reversed_reason
            FROM campaign_cover_fees_activity a
            LEFT JOIN campaigns c ON c.id = a.campaign_id
            LEFT JOIN users iu ON iu.id = a.triggered_by_user_id
            LEFT JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
+           LEFT JOIN pending_grants tpg ON tpg.id = tr.pending_grants_id
           WHERE a.cover_fee_id = $1
           ORDER BY a.created_at DESC
           LIMIT 500`,
@@ -223,6 +241,10 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerAmount: r.trigger_amount != null ? parseFloat(r.trigger_amount) : null,
         triggerPaymentType: r.trigger_payment_type || "",
         triggerDate: r.trigger_date || null,
+        reversed: r.fully_reversed_at != null,
+        reversedAt: r.fully_reversed_at || null,
+        reversedAmount: parseFloat(r.reversed_fee_amount) || 0,
+        reversedReason: r.last_reversed_reason || null,
       })),
       pendingItems: projections.map((p, idx) => ({
         id: `pending-${id}-${idx}`,
@@ -331,8 +353,9 @@ router.post("/", async (req: Request, res: Response) => {
       `INSERT INTO campaign_cover_fees
          (name, sponsor_user_id, total_cap, fee_rate, per_investment_cap,
           is_active, notes, expires_at, reserved_amount,
-          cover_initial_fee, cover_lifecycle_fee, coverage_active_from)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NOW())
+          cover_initial_fee, cover_lifecycle_fee, coverage_active_from,
+          display_sponsor_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NOW(), $11)
        RETURNING id`,
       [
         poolName,
@@ -345,6 +368,7 @@ router.post("/", async (req: Request, res: Response) => {
         expiresAt,
         coverInitialFee,
         coverLifecycleFee,
+        (b.displaySponsorName || "").trim() || null,
       ],
     );
     const poolId = insertResult.rows[0].id;
@@ -493,6 +517,7 @@ router.put("/:id", async (req: Request, res: Response) => {
               reserved_amount      = $8,
               cover_initial_fee    = $10,
               cover_lifecycle_fee  = $11,
+              display_sponsor_name = $12,
               updated_at           = NOW()
         WHERE id = $9`,
       [
@@ -507,6 +532,7 @@ router.put("/:id", async (req: Request, res: Response) => {
         id,
         coverInitialFee,
         coverLifecycleFee,
+        (b.displaySponsorName || "").trim() || null,
       ],
     );
 

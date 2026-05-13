@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "LNFW3c8cr1HwzFp5UoYsS"
+uri = "file://.local/tasks/cover-fees-overview.txt"
+type = "text"
+title = "Cover Fees — End-to-End Flow"
