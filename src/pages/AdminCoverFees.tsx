@@ -1157,10 +1157,15 @@ export default function AdminCoverFees() {
   const [editTarget, setEditTarget] = useState<(typeof EMPTY_FORM & { id?: number }) | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CoverFeesPool | null>(null);
+  const [exportingIds, setExportingIds] = useState<Set<number>>(new Set());
 
   const handleExport = async (g: CoverFeesPool) => {
-    setExportingId(g.id);
+    setExportingIds((prev) => {
+      const next = new Set(prev);
+      next.add(g.id);
+      return next;
+    });
     try {
       const response = await axiosInstance.get(`/api/admin/cover-fees/${g.id}/export`, {
         responseType: "blob",
@@ -1182,7 +1187,11 @@ export default function AdminCoverFees() {
     } catch (err: any) {
       toast({ title: "Export failed", description: err?.message || "Unknown error", variant: "destructive" });
     } finally {
-      setExportingId(null);
+      setExportingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(g.id);
+        return next;
+      });
     }
   };
 
@@ -1235,6 +1244,7 @@ export default function AdminCoverFees() {
     try {
       await axiosInstance.delete(`/api/admin/cover-fees/${id}`);
       toast({ title: "Deleted", description: "Cover Fees pool removed." });
+      setDeleteTarget(null);
       refresh();
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -1440,11 +1450,11 @@ export default function AdminCoverFees() {
                           variant="ghost"
                           size="icon"
                           onClick={() => handleExport(g)}
-                          disabled={exportingId === g.id}
+                          disabled={exportingIds.has(g.id)}
                           title="Download Excel report"
                           data-testid={`button-export-${g.id}`}
                         >
-                          {exportingId === g.id ? (
+                          {exportingIds.has(g.id) ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Download className="h-4 w-4" />
@@ -1463,7 +1473,7 @@ export default function AdminCoverFees() {
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
-                          onClick={() => handleDelete(g.id)}
+                          onClick={() => setDeleteTarget(g)}
                           disabled={deletingId === g.id}
                           title="Delete"
                           data-testid={`button-delete-${g.id}`}
@@ -1505,6 +1515,60 @@ export default function AdminCoverFees() {
           onSaved={refresh}
         />
       )}
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => {
+          if (!o && deletingId === null) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-delete-cover-fees-pool">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this Cover Fees Pool?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <div>
+                  This will permanently delete the pool{" "}
+                  <strong>{deleteTarget?.name || (deleteTarget ? `Pool #${deleteTarget.id}` : "")}</strong>.
+                </div>
+                <div className="text-muted-foreground">
+                  This action cannot be undone.
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="button-delete-cover-fees-pool-cancel"
+              disabled={deletingId !== null}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deletingId !== null}
+              onClick={(e) => {
+                if (deletingId !== null || !deleteTarget) {
+                  e.preventDefault();
+                  return;
+                }
+                e.preventDefault();
+                handleDelete(deleteTarget.id);
+              }}
+              data-testid="button-delete-cover-fees-pool-confirm"
+            >
+              {deletingId !== null ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Deleting…
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AdminLayout>
   );
 }
