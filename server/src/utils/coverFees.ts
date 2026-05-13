@@ -704,10 +704,6 @@ export async function reverseCoverFeesByPaymentRef(
     }
     const sponsor = sponsorRes.rows[0];
     const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
-    const sponsorFullName =
-      `${sponsor.first_name || ""} ${sponsor.last_name || ""}`.trim() ||
-      sponsor.user_name ||
-      "";
 
     // Credit the sponsor's wallet by the reversed fee. Mirrors the
     // matching debit in applySingleCoverFee (both escrow + live-wallet
@@ -718,32 +714,6 @@ export async function reverseCoverFeesByPaymentRef(
     await client.query(
       `UPDATE users SET account_balance = $1 WHERE id = $2`,
       [newSponsorBalance, sponsor.id],
-    );
-    await client.query(
-      `INSERT INTO account_balance_change_logs
-         (user_id, payment_type, investment_name, campaign_id,
-          old_value, user_name, new_value, change_date, comment,
-          gross_amount, fees, net_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
-      [
-        sponsor.id,
-        "Cover Fees Sponsorship Reversal",
-        // Use the campaign name (what the donor sees) instead of the
-        // pool name so admins reading the sponsor's Account History can
-        // tie the credit back to a specific investment.
-        investmentName,
-        activity.campaign_id,
-        sponsorBalance,
-        sponsor.user_name || sponsorFullName,
-        newSponsorBalance,
-        // Plain-English: the sponsor was originally debited the fee
-        // when the donation cleared; the donation was now refunded by
-        // Stripe, so we credit the sponsor back.
-        `Refund issued for ${investmentName} – $${proportionalFee.toFixed(2)} cover-fee credit returned to sponsor`,
-        proportionalFee,
-        0,
-        proportionalFee,
-      ],
     );
 
     // ── Decrement pool amount_used (clamped at 0 via GREATEST) ────────
@@ -762,10 +732,12 @@ export async function reverseCoverFeesByPaymentRef(
     // matching the "$X remaining" figure admins see on the Cover Fees
     // page. For live-wallet (non-escrow) pools the Old / New columns
     // continue to mirror the sponsor's wallet movement, since there is
-    // no escrow remaining to reference. The sponsor-side "Cover Fees
-    // Sponsorship Reversal" row above always reflects sponsor wallet
-    // movement, since the sponsor's wallet really is being credited.
-    // The donor's actual wallet is NOT touched by this row.
+    // no escrow remaining to reference. The sponsor's wallet really is
+    // credited back (see UPDATE above), but we intentionally do NOT
+    // write a sponsor-side audit row — that reversal is already
+    // recorded on the cover-pools revert table, and a duplicate
+    // Account-History entry would confuse admins. The donor's actual
+    // wallet is NOT touched by this row.
     if (activity.triggered_by_user_id) {
       const donorRes = await client.query(
         `SELECT id, user_name, first_name, last_name, account_balance
@@ -1109,10 +1081,6 @@ export async function reverseCoverFeesByRecommendation(args: {
       if (sponsorRes.rows.length === 0) continue;
       const sponsor = sponsorRes.rows[0];
       const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
-      const sponsorFullName =
-        `${sponsor.first_name || ""} ${sponsor.last_name || ""}`.trim() ||
-        sponsor.user_name ||
-        "";
 
       // Credit the sponsor's wallet by the reversed fee. Mirrors the
       // matching debit in applySingleCoverFee (both escrow + live-wallet
@@ -1123,32 +1091,6 @@ export async function reverseCoverFeesByRecommendation(args: {
       await client.query(
         `UPDATE users SET account_balance = $1 WHERE id = $2`,
         [newSponsorBalance, sponsor.id],
-      );
-      await client.query(
-        `INSERT INTO account_balance_change_logs
-           (user_id, payment_type, investment_name, campaign_id,
-            old_value, user_name, new_value, change_date, comment,
-            gross_amount, fees, net_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
-        [
-          sponsor.id,
-          "Cover Fees Sponsorship Reversal",
-          // Use the campaign name (what the donor sees) instead of the
-          // pool name so admins reading the sponsor's Account History
-          // can tie the credit back to a specific investment.
-          investmentName,
-          activity.campaign_id,
-          sponsorBalance,
-          sponsor.user_name || sponsorFullName,
-          newSponsorBalance,
-          // Plain-English: the recommendation that triggered this
-          // cover-fee was rejected, so we reverse the original sponsor
-          // debit and credit them back the fee amount.
-          `Recommendation rejected for ${investmentName} – $${remainingFee.toFixed(2)} cover-fee credit returned to sponsor`,
-          remainingFee,
-          0,
-          remainingFee,
-        ],
       );
 
       // ── Decrement pool amount_used (clamped at 0) ─────────────────
@@ -1167,11 +1109,12 @@ export async function reverseCoverFeesByRecommendation(args: {
       // reversal, matching the "$X remaining" figure admins see on the
       // Cover Fees page. For live-wallet (non-escrow) pools the Old /
       // New columns continue to mirror the sponsor's wallet movement,
-      // since there is no escrow remaining to reference. The
-      // sponsor-side "Cover Fees Sponsorship Reversal" row above always
-      // reflects sponsor wallet movement, since the sponsor's wallet
-      // really is being credited. The donor's actual wallet is NOT
-      // touched by this row.
+      // since there is no escrow remaining to reference. The sponsor's
+      // wallet really is credited back (see UPDATE above), but we
+      // intentionally do NOT write a sponsor-side audit row — that
+      // reversal is already recorded on the cover-pools revert table,
+      // and a duplicate Account-History entry would confuse admins.
+      // The donor's actual wallet is NOT touched by this row.
       if (activity.triggered_by_user_id) {
         const donorRes = await client.query(
           `SELECT id, user_name, first_name, last_name, account_balance
