@@ -3879,9 +3879,9 @@ export default function AdminInvestmentEdit() {
                 <div>
                   <div className="font-semibold text-[#405189]">Who sees this</div>
                   <div>
-                    Only investors who funded this venture through CataCap — via approved or
-                    pending recommendations, pending grants, or in-transit asset payments.
-                    People who are merely browsing or following the venture do not receive it.
+                    Only Donors who funded your investment — via approved or pending
+                    recommendations, pending grants, or in-transit asset payments. The updates
+                    are hidden for all other CataCap users
                   </div>
                 </div>
               </div>
@@ -3889,16 +3889,16 @@ export default function AdminInvestmentEdit() {
                 <Bell className="h-4 w-4 mt-0.5 shrink-0 text-[#405189]" />
                 <div>
                   <span className="font-semibold text-[#405189]">Where it appears: </span>
-                  Email to the investor, in-app Notifications tab, and on the venture page
-                  (visible to investors any time).
+                  Updates are sent via email to all Donors, then stored in CataCap on the
+                  investment page, Updates tab.
                 </div>
               </div>
               <div className="flex items-start gap-2">
                 <Sparkles className="h-4 w-4 mt-0.5 shrink-0 text-[#405189]" />
                 <div>
                   <span className="font-semibold text-[#405189]">What to share: </span>
-                  Milestones, financial performance, and social or environmental impact since
-                  your last update.
+                  Donors most appreciate milestones, financial performance, and especially
+                  social or environmental impact since your last update.
                 </div>
               </div>
             </div>
