@@ -1437,10 +1437,27 @@ router.patch("/settings", async (req: Request, res: Response) => {
     let paramIdx = 1;
 
     if (featuredGroup !== undefined && featuredGroup !== "undefined") {
+      const nextFeatured = featuredGroup === "true";
+      // Cap featured groups at 3. Only need to check when turning ON and the
+      // group isn't already featured (idempotent re-saves stay allowed).
+      if (nextFeatured && !currentGroup.featured_group) {
+        const countResult = await pool.query(
+          `SELECT COUNT(*)::int AS count FROM groups WHERE featured_group = TRUE AND id <> $1`,
+          [id]
+        );
+        const currentFeaturedCount = countResult.rows[0]?.count ?? 0;
+        if (currentFeaturedCount >= 3) {
+          res.json({
+            success: false,
+            message: "Only 3 groups can be featured at a time. Please unselect another featured group first.",
+          });
+          return;
+        }
+      }
       updates.push(`featured_group = $${paramIdx++}`);
-      values.push(featuredGroup === "true");
+      values.push(nextFeatured);
       oldValues.featured_group = currentGroup.featured_group;
-      newValues.featured_group = featuredGroup === "true";
+      newValues.featured_group = nextFeatured;
     }
 
     if (isCorporateGroup !== undefined && isCorporateGroup !== "undefined") {

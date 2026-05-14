@@ -228,13 +228,39 @@ export default function GroupsPage() {
   const handleToggleStatus = async (id: number, field: "corporateGroup" | "featuredGroup", currentValue: boolean) => {
     const label = field === "corporateGroup" ? "Corporate Group" : "Featured Group";
 
+    // Pre-check on the client when turning Featured ON: if 3 groups are already
+    // featured on the current page, block immediately with a clear message so
+    // the user doesn't even hit the network. The backend still enforces the
+    // cap authoritatively for cases where featured groups span other pages.
+    if (field === "featuredGroup" && !currentValue) {
+      const alreadyFeatured = groups.filter((g) => g.featuredGroup && g.id !== id).length;
+      if (alreadyFeatured >= 3) {
+        toast({
+          title: "Featured limit reached",
+          description: "Only 3 groups can be featured at a time. Please unselect another featured group first.",
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
     setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, [field]: !currentValue } : g)));
 
     try {
-      await updateGroupSettings(id, {
+      const result = await updateGroupSettings(id, {
         isCorporateGroup: field === "corporateGroup" ? !currentValue : undefined,
         featuredGroup: field === "featuredGroup" ? !currentValue : undefined
       });
+
+      if (result && result.success === false) {
+        setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, [field]: currentValue } : g)));
+        toast({
+          title: "Featured limit reached",
+          description: result.message || "Only 3 groups can be featured at a time. Please unselect another featured group first.",
+          variant: "destructive"
+        });
+        return;
+      }
 
       toast({
         title: "Status Updated",
