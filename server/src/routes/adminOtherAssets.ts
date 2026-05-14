@@ -359,8 +359,8 @@ router.put("/:id/status", async (req: Request, res: Response) => {
         if (recAmount > 0) {
           await client.query(
             `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, gross_amount, fees, net_amount)
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
+             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)`,
             [
               asset.uid,
               "Manually",
@@ -369,9 +369,6 @@ router.put("/:id/status", async (req: Request, res: Response) => {
               currentBalance - recAmount,
               asset.campaign_name,
               asset.camp_id,
-              recAmount,
-              0,
-              recAmount,
             ]
           );
 

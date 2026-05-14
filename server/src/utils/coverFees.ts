@@ -332,8 +332,13 @@ export async function applySingleCoverFee(opts: {
       );
     } else {
       // Escrow pools: also debit the sponsor's wallet by the fee amount
-      // so the Account History row shows a real Old → New balance change
-      // (matches live-wallet behavior).
+      // so the underlying ledger reflects a real movement (matches the
+      // symmetric credit-back performed by reverseCoverFeesByRecommendation).
+      // The Account-History row's Old / New columns, however, intentionally
+      // show the POOL's escrow remaining (reserved − amount_used) before
+      // and after this fee — matching the "$X remaining" figure admins
+      // see on the Cover Fees page and matching the reversal-side row
+      // convention. They do NOT mirror the sponsor's wallet movement.
       let escrowFeeAmount = feeAmount;
       if (sponsorBalance < escrowFeeAmount) {
         escrowFeeAmount = Math.round(sponsorBalance * 100) / 100;
@@ -346,6 +351,12 @@ export async function applySingleCoverFee(opts: {
           `UPDATE users SET account_balance = $1 WHERE id = $2`,
           [newSponsorBalance, sponsor.id],
         );
+        const poolRemainingBefore = parseFloat(
+          (reserved - amountUsed).toFixed(2),
+        );
+        const poolRemainingAfter = parseFloat(
+          (reserved - amountUsed - escrowFeeAmount).toFixed(2),
+        );
         await client.query(
           `INSERT INTO account_balance_change_logs
              (user_id, payment_type, investment_name, campaign_id,
@@ -357,9 +368,9 @@ export async function applySingleCoverFee(opts: {
             `Cover Fees – escrow applied`,
             campaignName,
             campaignId,
-            sponsorBalance,
+            poolRemainingBefore,
             sponsor.user_name || sponsorFullName,
-            newSponsorBalance,
+            poolRemainingAfter,
             `$${escrowFeeAmount.toFixed(2)} fee covered from escrow via pool "${poolRow.name || `Pool #${poolRow.id}`}"`,
             escrowFeeAmount,
             0,
