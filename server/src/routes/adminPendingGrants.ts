@@ -688,8 +688,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
           await client.query(
             `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, group_id, gross_amount, fees, net_amount)
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11)`,
+             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, group_id)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)`,
             [
               grant.uid,
               `Recommendation created using group balance, ${loginUserName}`,
@@ -699,9 +699,6 @@ router.put("/:id", async (req: Request, res: Response) => {
               grant.campaign_name,
               grant.camp_id,
               gab.group_id,
-              deduction,
-              0,
-              deduction,
             ]
           );
 
@@ -722,8 +719,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
           await client.query(
             `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id, gross_amount, fees, net_amount)
-             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
+             (user_id, payment_type, old_value, user_name, new_value, change_date, investment_name, campaign_id)
+             VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)`,
             [
               grant.uid,
               `${grantType}, ${loginUserName}`,
@@ -732,9 +729,6 @@ router.put("/:id", async (req: Request, res: Response) => {
               curBalance - amountToDeduct,
               grant.campaign_name,
               grant.camp_id,
-              amountToDeduct,
-              0,
-              amountToDeduct,
             ]
           );
 
