@@ -3950,7 +3950,6 @@ export default function AdminInvestmentEdit() {
                   onChange={(val) => setUpdateForm((p) => ({ ...p, description: val }))}
                   placeholder="What happened, what does it mean, and what’s next? Click ‘Insert suggested outline’ above for a fill-in-the-blanks template."
                   data-testid="input-update-description"
-                  maxLength={3000}
                 />
                 <div className="text-[11px] text-muted-foreground space-y-0.5">
                   <p>
