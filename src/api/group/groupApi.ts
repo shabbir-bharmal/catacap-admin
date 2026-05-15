@@ -336,17 +336,18 @@ export async function deleteLeaderOrChampion(groupId: number, userId: string, ty
     });
 }
 
-export async function updateGroupSettings(id: number, settings: { featuredGroup?: boolean; isCorporateGroup?: boolean }): Promise<void> {
-    await axiosInstance.patch("/api/admin/group/settings", null, {
+export async function updateGroupSettings(id: number, settings: { featuredGroup?: boolean; isCorporateGroup?: boolean }): Promise<{ success?: boolean; message?: string } | void> {
+    const response = await axiosInstance.patch("/api/admin/group/settings", null, {
         params: {
             id,
             featuredGroup: settings.featuredGroup,
             isCorporateGroup: settings.isCorporateGroup
         },
         headers: {
-            "Accept": "application/octet-stream"
+            "Accept": "application/json"
         }
     });
+    return response.data;
 }
 
 export async function deleteGroup(id: number): Promise<any> {
