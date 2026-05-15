@@ -27,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Search, Plus, ChevronLeft, ChevronRight, ArrowUpDown, Pencil, Trash2, Eye, Minus, Check, ChevronsUpDown, ChevronDown, Loader2, Video, Link2 } from "lucide-react";
+import { Search, Plus, ChevronLeft, ChevronRight, ArrowUpDown, Pencil, Trash2, Eye, Check, ChevronsUpDown, ChevronDown, Loader2, Video, Link2 } from "lucide-react";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { useSort } from "@/hooks/useSort";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -59,7 +59,7 @@ interface SuccessStory {
 }
 
 const PERSPECTIVE_LABELS: Record<Perspective, string> = {
-  funder: "Investment",
+  funder: "Investment Owner",
   investee: "Donor Investor"
 };
 
@@ -103,7 +103,6 @@ function getVideoEmbedUrl(value: string | null | undefined): string | null {
 const emptyForm = {
   perspective: "funder" as Perspective,
   quote: "",
-  stats: [{ value: "", label: "" }] as Stat[],
   selectedUserId: "",
   personName: "",
   personTitle: "",
@@ -146,6 +145,7 @@ export default function SuccessStoriesManagement() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewStory, setPreviewStory] = useState<SuccessStory | null>(null);
   const [userPopoverOpen, setUserPopoverOpen] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const investmentsListQuery = useQuery({
@@ -264,14 +264,14 @@ export default function SuccessStoriesManagement() {
 
   function openAdd() {
     setEditingStory(null);
-    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }], linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
+    setFormData({ ...emptyForm, linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
     setFormOpen(true);
   }
 
   function closeDialog() {
     setFormOpen(false);
     setEditingStory(null);
-    setFormData({ ...emptyForm, stats: [{ value: "", label: "" }], linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
+    setFormData({ ...emptyForm, linkedInvestmentIds: [], linkedCustomPageSlugs: [] });
     setErrors({});
   }
 
@@ -281,7 +281,6 @@ export default function SuccessStoriesManagement() {
     setFormData({
       perspective: story.perspective,
       quote: story.quote,
-      stats: story.stats.length > 0 ? story.stats.map((s) => ({ ...s })) : [{ value: "", label: "" }],
       selectedUserId: matchedUser?.id || "",
       personName: story.personName,
       personTitle: story.personTitle,
@@ -318,17 +317,6 @@ export default function SuccessStoriesManagement() {
       newErrors.videoLink = "Enter a valid http(s) URL";
     }
 
-    const stats: Stat[] = formData.stats.filter((s) => s.value.trim() || s.label.trim());
-    if (stats.length === 0) {
-      newErrors.stats = "At least one impact stat is required";
-    } else {
-      // Check if the filled stats are complete
-      const incomplete = stats.some((s) => !s.value.trim() || !s.label.trim());
-      if (incomplete) {
-        newErrors.stats = "All filled stats must have both a value and a label";
-      }
-    }
-
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       toast({ title: "Please fix validation errors", variant: "destructive" });
@@ -344,7 +332,7 @@ export default function SuccessStoriesManagement() {
         displayOrder,
         perspectiveText: formData.perspective === "funder" ? "INVESTMENT" : "DONOR INVESTOR",
         description: formData.quote.trim(),
-        metrics: stats.map((s) => ({ key: s.label.trim(), value: s.value.trim() })),
+        metrics: [],
         role: formData.personTitle.trim(),
         organizationName: formData.personOrg?.trim(),
         userId: formData.selectedUserId,
@@ -358,14 +346,14 @@ export default function SuccessStoriesManagement() {
       await loadStories();
 
       if (editingStory) {
-        toast({ title: "Success story updated successfully" });
+        toast({ title: "Testimonial updated successfully" });
       } else {
-        toast({ title: "Success story added successfully" });
+        toast({ title: "Testimonial added successfully" });
       }
       setFormOpen(false);
     } catch (error) {
-      console.error("Failed to save success story:", error);
-      toast({ title: "Failed to save success story", variant: "destructive" });
+      console.error("Failed to save testimonial:", error);
+      toast({ title: "Failed to save testimonial", variant: "destructive" });
     } finally {
       setIsSaving(false);
     }
@@ -377,10 +365,10 @@ export default function SuccessStoriesManagement() {
     try {
       await deleteTestimonial(deletingStory.id);
       setStories((prev) => prev.filter((st) => st.id !== deletingStory.id));
-      toast({ title: "Success story deleted successfully" });
+      toast({ title: "Testimonial deleted successfully" });
     } catch (error) {
-      console.error("Failed to delete success story:", error);
-      toast({ title: "Failed to delete success story", variant: "destructive" });
+      console.error("Failed to delete testimonial:", error);
+      toast({ title: "Failed to delete testimonial", variant: "destructive" });
     } finally {
       setDeleteOpen(false);
       setDeletingStory(null);
@@ -397,32 +385,32 @@ export default function SuccessStoriesManagement() {
   }, [stories]);
 
   return (
-    <AdminLayout title="Success Stories">
+    <AdminLayout title="Testimonials">
       <div className="space-y-6">
         <div>
           <h1 className="text-xl font-semibold" data-testid="text-page-title">
-            Success Stories
+            Testimonials
           </h1>
-          <p className="text-sm text-muted-foreground">Manage success stories from funders and investees</p>
+          <p className="text-sm text-muted-foreground">Manage testimonials from funders and investees</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Card>
             <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground">Total Stories</div>
+              <div className="text-sm text-muted-foreground">Total Testimonials</div>
               <div className="text-2xl font-bold" data-testid="text-total-count">
                 {stories.filter((s) => s.status === "Active").length}
               </div>
-              <div className="text-xs text-muted-foreground">active stories</div>
+              <div className="text-xs text-muted-foreground">active testimonials</div>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground">Investment Stories</div>
+              <div className="text-sm text-muted-foreground">Investment Owner Stories</div>
               <div className="text-2xl font-bold" data-testid="text-funder-count">
                 {perspectiveStats.funder}
               </div>
-              <div className="text-xs text-muted-foreground">active stories</div>
+              <div className="text-xs text-muted-foreground">active testimonials</div>
             </CardContent>
           </Card>
           <Card>
@@ -431,7 +419,7 @@ export default function SuccessStoriesManagement() {
               <div className="text-2xl font-bold" data-testid="text-investee-count">
                 {perspectiveStats.investee}
               </div>
-              <div className="text-xs text-muted-foreground">active stories</div>
+              <div className="text-xs text-muted-foreground">active testimonials</div>
             </CardContent>
           </Card>
         </div>
@@ -464,7 +452,7 @@ export default function SuccessStoriesManagement() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Perspectives</SelectItem>
-                  <SelectItem value="funder">Investment</SelectItem>
+                  <SelectItem value="funder">Investment Owner</SelectItem>
                   <SelectItem value="investee">Donor Investor</SelectItem>
                 </SelectContent>
               </Select>
@@ -487,7 +475,7 @@ export default function SuccessStoriesManagement() {
             </div>
             <Button onClick={openAdd} className="bg-[#405189] text-white" data-testid="button-add-story">
               <Plus className="h-4 w-4 mr-2" />
-              Add Story
+              Add Testimonial
             </Button>
           </CardHeader>
 
@@ -525,7 +513,6 @@ export default function SuccessStoriesManagement() {
                       Perspective
                     </SortHeader>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Quote</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Stats</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Linked To</th>
                     <SortHeader
@@ -570,16 +557,6 @@ export default function SuccessStoriesManagement() {
                       <td className="px-4 py-3">
                         <div className="max-w-xs truncate text-muted-foreground" title={story.quote}>
                           {story.quote.substring(0, 80)}...
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-3">
-                          {story.stats.map((stat, i) => (
-                            <div key={i} className="text-center">
-                              <div className="text-xs font-semibold">{stat.value}</div>
-                              <div className="text-[10px] text-muted-foreground">{stat.label}</div>
-                            </div>
-                          ))}
                         </div>
                       </td>
                       <td className="px-4 py-3" data-testid={`cell-video-${story.id}`}>
@@ -649,7 +626,7 @@ export default function SuccessStoriesManagement() {
                                   <Eye className="h-4 w-4" />
                                 </Button>
                               </TooltipTrigger>
-                              <TooltipContent>Preview story</TooltipContent>
+                              <TooltipContent>Preview testimonial</TooltipContent>
                             </Tooltip>
 
                             <Tooltip>
@@ -667,7 +644,7 @@ export default function SuccessStoriesManagement() {
                                   <Pencil className="h-4 w-4" />
                                 </Button>
                               </TooltipTrigger>
-                              <TooltipContent>Edit story</TooltipContent>
+                              <TooltipContent>Edit testimonial</TooltipContent>
                             </Tooltip>
 
                             {hasActionPermission("content management", "delete") && (
@@ -686,7 +663,7 @@ export default function SuccessStoriesManagement() {
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>Delete story</TooltipContent>
+                                <TooltipContent>Delete testimonial</TooltipContent>
                               </Tooltip>
                             )}
                           </div>
@@ -696,8 +673,8 @@ export default function SuccessStoriesManagement() {
                   ))}
                   {paginated.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="py-12 text-center text-muted-foreground">
-                        No success stories found matching your filters.
+                      <td colSpan={9} className="py-12 text-center text-muted-foreground">
+                        No testimonials found matching your filters.
                       </td>
                     </tr>
                   )}
@@ -727,7 +704,7 @@ export default function SuccessStoriesManagement() {
       >
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-story-form">
           <DialogHeader>
-            <DialogTitle>{editingStory ? "Edit Success Story" : "Add Success Story"}</DialogTitle>
+            <DialogTitle>{editingStory ? "Edit Testimonial" : "Add Testimonial"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -740,7 +717,7 @@ export default function SuccessStoriesManagement() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="funder">Investment</SelectItem>
+                    <SelectItem value="funder">Investment Owner</SelectItem>
                     <SelectItem value="investee">Donor Investor</SelectItem>
                   </SelectContent>
                 </Select>
@@ -782,84 +759,17 @@ export default function SuccessStoriesManagement() {
               {errors.quote && <p className="text-xs text-destructive mt-1">{errors.quote}</p>}
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium">
-                  Impact Stats <span className="text-destructive">*</span>
-                </Label>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="bg-[#405189] text-white"
-                  onClick={() => setFormData({ ...formData, stats: [...formData.stats, { value: "", label: "" }] })}
-                  data-testid="button-add-stat"
-                >
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Add stat
-                </Button>
-              </div>
-              {errors.stats && <p className="text-xs text-destructive">{errors.stats}</p>}
-              {formData.stats.map((stat, index) => (
-                <div key={index} className="flex items-end gap-2" data-testid={`stat-row-${index}`}>
-                  <div className="flex-1">
-                    <Label className="text-xs text-muted-foreground">Value</Label>
-                    <Input
-                      value={stat.value}
-                      onChange={(e) => {
-                        const updated = [...formData.stats];
-                        updated[index] = { ...updated[index], value: e.target.value };
-                        setFormData({ ...formData, stats: updated });
-                      }}
-                      placeholder="e.g. $500K"
-                      className={errors.stats && (!stat.value.trim() || !stat.label.trim()) ? "border-destructive focus-visible:ring-destructive" : ""}
-                      data-testid={`input-stat-value-${index}`}
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <Label className="text-xs text-muted-foreground">Label</Label>
-                    <Input
-                      value={stat.label}
-                      onChange={(e) => {
-                        const updated = [...formData.stats];
-                        updated[index] = { ...updated[index], label: e.target.value };
-                        setFormData({ ...formData, stats: updated });
-                      }}
-                      placeholder="e.g. Invested"
-                      className={errors.stats && (!stat.value.trim() || !stat.label.trim()) ? "border-destructive focus-visible:ring-destructive" : ""}
-                      data-testid={`input-stat-label-${index}`}
-                    />
-                  </div>
-                  {formData.stats.length > 1 && (
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="text-destructive shrink-0 mb-0.5"
-                      onClick={() => {
-                        const updated = formData.stats.filter((_, i) => i !== index);
-                        setFormData({ ...formData, stats: updated });
-                        if (errors.stats)
-                          setErrors((prev) => {
-                            const n = { ...prev };
-                            delete n.stats;
-                            return n;
-                          });
-                      }}
-                      data-testid={`button-remove-stat-${index}`}
-                    >
-                      <Minus className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-
             <div>
               <Label>
                 Person <span className="text-destructive">*</span>
               </Label>
-              <Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
+              <Popover
+                open={userPopoverOpen}
+                onOpenChange={(open) => {
+                  setUserPopoverOpen(open);
+                  if (!open) setUserSearch("");
+                }}
+              >
                 <PopoverTrigger asChild>
                   <Button variant="outline" className={`w-full justify-between font-normal mt-0.5 ${errors.person ? "!border-destructive" : ""}`} data-testid="input-story-person-name">
                     <span className="truncate">{formData.selectedUserId ? usersDropdown.find((u) => u.id === formData.selectedUserId)?.fullName || "Select a user..." : "Select a user..."}</span>
@@ -867,8 +777,12 @@ export default function SuccessStoriesManagement() {
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-full p-0" style={{ minWidth: "var(--radix-popover-trigger-width)" }}>
-                  <Command>
-                    <CommandInput placeholder="Search user..." />
+                  <Command value="" shouldFilter={true}>
+                    <CommandInput
+                      placeholder="Search user..."
+                      value={userSearch}
+                      onValueChange={setUserSearch}
+                    />
                     <CommandList className="max-h-[264px] overflow-y-auto" onWheel={(e) => e.stopPropagation()}>
                       <CommandEmpty>No user found.</CommandEmpty>
                       <CommandGroup>
@@ -963,7 +877,7 @@ export default function SuccessStoriesManagement() {
             <div className="space-y-2">
               <Label>Link to Investments</Label>
               <p className="text-xs text-muted-foreground">
-                Show this story on the selected investment pages. Multi-select supported.
+                Show this testimonial on the selected investment pages. Multi-select supported.
               </p>
               <MultiSelectPopover<number>
                 options={investmentOptions}
@@ -982,7 +896,7 @@ export default function SuccessStoriesManagement() {
             <div className="space-y-2">
               <Label>Link to Custom Pages</Label>
               <p className="text-xs text-muted-foreground">
-                Show this story on the selected custom pages (the home page is included in this list). Multi-select supported.
+                Show this testimonial on the selected custom pages (the home page is included in this list). Multi-select supported.
               </p>
               <MultiSelectPopover<string>
                 options={customPageOptions}
@@ -1003,7 +917,7 @@ export default function SuccessStoriesManagement() {
               Cancel
             </Button>
             <Button onClick={handleSave} disabled={isSaving} className="bg-[#405189] text-white hover:bg-[#405189]/90 min-w-[120px]" data-testid="button-save-story">
-              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : editingStory ? "Save Changes" : "Add Story"}
+              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : editingStory ? "Save Changes" : "Add Testimonial"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1015,8 +929,8 @@ export default function SuccessStoriesManagement() {
           setDeleteOpen(open);
           if (!open) setDeletingStory(null);
         }}
-        title="Delete Success Story"
-        description={<span>Are you sure you want to delete this success story? This action cannot be undone.</span>}
+        title="Delete Testimonial"
+        description={<span>Are you sure you want to delete this testimonial? This action cannot be undone.</span>}
         confirmLabel="Delete"
         cancelLabel="Cancel"
         onConfirm={handleDelete}
@@ -1037,7 +951,7 @@ export default function SuccessStoriesManagement() {
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="dialog-preview-story">
           <DialogHeader>
-            <DialogTitle>Preview Success Story</DialogTitle>
+            <DialogTitle>Preview Testimonial</DialogTitle>
           </DialogHeader>
           {previewStory && (
             <div className="space-y-4 py-2">
@@ -1052,15 +966,6 @@ export default function SuccessStoriesManagement() {
 
               <div className="bg-muted/30 rounded-md p-4">
                 <p className="text-sm leading-relaxed italic">"{previewStory.quote}"</p>
-              </div>
-
-              <div className="flex gap-6 justify-center py-2">
-                {previewStory.stats.map((stat, i) => (
-                  <div key={i} className="text-center">
-                    <div className="text-lg font-bold">{stat.value}</div>
-                    <div className="text-xs text-muted-foreground">{stat.label}</div>
-                  </div>
-                ))}
               </div>
 
               <div className="flex items-center gap-3 pt-2">
@@ -1091,7 +996,7 @@ export default function SuccessStoriesManagement() {
                       <div className="aspect-video w-full overflow-hidden rounded-md bg-black">
                         <iframe
                           src={embed}
-                          title="Success story video"
+                          title="Testimonial video"
                           className="h-full w-full"
                           frameBorder={0}
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"

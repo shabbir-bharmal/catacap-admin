@@ -136,7 +136,7 @@ export default function ArchivedRecordsDetail() {
     news: "News Articles",
     emailTemplates: "Email Templates",
     events: "Events",
-    testimonials: "Success Stories",
+    testimonials: "Testimonials",
     formSubmissions: "Form Submissions",
     completedInvestments: "Completed Investments",
     disbursals: "Disbursal Requests",

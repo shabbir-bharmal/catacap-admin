@@ -283,7 +283,7 @@ export default function DisbursalRequestDetail() {
 
                     <section>
                         <h2 className="text-base font-bold text-foreground mb-4" data-testid="heading-success-stories">
-                            Success Stories
+                            Testimonials
                         </h2>
                         <Textarea
                             value={detail.quote || ""}

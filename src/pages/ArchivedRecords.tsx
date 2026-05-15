@@ -99,7 +99,7 @@ export default function ArchivedRecords() {
     { title: "Recommendations", key: "recommendations", icon: ThumbsUp, color: "#405189", bg: "bg-[#405189]/10" },
     { title: "Return Details", key: "returnDetails", icon: RotateCcw, color: "#f06548", bg: "bg-[#f06548]/10" },
     { title: "Users", key: "users", icon: Users, color: "#405189", bg: "bg-[#405189]/10" },
-    { title: "Success Stories", key: "testimonials", icon: MessageSquareQuote, color: "#405189", bg: "bg-[#405189]/10" },
+    { title: "Testimonials", key: "testimonials", icon: MessageSquareQuote, color: "#405189", bg: "bg-[#405189]/10" },
     { title: "Events", key: "events", icon: CalendarCheck, color: "#f7b84b", bg: "bg-[#f7b84b]/10" },
     { title: "Form Submissions", key: "formSubmissions", icon: ClipboardList, color: "#299cdb", bg: "bg-[#299cdb]/10" },
   ];
