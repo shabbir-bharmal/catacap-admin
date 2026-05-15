@@ -897,7 +897,7 @@ export default function AdminPendingGrants() {
             setReceivedTarget(null);
           }
         }}
-        title="Was the email confirmation for this grant received?"
+        title="Are the funds verified as received?"
         noteLabel="Add a note"
         noteValue={receivedNote}
         onNoteChange={setReceivedNote}

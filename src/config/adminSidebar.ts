@@ -271,7 +271,7 @@ export const sidebarConfig = [
             permission: { module: "content-management", action: "view" }
           },
           {
-            title: "Success Stories",
+            title: "Testimonials",
             url: "/success-stories",
             icon: Award,
             permission: { module: "content-management", action: "view" }
