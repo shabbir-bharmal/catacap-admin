@@ -52,6 +52,7 @@ export interface PendingGrantEntry {
   hasNotes: boolean;
   daysCount: string;
   createdDate: string;
+  lastUpdate: string | null;
   noteEntries?: NoteEntry[];
 }
 

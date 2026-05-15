@@ -408,6 +408,12 @@ router.get("/", async (req: Request, res: Response) => {
               c.name AS "investmentName", pg.reference,
               COALESCE(NULLIF(pg.status, ''), 'Pending') AS status,
               pg.created_date AS "createdDate",
+              GREATEST(
+                pg.created_date,
+                COALESCE(pg.modified_date, pg.created_date),
+                COALESCE(pg.rejection_date, pg.created_date),
+                COALESCE((SELECT MAX(n.created_at) FROM pending_grant_notes n WHERE n.pending_grant_id = pg.id), pg.created_date)
+              ) AS "lastUpdate",
               EXISTS(SELECT 1 FROM pending_grant_notes n WHERE n.pending_grant_id = pg.id) AS "hasNotes",
               pg.deleted_at AS "deletedAt",
               CASE WHEN del.id IS NOT NULL THEN CONCAT(del.first_name, ' ', del.last_name) ELSE NULL END AS "deletedBy"

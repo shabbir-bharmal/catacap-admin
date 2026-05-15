@@ -619,8 +619,10 @@ export default function AdminPendingGrants() {
                     <SortHeader field="daysCount" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Day Count
                     </SortHeader>
-                    <SortHeader field="createdDate" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
+                    <SortHeader field="createdDate" sortField={sortField} sortDir={sortDir} handleSort={handleSort} className="whitespace-nowrap">
                       Date Created
+                      <br />
+                      Last Update
                     </SortHeader>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Action</th>
                   </tr>
@@ -700,9 +702,13 @@ export default function AdminPendingGrants() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <span className="text-sm" data-testid={`text-grant-created-${grant.id}`}>
-                            {formatDate(grant.createdDate, "-")}
-                          </span>
+                          <div data-testid={`text-grant-created-${grant.id}`}>
+                            <span className="text-sm">{formatDate(grant.createdDate, "-")}</span>
+                            <br />
+                            <span className="text-xs text-muted-foreground" data-testid={`text-grant-lastupdate-${grant.id}`}>
+                              {formatDate(grant.lastUpdate || grant.createdDate, "-")}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-start gap-1.5">
