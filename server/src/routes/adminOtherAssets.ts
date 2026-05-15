@@ -439,7 +439,7 @@ router.put("/:id/status", async (req: Request, res: Response) => {
         investmentAmount: matchAfterCommit.amount,
         investorEmail: matchAfterCommit.email,
         campaignName: matchAfterCommit.campaignName,
-        kind: "lifecycle",
+        kind: "initial",
       }).catch((err) => console.error("applyCoverFees (otherAssets) error:", err?.message || err));
     }
 
