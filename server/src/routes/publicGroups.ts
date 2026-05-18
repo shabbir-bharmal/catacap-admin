@@ -50,13 +50,27 @@ router.get("/", async (_req: Request, res: Response) => {
     if (groupIds.length > 0) {
       const placeholders = groupIds.map((_: any, i: number) => `$${i + 1}`).join(", ");
       const cgResult = await pool.query(
-        `SELECT cg.groups_id, c.id, c.name, c.stage, c.is_active, c.image_file_name
-         FROM campaign_groups cg
-         JOIN campaigns c ON cg.campaigns_id = c.id AND (c.is_deleted IS NULL OR c.is_deleted = false)
-         WHERE cg.groups_id IN (${placeholders})`,
+        `SELECT gc.groups_id, c.id, c.name, c.stage, c.is_active, c.image_file_name
+         FROM campaigns c
+         JOIN LATERAL (
+           SELECT cg.groups_id
+           FROM campaign_groups cg
+           WHERE cg.campaigns_id = c.id AND cg.groups_id IN (${placeholders})
+           UNION
+           SELECT c.group_for_private_access_id AS groups_id
+           WHERE c.group_for_private_access_id IN (${placeholders})
+           UNION
+           SELECT c.owner_group_id AS groups_id
+           WHERE c.owner_group_id IN (${placeholders})
+         ) gc ON true
+         WHERE (c.is_deleted IS NULL OR c.is_deleted = false)`,
         groupIds
       );
+      const seen: Record<string, boolean> = {};
       for (const row of cgResult.rows) {
+        const key = `${row.groups_id}:${row.id}`;
+        if (seen[key]) continue;
+        seen[key] = true;
         if (!campaignsByGroup[row.groups_id]) campaignsByGroup[row.groups_id] = [];
         campaignsByGroup[row.groups_id].push({
           id: row.id,
