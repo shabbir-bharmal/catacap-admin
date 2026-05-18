@@ -1,5 +1,5 @@
 import cron, { ScheduledTask } from "node-cron";
-import pool from "../db.js";
+import pool, { sessionPool } from "../db.js";
 import { runSendReminderEmail } from "./sendReminderEmail.js";
 import { runDailyCleanup } from "./dailyCleanup.js";
 import { runDeleteTestUsers } from "./deleteTestUsers.js";
@@ -64,7 +64,11 @@ async function withAdvisoryLock(
   jobName: string,
   fn: () => Promise<void>
 ): Promise<void> {
-  const client = await pool.connect();
+  // Session-scoped advisory locks must live on a session-mode connection;
+  // the HTTP `pool` points at the Supabase *transaction* pooler, which
+  // returns the backend to the pool at COMMIT and would silently release
+  // any session-held lock between the acquire and release statements.
+  const client = await sessionPool.connect();
   try {
     const lockResult = await client.query(
       `SELECT pg_try_advisory_lock($1) AS acquired`,
@@ -280,7 +284,8 @@ export async function executeJobInBackground(
   const startTime = new Date();
   console.log(`[SCHEDULER] Manually triggering ${jobName} job...`);
 
-  const client = await pool.connect();
+  // Session-mode pool — see comment in withAdvisoryLock for rationale.
+  const client = await sessionPool.connect();
   let acquired = false;
   try {
     const lockResult = await client.query(
@@ -415,7 +420,8 @@ export async function reconcileOrphanedRunningLogs(
       continue;
     }
 
-    const client = await pool.connect();
+    // Session-mode pool — see comment in withAdvisoryLock for rationale.
+    const client = await sessionPool.connect();
     try {
       const lockResult = await client.query(
         `SELECT pg_try_advisory_lock($1) AS acquired`,

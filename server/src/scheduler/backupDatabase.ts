@@ -5,7 +5,7 @@ import { createGzip } from "zlib";
 import { Writable } from "stream";
 import { pipeline } from "stream/promises";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import pool from "../db.js";
+import { sessionPool } from "../db.js";
 
 const RETENTION_DAYS = 7;
 const DOWNLOAD_URL_TTL_SECONDS = 300;
@@ -40,7 +40,11 @@ interface BackupStorageConfig {
 
 interface ResolvedDumpUrl {
   url: string;
-  source: "SUPABASE_DB_DIRECT_URL" | "SUPABASE_DB_URL" | "DATABASE_URL";
+  source:
+    | "SUPABASE_DB_DIRECT_URL"
+    | "SUPABASE_DB_SESSION_URL"
+    | "SUPABASE_DB_URL"
+    | "DATABASE_URL";
   isPooler: boolean;
   hasDirectFallback: boolean;
 }
@@ -48,7 +52,15 @@ interface ResolvedDumpUrl {
 export function resolveBackupDumpUrl(
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedDumpUrl {
+  // Resolution order matches the task's session-vs-transaction split:
+  //   1. SUPABASE_DB_DIRECT_URL — direct (non-pooler) Postgres, ideal for pg_dump
+  //   2. SUPABASE_DB_SESSION_URL — Supabase session pooler (port 5432), safe
+  //   3. SUPABASE_DB_URL — under the new convention this is the *transaction*
+  //      pooler (port 6543) and pg_dump COPY streams may be terminated by
+  //      PgBouncer; allow as a last-resort with a loud warning downstream.
+  //   4. DATABASE_URL — generic fallback
   const direct = env.SUPABASE_DB_DIRECT_URL;
+  const session = env.SUPABASE_DB_SESSION_URL;
   const supa = env.SUPABASE_DB_URL;
   const fallback = env.DATABASE_URL;
 
@@ -57,6 +69,9 @@ export function resolveBackupDumpUrl(
   if (direct) {
     chosen = direct;
     source = "SUPABASE_DB_DIRECT_URL";
+  } else if (session) {
+    chosen = session;
+    source = "SUPABASE_DB_SESSION_URL";
   } else if (supa) {
     chosen = supa;
     source = "SUPABASE_DB_URL";
@@ -65,9 +80,9 @@ export function resolveBackupDumpUrl(
     source = "DATABASE_URL";
   } else {
     throw new Error(
-      "BackupDatabase: SUPABASE_DB_DIRECT_URL, SUPABASE_DB_URL, or DATABASE_URL must be set. " +
-        "Prefer SUPABASE_DB_DIRECT_URL pointing at a direct (non-pooler) Postgres connection " +
-        "so pg_dump COPY streams aren't terminated by PgBouncer.",
+      "BackupDatabase: SUPABASE_DB_DIRECT_URL, SUPABASE_DB_SESSION_URL, SUPABASE_DB_URL, or DATABASE_URL must be set. " +
+        "Prefer SUPABASE_DB_DIRECT_URL (direct, non-pooler) or SUPABASE_DB_SESSION_URL " +
+        "(session pooler) so pg_dump COPY streams aren't terminated by PgBouncer in transaction mode.",
     );
   }
 
@@ -216,7 +231,12 @@ function getPgDumpVersion(binPath: string): number | null {
 }
 
 async function getServerMajorVersion(): Promise<number> {
-  const r = await pool.query<{ server_version_num: string }>(
+  // Routed via sessionPool: the backup job runs alongside long-lived
+  // pg_dump activity and the schema-change wrapper, both of which benefit
+  // from session-mode semantics. Keeping all backup-side metadata queries
+  // on the same pool avoids tangling them with HTTP transaction-pooler
+  // traffic.
+  const r = await sessionPool.query<{ server_version_num: string }>(
     "SHOW server_version_num",
   );
   const num = Number(r.rows[0]?.server_version_num);
@@ -326,7 +346,7 @@ async function logRetentionRun(
     summary,
   };
   try {
-    await pool.query(
+    await sessionPool.query(
       `INSERT INTO scheduler_logs
         (start_time, end_time, error_message, job_name, status, metadata)
        VALUES ($1, $2, $3, $4, $5, $6)`,

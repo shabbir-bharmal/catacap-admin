@@ -12,7 +12,8 @@ This application is a React 18 + TypeScript admin panel for managing investments
     - `VITE_SUPABASE_URL`
     - `VITE_SUPABASE_STORAGE_BUCKET`
     - `VITE_FRONTEND_URL`
-    - `SUPABASE_DB_URL`
+    - `SUPABASE_DB_URL` (Supabase **transaction-pooler** URL, port `6543`; used by the HTTP `pool` to multiplex admin API traffic and stay below the session-mode connection ceiling)
+    - `SUPABASE_DB_SESSION_URL` (Supabase **session-pooler** URL, port `5432`; used by `sessionPool` for paths that require session lifetime — see the "Transaction pooler vs. session pooler" Gotcha for the authoritative consumer list. Falls back to `SUPABASE_DB_DIRECT_URL` or `SUPABASE_DB_URL` if unset, but should be set explicitly in production.)
     - `SUPABASE_URL`
     - `SUPABASE_KEY`
     - `SUPABASE_STORAGE_BUCKET`
@@ -110,6 +111,7 @@ This application is a React 18 + TypeScript admin panel for managing investments
 -   **Investment Instruments vs. Investment Type:** The "Investment Instruments" field (`campaigns.investment_instruments`) is a comma-separated list of lookup IDs, while "Investment Type" (`campaigns.investment_type_category`) refers to Equity/Debt/Hybrid. Do not confuse them; their labels and usage are distinct.
 -   **Investment Owner Email Validation:** The Investment Owner field on `/raisemoney/edit/:id` uses client-side validation to ensure the email exists in `users`. The backend currently does not enforce this for `campaigns.contact_info_email_address`.
 -   **Rich Text Editor Styles:** Quill styles are imported globally in `src/main.tsx`. The `Mention` module for `quill-mention` must be registered explicitly within the `RichTextEditor` component.
+-   **Transaction pooler vs. session pooler:** The default `pool` in `server/src/db.ts` points at the Supabase **transaction pooler** (`SUPABASE_DB_URL`, port `6543`) and is the right place for ordinary HTTP query traffic, including multi-statement transactions wrapped in explicit `BEGIN ... COMMIT` (the backend stays pinned for the duration of the transaction, so `FOR UPDATE`, `SAVEPOINT`, etc. work normally). It is **NOT** safe for anything that requires session lifetime *across* transactions — specifically session-scoped `pg_advisory_lock` acquire/release pairs, `LISTEN`/`NOTIFY`, session `SET` (other than the startup `options=-c TimeZone=UTC`), held cursors, or temp tables. Those paths must use `sessionPool` (`SUPABASE_DB_SESSION_URL`, port `5432`). Current `sessionPool` consumers: `server/src/scheduler/index.ts` (`withAdvisoryLock`, `executeJobInBackground`, `reconcileOrphanedRunningLogs` — session-scoped `pg_advisory_lock` acquire/release), `server/src/utils/schemaChange.ts` (`applySchemaChange` wrapper), `server/src/utils/matchingGrants.ts` (`applySingleGrant`'s multi-round-trip `SELECT ... FOR UPDATE` transaction on the donor wallet), and `server/src/scheduler/backupDatabase.ts` (`SHOW server_version_num` plus the retention `scheduler_logs` insert; `pg_dump` itself prefers `SUPABASE_DB_DIRECT_URL` → `SUPABASE_DB_SESSION_URL` → `SUPABASE_DB_URL` → `DATABASE_URL`). Also: do not add named/prepared statements (`client.query({ name, text, values })`) on the transaction pooler — PgBouncer in transaction mode does not preserve them across transactions.
 
 ## Pointers
 

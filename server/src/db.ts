@@ -19,9 +19,7 @@ pg.types.setTypeParser(DATE_OID, (val: string) => val);
 // alone leaves a small race where the first query on a freshly-created
 // client could execute before the SET TIME ZONE statement. Setting the
 // startup option eliminates that race.
-function buildConnectionString(): string | undefined {
-  const raw = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
-  if (!raw) return raw;
+function appendTimezoneOption(raw: string): string {
   const tzOption = "-c TimeZone=UTC";
   try {
     const u = new URL(raw);
@@ -43,6 +41,43 @@ function buildConnectionString(): string | undefined {
   }
 }
 
+// Treat SUPABASE_DB_URL as the *transaction-pooler* connection string going
+// forward (Supabase port 6543). A short burst of admin API calls multiplexes
+// fine across a small number of Postgres backends in transaction mode, which
+// keeps us off the project's session-mode connection ceiling.
+//
+// Anything that requires session lifetime semantics (session-scoped advisory
+// locks held across multiple round-trips, LISTEN/NOTIFY, session SET, long
+// pg_dump transactions, etc.) MUST go through `sessionPool` below, which
+// points at the session-mode pooler (port 5432) via SUPABASE_DB_SESSION_URL
+// when available. SUPABASE_DB_SESSION_URL falls back to SUPABASE_DB_URL so
+// existing dev environments keep working until the new env var is set.
+function buildConnectionString(): string | undefined {
+  const raw = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
+  if (!raw) return raw;
+  return appendTimezoneOption(raw);
+}
+
+function buildSessionConnectionString(): string | undefined {
+  const raw =
+    process.env.SUPABASE_DB_SESSION_URL ||
+    process.env.SUPABASE_DB_DIRECT_URL ||
+    process.env.SUPABASE_DB_URL ||
+    process.env.DATABASE_URL;
+  if (!raw) return raw;
+  return appendTimezoneOption(raw);
+}
+
+function describePoolHost(rawConnString: string | undefined): string {
+  if (!rawConnString) return "(unset)";
+  try {
+    const u = new URL(rawConnString);
+    return `${u.hostname}:${u.port || "(default)"}`;
+  } catch {
+    return "(unparseable)";
+  }
+}
+
 // Pool sizing: the Site Configuration page fires 12 parallel requests via
 // `Promise.allSettled`. The default `pg` pool max of 10 forces 2 of those
 // requests to queue, and any background scheduler activity can push the queue
@@ -56,6 +91,114 @@ const pool = new pg.Pool({
   connectionTimeoutMillis: 10_000,
   idleTimeoutMillis: 30_000,
 });
+
+// Session-mode pool — small by design. Only paths that actually need session
+// lifetime semantics (scheduler advisory locks today) should `connect()` from
+// here; everything else must use the default transaction-pooler `pool`.
+//
+// In environments where the operator has not yet split the two endpoints
+// (`SUPABASE_DB_SESSION_URL` unset or equal to `SUPABASE_DB_URL`), we alias
+// `sessionPool` to the same `pool` instance instead of opening a second pool
+// against the same backend — opening both would quickly exceed Supabase's
+// per-project session-mode connection ceiling (e.g. `EMAXCONNSESSION` /
+// `max clients are limited to pool_size: 15`). The aliasing is safe in this
+// degenerate case because `SUPABASE_DB_URL` itself still points at a
+// session-mode endpoint there, so advisory locks behave normally.
+const httpConnStr = buildConnectionString();
+const sessionConnStr = buildSessionConnectionString();
+const sessionUrlIsSeparate =
+  !!sessionConnStr && !!httpConnStr && sessionConnStr !== httpConnStr;
+
+export const sessionPool: pg.Pool = sessionUrlIsSeparate
+  ? new pg.Pool({
+      connectionString: sessionConnStr,
+      ssl: { rejectUnauthorized: false },
+      max: 6,
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 30_000,
+    })
+  : pool;
+
+if (sessionUrlIsSeparate) {
+  sessionPool.on("error", (err) => {
+    console.error("Unexpected session database pool error:", err);
+  });
+}
+
+// Guardrail: the Supabase transaction pooler (port 6543, or any URL with
+// `pgbouncer=true`) does not preserve PostgreSQL prepared statements across
+// transactions, so any caller that passes a `name` to
+// `client.query({ name, text, values })` (server-side prepared statement)
+// will get inconsistent behavior or outright errors against the
+// transaction-pooler endpoint. Today no call site does this; we wrap
+// `pool.query` and `pool.connect`'s client.query to reject named queries
+// at runtime so a future regression fails loudly instead of surfacing as a
+// hard-to-diagnose intermittent prod issue.
+//
+// We enable the guard whenever the HTTP `pool` resolves to something that
+// looks like a transaction-mode endpoint — not just when the session URL is
+// separately configured — so a dev env that already points `SUPABASE_DB_URL`
+// at port 6543 is still protected.
+function looksLikeTransactionPooler(connStr: string | undefined): boolean {
+  if (!connStr) return false;
+  try {
+    const u = new URL(connStr);
+    if (u.port === "6543") return true;
+    if ((u.searchParams.get("pgbouncer") || "").toLowerCase() === "true") return true;
+    return false;
+  } catch {
+    return /:6543\b|pgbouncer=true/i.test(connStr);
+  }
+}
+
+if (looksLikeTransactionPooler(httpConnStr)) {
+  const rejectIfNamed = (queryTextOrConfig: unknown): void => {
+    if (
+      queryTextOrConfig &&
+      typeof queryTextOrConfig === "object" &&
+      "name" in (queryTextOrConfig as Record<string, unknown>) &&
+      typeof (queryTextOrConfig as { name?: unknown }).name === "string" &&
+      ((queryTextOrConfig as { name: string }).name || "").length > 0
+    ) {
+      throw new Error(
+        "[db] Refusing to execute a named/prepared query on the transaction-pooler `pool`. " +
+          "Named queries (`client.query({ name, text, values })`) are not safe against " +
+          "PgBouncer in transaction mode. Drop the `name` field, or route this call via " +
+          "`sessionPool` if you genuinely need a session-scoped prepared statement.",
+      );
+    }
+  };
+
+  // Wrap `pool.query` (covers callers that don't check out a client).
+  const origPoolQuery = pool.query.bind(pool) as pg.Pool["query"];
+  // @ts-expect-error — preserving the overloaded signature at the type level
+  pool.query = (...args: unknown[]) => {
+    rejectIfNamed(args[0]);
+    // @ts-expect-error — pass-through with original variadic args
+    return origPoolQuery(...args);
+  };
+
+  // Wrap each pooled client exactly once via the pool's `connect` event,
+  // which fires only when a brand-new physical client is created. This
+  // avoids both (a) stacking wrappers on every `pool.connect()` checkout
+  // and (b) crashes when callers use the callback form of `pool.connect(cb)`
+  // (which resolves the promise to `undefined`).
+  pool.on("connect", (client) => {
+    const origClientQuery = client.query.bind(client) as pg.PoolClient["query"];
+    // @ts-expect-error — preserving the overloaded signature at the type level
+    client.query = (...qargs: unknown[]) => {
+      rejectIfNamed(qargs[0]);
+      // @ts-expect-error — pass-through with original variadic args
+      return origClientQuery(...qargs);
+    };
+  });
+}
+
+console.log(
+  `[db] HTTP pool (transaction-mode) → ${describePoolHost(httpConnStr)}; ` +
+    `sessionPool (session-mode) → ${describePoolHost(sessionConnStr)}` +
+    (sessionUrlIsSeparate ? "" : " [aliased to HTTP pool — set SUPABASE_DB_SESSION_URL to split]"),
+);
 
 // NOTE: We intentionally do NOT register a `pool.on("connect")` listener that
 // fires `client.query("SET TIME ZONE 'UTC'")` — the pool does not await the

@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import { sessionPool } from "../db.js";
 
 export type SchemaOperationType =
   | "CREATE TABLE"
@@ -41,7 +41,11 @@ export async function applySchemaChange(
     );
   }
 
-  const { rows } = await pool.query<{ result: SchemaChangeResult }>(
+  // Routed via sessionPool: `apply_schema_change` opens its own transaction
+  // internally (PL/pgSQL) and may perform DDL that some transaction-pooler
+  // configurations refuse to multiplex. Session-mode keeps the wrapper
+  // semantics identical to the .NET reference.
+  const { rows } = await sessionPool.query<{ result: SchemaChangeResult }>(
     `SELECT public.apply_schema_change($1::jsonb) AS result`,
     [JSON.stringify(payload)],
   );
