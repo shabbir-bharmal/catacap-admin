@@ -144,11 +144,14 @@ export interface InvestmentNotificationRecipient {
   email: string;
 }
 
+type QueryExecutor = { query: typeof pool.query };
+
 export async function getInvestmentNotificationRecipients(
   campaignId: number,
+  executor: QueryExecutor = pool,
 ): Promise<InvestmentNotificationRecipient[]> {
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `SELECT id, name, email
          FROM campaign_investment_notification_recipients
         WHERE campaign_id = $1

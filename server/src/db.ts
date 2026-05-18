@@ -43,16 +43,19 @@ function buildConnectionString(): string | undefined {
   }
 }
 
-// Pool sizing: the Site Configuration page fires 12 parallel requests via
-// `Promise.allSettled`. The default `pg` pool max of 10 forces 2 of those
-// requests to queue, and any background scheduler activity can push the queue
-// past the default `connectionTimeoutMillis`, surfacing as intermittent 500s
-// with no obvious SQL error. Bumping `max` to 20 plus explicit timeouts
-// covers the burst with headroom for schedulers.
+// Pool sizing: Supabase's Supavisor pooler caps total client connections at
+// 15 in session mode (port 5432). The previous `max: 20` setting could
+// individually exceed that ceiling and, combined with the scheduler /
+// nightly backup / pg_dump / ad-hoc admin overhead, was the root cause of
+// `EMAXCONNSESSION ... pool_size: 15` 500s on the admin app. We now cap
+// `max` at 10 — burst-heavy pages (Dashboard, Site Configuration, Edit
+// Investment) have been batched onto a single pinned client per request,
+// so 10 in-flight HTTP queries is plenty while leaving ~5 sessions of
+// headroom for schedulers, pg_dump and one-off admin connections.
 const pool = new pg.Pool({
   connectionString: buildConnectionString(),
   ssl: { rejectUnauthorized: false },
-  max: 20,
+  max: 10,
   connectionTimeoutMillis: 10_000,
   idleTimeoutMillis: 30_000,
 });

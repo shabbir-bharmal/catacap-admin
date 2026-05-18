@@ -30,6 +30,205 @@ function getSoftDeleteCondition(alias: string, isDeletedParam: string | undefine
   return `(${alias}.is_deleted IS NULL OR ${alias}.is_deleted = false)`;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Batched lookup endpoint
+// ──────────────────────────────────────────────────────────────────────
+// The admin Site Configuration page previously fired ~12 parallel GETs
+// (one per tab/section) when callers used `fetchAllSiteConfigurations`.
+// Combined with scheduler activity, that pushed total connections past
+// Supavisor's 15-session session-mode ceiling and surfaced as 500s with
+// `EMAXCONNSESSION ... pool_size: 15`.
+//
+// `GET /bulk?types=type1,type2,...` (or no `types` query for all known
+// sections) pins one pooled client and runs each section's query
+// sequentially, returning a keyed payload that mirrors the per-type
+// endpoint shapes. The per-type endpoints remain in place.
+const BULK_SECTIONS = [
+  "sourcedby",
+  "themes",
+  "special-filters",
+  "transaction-type",
+  "investment-type-category",
+  "investment-terms",
+  "configuration",
+  "news-type",
+  "news-audience",
+  "statistics",
+  "meta-information",
+  "contact-info",
+  "daf-providers",
+] as const;
+
+router.get("/bulk", async (req: Request, res: Response) => {
+  let client: import("pg").PoolClient | null = null;
+  try {
+    client = await pool.connect();
+    const isDeletedParam = (req.query.isDeleted || req.query.IsDeleted) as string | undefined;
+    const softDelete = getSoftDeleteCondition("x", isDeletedParam);
+    const requested = String(req.query.types || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const sections = requested.length > 0
+      ? BULK_SECTIONS.filter((s) => requested.includes(s))
+      : [...BULK_SECTIONS];
+
+    const result: Record<string, unknown[]> = {};
+    for (const section of sections) {
+      try {
+        switch (section) {
+          case "investment-terms": {
+            const r = await client.query(
+              `SELECT x.id, x.key, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete}
+               ORDER BY x.key`,
+              [SITE_CONFIG_TYPES.StaticValue]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "configuration": {
+            const r = await client.query(
+              `SELECT x.id, x.key, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete}
+               ORDER BY x.key`,
+              [SITE_CONFIG_TYPES.Configuration]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "sourcedby": {
+            const r = await client.query(
+              `SELECT x.id, x.name AS value FROM approvers x
+               WHERE ${softDelete} ORDER BY x.name`
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "themes": {
+            const r = await client.query(
+              `SELECT x.id, x.name AS value, x.image_file_name AS "imageFileName", x.description
+               FROM themes x WHERE ${softDelete} ORDER BY x.name`
+            );
+            result[section] = r.rows.map((row: any) => ({
+              ...row,
+              imageFileName: resolveFileUrl(row.imageFileName, "themes"),
+            }));
+            break;
+          }
+          case "special-filters": {
+            const r = await client.query(
+              `SELECT x.id, x.tag AS value FROM investment_tags x
+               WHERE ${softDelete} ORDER BY x.tag`
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "transaction-type": {
+            const r = await client.query(
+              `SELECT x.id, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete} ORDER BY x.value`,
+              [SITE_CONFIG_TYPES.TransactionType]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "investment-type-category": {
+            const r = await client.query(
+              `SELECT x.id, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete} ORDER BY x.value`,
+              [SITE_CONFIG_TYPES.InvestmentTypeCategory]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "news-type": {
+            const r = await client.query(
+              `SELECT x.id, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete} ORDER BY x.value`,
+              [SITE_CONFIG_TYPES.NewsType]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "news-audience": {
+            const r = await client.query(
+              `SELECT x.id, x.value FROM site_configurations x
+               WHERE x.type = $1 AND ${softDelete} ORDER BY x.value`,
+              [SITE_CONFIG_TYPES.NewsAudience]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "statistics": {
+            const r = await client.query(
+              `SELECT x.id, x.key, x.value,
+                      REPLACE(x.type, 'Statistics-', '') AS type
+               FROM site_configurations x
+               WHERE x.type LIKE $1 AND ${softDelete} ORDER BY x.key`,
+              [`${SITE_CONFIG_TYPES.Statistics}%`]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "meta-information": {
+            const r = await client.query(
+              `SELECT x.id, x.key, x.image, x.image_name AS "imageName",
+                      x.value, x.additional_details AS "additionalDetails"
+               FROM site_configurations x
+               WHERE x.type LIKE $1 AND ${softDelete} ORDER BY x.key`,
+              [`${SITE_CONFIG_TYPES.MetaInformation}%`]
+            );
+            result[section] = r.rows.map((row: any) => ({
+              ...row,
+              image: resolveFileUrl(row.image, "site-configurations"),
+              imageName: resolveFileUrl(row.imageName, "site-configurations"),
+            }));
+            break;
+          }
+          case "contact-info": {
+            const r = await client.query(
+              `SELECT x.id, x.key, x.value,
+                      x.additional_details AS "description",
+                      REPLACE(x.type, 'ContactInfo-', '') AS type
+               FROM site_configurations x
+               WHERE x.type LIKE $1 AND ${softDelete} ORDER BY x.type, x.key`,
+              [`${SITE_CONFIG_TYPES.ContactInfo}-%`]
+            );
+            result[section] = r.rows;
+            break;
+          }
+          case "daf-providers": {
+            const r = await client.query(
+              `SELECT id,
+                      provider_name AS "value",
+                      provider_url AS "link",
+                      is_active AS "isActive"
+               FROM daf_providers ORDER BY provider_name`
+            );
+            result[section] = r.rows;
+            break;
+          }
+        }
+      } catch (sectionErr) {
+        // Don't let a single broken section take the whole payload down —
+        // mirror the page's existing per-tab error tolerance.
+        console.error(`SiteConfig bulk: section "${section}" failed:`, sectionErr);
+        result[section] = [];
+      }
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error("SiteConfig bulk error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  } finally {
+    if (client) client.release();
+  }
+});
+
 router.get("/slug/:slug", async (req: Request, res: Response) => {
   try {
     const slug = String(req.params.slug);
