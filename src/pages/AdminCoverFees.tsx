@@ -30,6 +30,7 @@ import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useDebounce } from "../hooks/useDebounce";
 import { cn } from "@/lib/utils";
+import { RequiredMark, FieldError } from "@/components/ui/required-mark";
 
 // ------------------------------------------------------------------ //
 // Types
@@ -331,6 +332,7 @@ function GrantFormDialog({
   const { toast } = useToast();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const isEdit = !!initial.id;
 
   // Edit-mode cap adjuster: user picks "Add" or "Remove" + amount instead
@@ -343,6 +345,7 @@ function GrantFormDialog({
     setForm(initial);
     setCapAdjustMode("add");
     setCapAdjustAmount("");
+    setSubmitted(false);
   }, [initial, open]);
 
   const upd = (key: keyof typeof EMPTY_FORM, val: any) =>
@@ -402,6 +405,7 @@ function GrantFormDialog({
   })();
 
   const handleSave = async () => {
+    setSubmitted(true);
     if (!form.sponsorUserId) {
       toast({ title: "Error", description: "Please select a sponsor.", variant: "destructive" });
       return;
@@ -510,7 +514,7 @@ function GrantFormDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-sm">Cover Fees Sponsor *</Label>
+            <Label className="text-sm">Cover Fees Sponsor<RequiredMark /></Label>
             <SponsorSearch
               value={form.sponsorUserId}
               displayName={form.sponsorFullName || form.sponsorEmail}
@@ -521,6 +525,11 @@ function GrantFormDialog({
                 upd("sponsorBalance", d.accountBalance);
               }}
             />
+            <FieldError
+              show={submitted && !form.sponsorUserId}
+              message="Cover Fees Sponsor is required."
+              testId="error-sponsor-required"
+            />
             {form.sponsorUserId && (
               <p className="text-xs text-muted-foreground">
                 {form.sponsorEmail} · Current balance: {currency_format(form.sponsorBalance)}
@@ -529,11 +538,16 @@ function GrantFormDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-sm">Eligible Campaigns *</Label>
+            <Label className="text-sm">Eligible Campaigns<RequiredMark /></Label>
             <CampaignMultiSelect
               options={campaigns}
               selected={form.campaignIds}
               onChange={(ids) => upd("campaignIds", ids)}
+            />
+            <FieldError
+              show={submitted && form.campaignIds.length === 0}
+              message="Eligible Campaigns is required."
+              testId="error-campaigns-required"
             />
             <p className="text-xs text-muted-foreground">
               Donations to any selected investment will have their 5% CataCap fee covered by this pool.
