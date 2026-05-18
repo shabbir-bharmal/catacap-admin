@@ -47,13 +47,20 @@ function buildConnectionString(): string | undefined {
 // `Promise.allSettled`. The default `pg` pool max of 10 forces 2 of those
 // requests to queue, and any background scheduler activity can push the queue
 // past the default `connectionTimeoutMillis`, surfacing as intermittent 500s
-// with no obvious SQL error. Bumping `max` to 20 plus explicit timeouts
-// covers the burst with headroom for schedulers.
+// with no obvious SQL error.
+//
+// IMPORTANT: `SUPABASE_DB_URL` points at Supavisor in **session mode**
+// (port 5432), which caps total client connections at 15 per project. The
+// app-side pool `max` MUST stay strictly below that ceiling, otherwise
+// requests fail with `[CRASH:DB_SESSION] max clients reached in session mode`.
+// We use `max: 10` (matching the historical default) and raise
+// `connectionTimeoutMillis` to absorb the Site Configuration burst plus
+// concurrent scheduler activity without exceeding Supavisor's limit.
 const pool = new pg.Pool({
   connectionString: buildConnectionString(),
   ssl: { rejectUnauthorized: false },
-  max: 20,
-  connectionTimeoutMillis: 10_000,
+  max: 10,
+  connectionTimeoutMillis: 20_000,
   idleTimeoutMillis: 30_000,
 });
 
