@@ -111,7 +111,14 @@ router.get("/", async (req: Request, res: Response) => {
                   SELECT 1 FROM campaign_match_grants g
                    WHERE g.donor_user_id = r.user_id
                 )
-              ) AS "isMatch"
+              ) AS "isMatch",
+              (
+                SELECT tr.user_full_name
+                  FROM campaign_match_grant_activity a
+                  JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
+                 WHERE a.donor_recommendation_id = r.id
+                 LIMIT 1
+              ) AS "matchDonorName"
        FROM recommendations r
        ${userRoleJoin}
        LEFT JOIN campaigns c ON r.campaign_id = c.id

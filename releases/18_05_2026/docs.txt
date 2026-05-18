@@ -1,0 +1,27 @@
+Release 18_05_2026
+==================
+
+Migrations
+----------
+- migrations/2026_05_18_backfill_match_escrow_history_comments.sql
+    Schema: none (data-only — rewrites existing `comment` text on
+            account_balance_change_logs rows; no DDL).
+    Intent: Task #503 follow-up. The escrow-match account-history
+            comment was updated to read
+              $X matched from "<Grant Name>" on behalf of <Investor Name>
+            (was: $X matched from escrow via grant "<Grant Name>").
+            Code-side already writes the new wording for NEW matches;
+            this migration backfills historical rows so admins see the
+            same wording everywhere. Investor name is resolved through
+            campaign_match_grant_activity.triggered_by_recommendation_id
+            -> recommendations.user_full_name. The activity row is
+            linked to the log row by (donor user, campaign, amount
+            parsed from the old comment); ties broken by closest
+            change_date <-> created_at.
+    Idempotency: WHERE-clause regex only matches the OLD wording, so
+                 re-runs are no-ops. DISTINCT ON guarantees each log
+                 row is rewritten at most once. Wrapped in a single
+                 transaction.
+    Rollback: best-effort SQL block included (commented) at the top of
+             the migration file. Reverts rows matching the NEW wording
+             back to the old escrow-via-grant phrasing.

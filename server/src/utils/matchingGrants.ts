@@ -225,6 +225,11 @@ export async function applySingleGrant(opts: {
       );
       if (escrowDonorRes.rows.length > 0) {
         const escrowBalance = parseFloat(escrowDonorRes.rows[0].account_balance) || 0;
+        const investorRes = await client.query(
+          `SELECT user_full_name FROM recommendations WHERE id = $1`,
+          [triggeringRecommendationId],
+        );
+        const investorName = investorRes.rows[0]?.user_full_name || "";
         await client.query(
           `INSERT INTO account_balance_change_logs
              (user_id, payment_type, investment_name, campaign_id,
@@ -238,7 +243,7 @@ export async function applySingleGrant(opts: {
             escrowBalance,
             escrowDonorRes.rows[0].user_name || "",
             escrowBalance,
-            `$${matchAmount.toFixed(2)} matched from escrow via grant "${grant.name || `Grant #${grant.id}`}"`,
+            `$${matchAmount.toFixed(2)} matched from "${grant.name || `Grant #${grant.id}`}" on behalf of ${investorName}`,
           ],
         );
       }

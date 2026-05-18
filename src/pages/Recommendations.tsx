@@ -510,7 +510,7 @@ export default function RecommendationsPage() {
                         <td className="px-4 py-3">
                           <span className="text-sm" data-testid={`text-fullname-${rec.id}`}>
                             {rec.userFullName}
-                            {rec.isMatch ? " - Match" : ""}
+                            {rec.isMatch ? (rec.matchDonorName ? ` - Match on behalf of ${rec.matchDonorName}` : " - Match") : ""}
                           </span>
                         </td>
                         <td className="px-4 py-3">
