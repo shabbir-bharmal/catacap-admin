@@ -190,7 +190,7 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
       res.status(400).json({ success: false, message: "Invalid id" });
       return;
     }
-    const [result, projections] = await Promise.all([
+    const [result, projections, grantRes] = await Promise.all([
       pool.query(
         `SELECT a.id, a.amount, a.created_at,
                 c.name   AS campaign_name,
@@ -207,7 +207,22 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         [id],
       ),
       projectPendingMatchesForGrant(id),
+      pool.query(
+        `SELECT reserved_amount, amount_used FROM campaign_match_grants WHERE id = $1`,
+        [id],
+      ),
     ]);
+
+    const grantRow = grantRes.rows[0] || {};
+    const reserved = parseFloat(grantRow.reserved_amount) || 0;
+    const used = parseFloat(grantRow.amount_used) || 0;
+    const remaining = Math.max(0, reserved - used);
+    const projectionSum = projections.reduce((s, p) => s + p.projectedAmount, 0);
+    // Independent CC/ACH projections can sum to more than the grant's real
+    // remaining budget (each row shows its full would-be match in isolation).
+    // Cap the displayed total at remaining budget so the panel header
+    // accurately reflects the grant's actual exposure.
+    const cappedPendingTotal = Math.round(Math.min(projectionSum, remaining) * 100) / 100;
     res.json({
       success: true,
       items: result.rows.map((r: any) => ({
@@ -231,7 +246,7 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerStatus: p.trigger.triggerStatus,
         triggerAmount: p.trigger.triggerAmount,
       })),
-      pendingTotal: Math.round(projections.reduce((s, p) => s + p.projectedAmount, 0) * 100) / 100,
+      pendingTotal: cappedPendingTotal,
     });
   } catch (err: any) {
     console.error("Error fetching match grant activity:", err);
