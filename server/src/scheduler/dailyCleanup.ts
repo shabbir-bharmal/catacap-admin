@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 import type { PoolClient } from "pg";
 
 const TABLE_NAME_MAP: Record<string, string> = {
@@ -484,6 +484,14 @@ export async function runDailyCleanup(): Promise<void> {
   const client = await pool.connect();
 
   try {
+    // The default per-connection statement_timeout is 20s (set via
+    // connection-string options=). The nightly archive+purge legitimately
+    // moves thousands of rows across several tables and can run longer
+    // than that. Lift the cap on THIS client only; we restore it in the
+    // finally block before the client returns to the scheduler pool so
+    // future callers see the standard 20s default again.
+    await client.query("SET statement_timeout = '10min'");
+
     await ensureArchivedUserDataTable(client);
 
     const configResult = await client.query(
@@ -1094,6 +1102,17 @@ export async function runDailyCleanup(): Promise<void> {
       throw err;
     }
   } finally {
+    // Restore the per-client default before returning to the pool, so a
+    // future scheduler task acquiring this same client doesn't inherit
+    // the lifted 10-minute cap.
+    try {
+      await client.query("SET statement_timeout = '20s'");
+    } catch (resetErr) {
+      console.warn(
+        "[CLEANUP] failed to reset statement_timeout (non-fatal):",
+        (resetErr as any)?.message || resetErr,
+      );
+    }
     client.release();
   }
 }

@@ -1,5 +1,5 @@
 import cron, { ScheduledTask } from "node-cron";
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 import { runSendReminderEmail } from "./sendReminderEmail.js";
 import { runDailyCleanup } from "./dailyCleanup.js";
 import { runDeleteTestUsers } from "./deleteTestUsers.js";

@@ -1,5 +1,5 @@
 import { sendTemplateEmail } from "../utils/emailService.js";
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 
 interface EmailWorkItem {
   category: number;

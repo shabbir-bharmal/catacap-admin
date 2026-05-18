@@ -526,7 +526,11 @@ router.put("/restore", async (req: Request, res: Response) => {
 });
 
 router.put("/:id", async (req: Request, res: Response) => {
-  const client = await pool.connect();
+  // CRITICAL: do Supabase Storage uploads BEFORE acquiring a DB client.
+  // Storage I/O can take many seconds for large attachments; holding a
+  // pool slot during that wait is the main contributor to pool
+  // exhaustion. If the DB step later fails, we roll the uploaded files
+  // back via `rollbackUploadedAttachments` in the catch.
   let uploadedAttachments: UploadedAttachment[] = [];
   try {
     const incomingAttachments = Array.isArray((req.body as any)?.attachments)
@@ -543,9 +547,23 @@ router.put("/:id", async (req: Request, res: Response) => {
       );
     }
   } catch (err: any) {
-    client.release();
     console.error("Error uploading pending grant note attachments:", err);
     res.status(400).json({ success: false, message: err.message || "Failed to upload attachments." });
+    return;
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (connectErr: any) {
+    // If we already uploaded attachments above, roll them back so the
+    // failed DB connect doesn't leave orphan files in Supabase Storage.
+    await rollbackUploadedAttachments(uploadedAttachments).catch(() => {});
+    console.error("Error acquiring DB client for pending grant update:", connectErr);
+    res.status(503).json({
+      success: false,
+      message: "Database temporarily unavailable. Please retry.",
+    });
     return;
   }
 
@@ -565,6 +583,9 @@ router.put("/:id", async (req: Request, res: Response) => {
     );
 
     if (grantResult.rows.length === 0) {
+      // Validation failed before BEGIN — clean up any pre-uploaded
+      // attachments so we don't leak orphan storage objects.
+      await rollbackUploadedAttachments(uploadedAttachments).catch(() => {});
       res.status(400).json({ success: false, message: "Wrong pending grand id." });
       return;
     }
@@ -618,6 +639,9 @@ router.put("/:id", async (req: Request, res: Response) => {
       const fromWallet = investedSum - (pendingGrantAmount + totalGroupBalance);
       if (userBalance < fromWallet) {
         await client.query("ROLLBACK");
+        // Business-validation exit after BEGIN — roll back any
+        // pre-uploaded attachments so no orphan files remain.
+        await rollbackUploadedAttachments(uploadedAttachments).catch(() => {});
         res.json({ success: false, message: "User do not have sufficient wallet balance." });
         return;
       }

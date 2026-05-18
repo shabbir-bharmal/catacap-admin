@@ -12,72 +12,214 @@ pg.types.setTypeParser(TIMESTAMPTZ_OID, (val: string) => val);
 // westward (negative-offset) timezone like US Eastern.
 pg.types.setTypeParser(DATE_OID, (val: string) => val);
 
-// Append `options=-c TimeZone=UTC` to the connection string so Postgres
-// applies the session timezone during the startup handshake — *before* the
-// first query runs on any new connection. The `pool.on("connect")` listener
-// below is fire-and-forget (the pool does not await it), so relying on it
-// alone leaves a small race where the first query on a freshly-created
-// client could execute before the SET TIME ZONE statement. Setting the
-// startup option eliminates that race.
-function buildConnectionString(): string | undefined {
+// Append per-connection `options=-c <key>=<value>` flags so Postgres applies
+// them during the startup handshake — *before* the first query runs on any
+// new connection. Using `options=` avoids the documented `pool.on("connect")`
+// race where an unawaited `SET` could collide with the first user query
+// (which surfaced as the `Calling client.query() when the client is already
+// executing a query` deprecation warning, and on newer `pg` builds as a hard
+// query error).
+//
+// We set:
+//   • TimeZone=UTC                           — stable timestamp parsing
+//   • statement_timeout=20000                — cap any one query at 20s
+//   • idle_in_transaction_session_timeout=30000 — kill abandoned BEGINs
+//   • lock_timeout=10000                     — fail fast on contended rows
+//   • application_name=<role>                — observability in pg_stat_activity
+function buildConnectionString(applicationName: string): string | undefined {
   const raw = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
   if (!raw) return raw;
-  const tzOption = "-c TimeZone=UTC";
+  // Suffix the app name with the deployment environment so pg_stat_activity
+  // rows are unambiguous when triaging (e.g. `catacap-admin-http-prod` vs
+  // `catacap-admin-scheduler-qa`). Falls back to NODE_ENV; defaults to
+  // `dev` for local Replit/workflow runs.
+  const env = (process.env.REPLIT_DEPLOYMENT === "1" ? "prod"
+              : process.env.NODE_ENV === "production" ? "prod"
+              : process.env.NODE_ENV === "test" ? "test"
+              : "dev");
+  const fullAppName = `${applicationName}-${env}`;
+  const flags = [
+    "-c TimeZone=UTC",
+    "-c statement_timeout=20000",
+    "-c idle_in_transaction_session_timeout=30000",
+    "-c lock_timeout=10000",
+    `-c application_name=${fullAppName}`,
+  ].join(" ");
   try {
     const u = new URL(raw);
     const existing = u.searchParams.get("options");
-    if (existing == null) {
-      u.searchParams.set("options", tzOption);
-    } else if (!/(?:^|\s)-c\s*TimeZone=/i.test(existing)) {
-      u.searchParams.set("options", `${existing} ${tzOption}`.trim());
-    }
+    u.searchParams.set("options", existing ? `${existing} ${flags}`.trim() : flags);
     return u.toString();
   } catch {
-    // Fall back to naive concatenation for non-URL connection strings.
     if (/(?:[?&])options=/.test(raw)) {
-      if (/-c\s*TimeZone=/i.test(raw)) return raw;
-      return raw.replace(/(options=)([^&]*)/, (_m, k, v) => `${k}${v}%20${encodeURIComponent(tzOption)}`);
+      return raw.replace(/(options=)([^&]*)/, (_m, k, v) => `${k}${v}%20${encodeURIComponent(flags)}`);
     }
     const sep = raw.includes("?") ? "&" : "?";
-    return `${raw}${sep}options=${encodeURIComponent(tzOption)}`;
+    return `${raw}${sep}options=${encodeURIComponent(flags)}`;
   }
 }
 
-// Pool sizing: the Site Configuration page fires 12 parallel requests via
-// `Promise.allSettled`. The default `pg` pool max of 10 forces 2 of those
-// requests to queue, and any background scheduler activity can push the queue
-// past the default `connectionTimeoutMillis`, surfacing as intermittent 500s
-// with no obvious SQL error.
+// ──────────────────────────────────────────────────────────────────────
+// Dual-pool architecture
+// ──────────────────────────────────────────────────────────────────────
+// `SUPABASE_DB_URL` connects through Supavisor in **session mode**
+// (port 5432), which caps total client connections at **15** per project.
+// The combined `max` of every pool we open MUST stay strictly below 15,
+// otherwise requests fail with
+//   `[CRASH:DB_SESSION] max clients reached in session mode`.
 //
-// IMPORTANT: `SUPABASE_DB_URL` points at Supavisor in **session mode**
-// (port 5432), which caps total client connections at 15 per project. The
-// app-side pool `max` MUST stay strictly below that ceiling, otherwise
-// requests fail with `[CRASH:DB_SESSION] max clients reached in session mode`.
-// We use `max: 10` (matching the historical default) and raise
-// `connectionTimeoutMillis` to absorb the Site Configuration burst plus
-// concurrent scheduler activity without exceeding Supavisor's limit.
+// We split HTTP traffic from scheduler/background traffic so that a long
+// cron run (e.g. BackupDatabase, retroactive sweeps, daily cleanup) cannot
+// starve the request pool. Both pools live inside this single process.
+//
+//   HTTP pool (`pool`)            max=7   — every Express route handler
+//   Scheduler pool (`schedulerPool`) max=3   — cron jobs, manual triggers,
+//                                                background sweeps
+//   ─────────────────────────────────────
+//   Total                         10      (under the 15-conn Supavisor cap;
+//                                          leaves headroom for `pg_dump`
+//                                          and ad-hoc admin connections)
+//
+// `connectionTimeoutMillis` is generous (20s) so a transient burst (the
+// Site Configuration page fires 12 parallel requests via Promise.allSettled)
+// queues rather than 500s. `keepAlive` keeps idle clients warm and lets
+// the OS detect dead Supavisor connections promptly.
+const HTTP_POOL_MAX = 7;
+const SCHEDULER_POOL_MAX = 3;
+
 const pool = new pg.Pool({
-  connectionString: buildConnectionString(),
+  connectionString: buildConnectionString("catacap-admin-http"),
   ssl: { rejectUnauthorized: false },
-  max: 10,
+  max: HTTP_POOL_MAX,
   connectionTimeoutMillis: 20_000,
   idleTimeoutMillis: 30_000,
+  keepAlive: true,
 });
 
-// NOTE: We intentionally do NOT register a `pool.on("connect")` listener that
-// fires `client.query("SET TIME ZONE 'UTC'")` — the pool does not await the
-// listener, so the very first user query on a freshly-created pooled client
-// would race against the unawaited SET, producing the
-// `Calling client.query() when the client is already executing a query`
-// deprecation warning, and on newer `pg` builds the same race surfaces as a
-// hard query error (one of the root causes of the intermittent 500s on
-// /admin/site-configuration). The session timezone is set during the Postgres
-// startup handshake via `options=-c TimeZone=UTC` in `buildConnectionString()`
-// above, which runs before the connection is handed to any query.
+export const schedulerPool = new pg.Pool({
+  connectionString: buildConnectionString("catacap-admin-scheduler"),
+  ssl: { rejectUnauthorized: false },
+  max: SCHEDULER_POOL_MAX,
+  connectionTimeoutMillis: 30_000,
+  idleTimeoutMillis: 60_000,
+  keepAlive: true,
+});
+
+// Slow-acquire instrumentation: wrap each pool's `connect()` so we log a
+// warning whenever a caller waits >500ms for a client (early signal of
+// pool starvation, well before `connectionTimeoutMillis` fires), and emit
+// a full pool snapshot when an acquire fails outright (typically
+// "Connection terminated due to connection timeout" or Supavisor's
+// "max clients reached" CRASH). The wrapper preserves the original
+// PoolClient return type so callers don't change.
+const SLOW_ACQUIRE_THRESHOLD_MS = 500;
+function instrumentPoolAcquire(p: pg.Pool, name: string, max: number): void {
+  // CRITICAL: pg-pool's `Pool.query()` calls `this.connect(cb)` with a
+  // callback — see node_modules/pg-pool/index.js. If we replace `connect`
+  // with a promise-only wrapper, every `pool.query(...)` will hang
+  // because the callback is never invoked. We therefore support BOTH
+  // signatures: when called with a callback, invoke it; when called
+  // without, return a Promise. Either way we log slow/failed acquires.
+  const orig = p.connect.bind(p) as {
+    (): Promise<pg.PoolClient>;
+    (cb: (err: Error | undefined, client?: pg.PoolClient, done?: () => void) => void): void;
+  };
+  const logSlow = (waitedMs: number, caller: string) => {
+    if (waitedMs > SLOW_ACQUIRE_THRESHOLD_MS) {
+      console.warn(
+        `[db-pool] slow acquire on "${name}" pool: waited ${waitedMs}ms ` +
+          `(total=${p.totalCount}/${max} idle=${p.idleCount} waiting=${p.waitingCount}) ${caller}`,
+      );
+    }
+  };
+  const logFail = (waitedMs: number, err: any, caller: string) => {
+    console.error(
+      `[db-pool] ACQUIRE FAILED on "${name}" pool after ${waitedMs}ms: ` +
+        `${err?.message || err} | snapshot total=${p.totalCount}/${max} ` +
+        `idle=${p.idleCount} waiting=${p.waitingCount} ${caller}`,
+    );
+  };
+  (p as any).connect = function (
+    cb?: (err: Error | undefined, client?: pg.PoolClient, done?: () => void) => void,
+  ): Promise<pg.PoolClient> | void {
+    const started = Date.now();
+    const caller = new Error().stack?.split("\n").slice(2, 4).join(" | ") || "";
+    if (typeof cb === "function") {
+      // Callback signature — preserve pg-pool's internal contract.
+      return (orig as any)((err: Error | undefined, client?: pg.PoolClient, done?: () => void) => {
+        const waitedMs = Date.now() - started;
+        if (err) logFail(waitedMs, err, caller);
+        else logSlow(waitedMs, caller);
+        cb(err, client, done);
+      });
+    }
+    // Promise signature — used by application code (`await pool.connect()`).
+    return (async () => {
+      try {
+        const client = await (orig as any)();
+        logSlow(Date.now() - started, caller);
+        return client;
+      } catch (err: any) {
+        logFail(Date.now() - started, err, caller);
+        throw err;
+      }
+    })();
+  };
+}
+instrumentPoolAcquire(pool, "http", HTTP_POOL_MAX);
+instrumentPoolAcquire(schedulerPool, "scheduler", SCHEDULER_POOL_MAX);
 
 pool.on("error", (err) => {
-  console.error("Unexpected database pool error:", err);
+  console.error("Unexpected HTTP database pool error:", err);
 });
+schedulerPool.on("error", (err) => {
+  console.error("Unexpected scheduler database pool error:", err);
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Observability
+// ──────────────────────────────────────────────────────────────────────
+export interface PoolStats {
+  name: string;
+  max: number;
+  total: number;
+  idle: number;
+  waiting: number;
+}
+
+export function getDbPoolStats(): PoolStats[] {
+  return [
+    {
+      name: "http",
+      max: HTTP_POOL_MAX,
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+    },
+    {
+      name: "scheduler",
+      max: SCHEDULER_POOL_MAX,
+      total: schedulerPool.totalCount,
+      idle: schedulerPool.idleCount,
+      waiting: schedulerPool.waitingCount,
+    },
+  ];
+}
+
+// Log when any pool starts queuing requests so the operator sees pressure
+// before the 500s start. Polled lightly — every 10s — and only emits when
+// there is something to report.
+const POOL_STATS_INTERVAL_MS = 10_000;
+const poolStatsTimer = setInterval(() => {
+  for (const s of getDbPoolStats()) {
+    if (s.waiting > 0 || s.total >= s.max) {
+      console.warn(
+        `[db-pool] pressure on ${s.name}: total=${s.total}/${s.max} idle=${s.idle} waiting=${s.waiting}`,
+      );
+    }
+  }
+}, POOL_STATS_INTERVAL_MS);
+if (typeof poolStatsTimer.unref === "function") poolStatsTimer.unref();
 
 async function runSoftDeleteMigration(client: pg.PoolClient): Promise<void> {
   const tables = [
@@ -777,6 +919,9 @@ export async function testConnection(): Promise<void> {
       );
     }
 
+    // Migrations should fail fast on a hung DDL — drop the per-connection
+    // 20s default down to 3s for the migration window. We restore the
+    // 20s default (set via the connection-string `options=` flags) below.
     try {
       await client.query("SET statement_timeout = '3s'");
     } catch (err) {
@@ -810,10 +955,12 @@ export async function testConnection(): Promise<void> {
 
   } finally {
     // Always reset statement_timeout before returning the client to the pool —
-    // otherwise a 3s cap could leak onto a long-running query that picks up
-    // this same pooled client later.
+    // otherwise the 3s cap above could leak onto a long-running query that
+    // picks up this same pooled client later. Restore to the 20s default that
+    // the connection-string `options=-c statement_timeout=20000` flag applied
+    // during the startup handshake.
     try {
-      await client.query("SET statement_timeout = '0'");
+      await client.query("SET statement_timeout = '20s'");
     } catch (err) {
       console.warn("[migration] failed to reset statement_timeout (non-fatal):", err);
     }

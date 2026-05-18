@@ -5,7 +5,7 @@
  * the sponsor's wallet and marks the pool inactive.
  */
 
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 
 export async function runExpireCoverFees(): Promise<void> {
   console.log("[ExpireCoverFees] Starting expiry check...");

@@ -5,7 +5,7 @@ import { createGzip } from "zlib";
 import { Writable } from "stream";
 import { pipeline } from "stream/promises";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 
 const RETENTION_DAYS = 7;
 const DOWNLOAD_URL_TTL_SECONDS = 300;

@@ -284,6 +284,7 @@ router.get("/donor-search", async (req: Request, res: Response) => {
 // ------------------------------------------------------------------ //
 router.post("/", async (req: Request, res: Response) => {
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     const b = req.body || {};
 
@@ -353,6 +354,10 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
+    // Release the HTTP pool client BEFORE the sweep so we don't hold two
+    // pool connections (this one + the sweep's own) concurrently.
+    client.release();
+    clientReleased = true;
 
     // Run retroactive sweep AFTER commit so that the grant + campaign links
     // are visible to the sweep query and any errors don't roll back the grant.
@@ -368,11 +373,11 @@ router.post("/", async (req: Request, res: Response) => {
       retroactive: retroSummary,
     });
   } catch (err: any) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!clientReleased) await client.query("ROLLBACK").catch(() => {});
     console.error("Error creating match grant:", err);
     res.status(500).json({ success: false, message: err.message });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 });
 
@@ -381,6 +386,7 @@ router.post("/", async (req: Request, res: Response) => {
 // ------------------------------------------------------------------ //
 router.put("/:id", async (req: Request, res: Response) => {
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) {
@@ -527,6 +533,10 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
+    // Release the HTTP pool client BEFORE the sweep so we don't hold two
+    // pool connections (this one + the sweep's own) concurrently.
+    client.release();
+    clientReleased = true;
 
     // If retroactive_from is set (or was changed), run a sweep. The sweep
     // itself dedups via the unique index, so re-running on edit is safe and
@@ -543,11 +553,11 @@ router.put("/:id", async (req: Request, res: Response) => {
       retroactive: retroSummary,
     });
   } catch (err: any) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!clientReleased) await client.query("ROLLBACK").catch(() => {});
     console.error("Error updating match grant:", err);
     res.status(500).json({ success: false, message: err.message });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 });
 

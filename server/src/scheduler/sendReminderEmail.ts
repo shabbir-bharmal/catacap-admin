@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 import { queueEmail } from "./emailQueue.js";
 
 const EMAIL_CATEGORY = {
