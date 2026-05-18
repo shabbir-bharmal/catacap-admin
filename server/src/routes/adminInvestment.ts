@@ -206,12 +206,9 @@ const THANK_YOU_ALLOWED_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-async function loadThankYouAttachments(
-  campaignId: number,
-  executor: { query: typeof pool.query } = pool,
-) {
+async function loadThankYouAttachments(campaignId: number) {
   try {
-    const result = await executor.query(
+    const result = await pool.query(
       `SELECT id, file_path, original_file_name, content_type, size_bytes, sort_order, created_at
        FROM campaign_thank_you_attachments
        WHERE campaign_id = $1
@@ -1556,21 +1553,13 @@ router.get("/:id/recommendations/export", async (req: Request, res: Response) =>
 });
 
 router.get("/:id", async (req: Request, res: Response) => {
-  // Pin one pooled client for the entire handler. Previously this route
-  // acquired/released the pool ~7 times in sequence (campaign, balance,
-  // notes, tags, notification recipients, donors, thank-you attachments),
-  // so under Supavisor's 15-session session-mode cap any one of those
-  // acquires could fail with EMAXCONNSESSION even though only one client
-  // was needed at a time. Same pattern as `/api/admin/home/overview`.
-  let client: import("pg").PoolClient | null = null;
   try {
-    client = await pool.connect();
     const idOrSlug = req.params.id;
     const numericId = /^\d+$/.test(idOrSlug) ? parseInt(idOrSlug, 10) : NaN;
 
     let campaignResult;
     if (Number.isFinite(numericId) && numericId > 0) {
-      campaignResult = await client.query(
+      campaignResult = await pool.query(
         `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name
          FROM campaigns c
          LEFT JOIN groups gpa ON c.group_for_private_access_id = gpa.id
@@ -1578,7 +1567,7 @@ router.get("/:id", async (req: Request, res: Response) => {
         [numericId]
       );
     } else {
-      campaignResult = await client.query(
+      campaignResult = await pool.query(
         `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name
          FROM campaigns c
          LEFT JOIN groups gpa ON c.group_for_private_access_id = gpa.id
@@ -1596,7 +1585,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     const c = campaignResult.rows[0];
     const id = c.id;
 
-    const balanceResult = await client.query(
+    const balanceResult = await pool.query(
       `${unifiedInvestorsCTE({ campaignParamIdx: 1 })}
        SELECT COALESCE(SUM(amount), 0) AS balance,
               COUNT(DISTINCT email_key) AS investors
@@ -1606,7 +1595,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     const currentBalance = parseFloat(balanceResult.rows[0]?.balance) || 0;
     const numberOfInvestors = parseInt(balanceResult.rows[0]?.investors) || 0;
 
-    const notesResult = await client.query(
+    const notesResult = await pool.query(
       `SELECT n.id, n.old_status, n.new_status, n.note, n.created_at, u.user_name
        FROM investment_notes n
        LEFT JOIN users u ON n.created_by = u.id
@@ -1623,7 +1612,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       newStatus: n.new_status || null,
     }));
 
-    const tagResult = await client.query(
+    const tagResult = await pool.query(
       `SELECT it.tag
        FROM investment_tag_mappings itm
        JOIN investment_tags it ON itm.tag_id = it.id
@@ -1632,13 +1621,13 @@ router.get("/:id", async (req: Request, res: Response) => {
     );
     const investmentTag = tagResult.rows.map((t: any) => ({ tag: t.tag }));
 
-    const investmentNotificationRecipients = await getInvestmentNotificationRecipients(id, client);
+    const investmentNotificationRecipients = await getInvestmentNotificationRecipients(id);
 
     // `campaign_soft_circle_donors.raise_money_application_id` is the only
     // relational key on the donor table; campaigns have no FK to
     // `raise_money_applications`, so resolve the application via contact email
     // + investment name (verified by FK constraint listing on both tables).
-    const donorResult = await client.query(
+    const donorResult = await pool.query(
       `SELECT cscd.first_name, cscd.last_name, cscd.amount
        FROM campaign_soft_circle_donors cscd
        JOIN raise_money_applications rma ON rma.id = cscd.raise_money_application_id
@@ -1657,7 +1646,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     let terms = c.terms || "";
     if (terms) terms = normalizeMentionFormat(terms);
 
-    const thankYouAttachments = await loadThankYouAttachments(id, client);
+    const thankYouAttachments = await loadThankYouAttachments(id);
 
     const campaign: any = {
       id: Number(c.id),
@@ -1739,11 +1728,7 @@ router.get("/:id", async (req: Request, res: Response) => {
     res.json(campaign);
   } catch (err: any) {
     console.error("Error fetching investment by id:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  } finally {
-    if (client) client.release();
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

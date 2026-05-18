@@ -134,25 +134,6 @@ export interface AuditLogEntry {
     updatedAt: string;
 }
 
-export interface DashboardOverview {
-    summary: SummaryData;
-    investmentByTheme: ThemeInvestment[];
-    investmentChart: InvestmentChart;
-    recentInvestments: PaginatedResponse<RecentInvestment>;
-    topDonors: PaginatedResponse<TopDonor>;
-    topGroups: PaginatedResponse<TopGroup>;
-}
-
-/**
- * Single batched call returning the default-state payload for every card on
- * the admin Dashboard. Replaces the previous 6 parallel GETs that exhausted
- * Supabase's 15-session session-mode connection pool on initial mount.
- */
-export async function fetchDashboardOverview(): Promise<DashboardOverview> {
-    const response = await axiosInstance.get<DashboardOverview>("/api/admin/home/overview");
-    return response.data;
-}
-
 export async function fetchAuditLogs(params?: DashboardTableParams): Promise<PaginatedResponse<AuditLogEntry>> {
     const response = await axiosInstance.get<PaginatedResponse<AuditLogEntry>>("/api/admin/home/audit-logs", {
         params: {

@@ -345,12 +345,19 @@ router.get("/recent-investments", async (req: Request, res: Response) => {
 
     const whereClause = conditions.join(" AND ");
 
-    // Collapse the previous separate COUNT(*) + data queries into a single
-    // round-trip via COUNT(*) OVER () (halves session demand per request and
-    // is the primary mitigation for Supavisor's 15-session session-mode cap).
+    const countResult = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM recommendations r
+       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
+       JOIN campaigns c ON r.campaign_id = c.id
+       JOIN user_roles ur ON u.id = ur.user_id
+       JOIN roles role ON ur.role_id = role.id
+       WHERE ${whereClause}`,
+      values
+    );
+
     const dataResult = await pool.query(
       `SELECT
-         COUNT(*) OVER () AS total_count,
          u.first_name || ' ' || u.last_name AS investor,
          u.first_name AS first_name,
          u.email AS email,
@@ -369,28 +376,6 @@ router.get("/recent-investments", async (req: Request, res: Response) => {
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       [...values, params.perPage, offset]
     );
-    // `COUNT(*) OVER ()` is empty when the requested page has zero rows.
-    // Preserve prior pagination semantics (totalCount reflects the full set
-    // even when the user paged past the end) with a fallback count query —
-    // only runs in that edge case, so the common path is still one round-trip.
-    let totalCount: number;
-    if (dataResult.rows.length > 0) {
-      totalCount = parseInt(String(dataResult.rows[0].total_count)) || 0;
-    } else if (offset > 0) {
-      const countResult = await pool.query(
-        `SELECT COUNT(*) AS total
-           FROM recommendations r
-           JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-           JOIN campaigns c ON r.campaign_id = c.id
-           JOIN user_roles ur ON u.id = ur.user_id
-           JOIN roles role ON ur.role_id = role.id
-          WHERE ${whereClause}`,
-        values
-      );
-      totalCount = parseInt(String(countResult.rows[0]?.total)) || 0;
-    } else {
-      totalCount = 0;
-    }
 
     const items = dataResult.rows.map((row: { investor: string; first_name: string | null; email: string | null; userName: string; investment: string; amount: string; status: string; date_created: string }) => {
       const d = row.date_created ? dayjs(row.date_created) : null;
@@ -407,7 +392,7 @@ router.get("/recent-investments", async (req: Request, res: Response) => {
     });
 
     res.json({
-      totalCount,
+      totalCount: parseInt(countResult.rows[0].total) || 0,
       items,
     });
   } catch (err) {
@@ -447,11 +432,18 @@ router.get("/top-donors", async (req: Request, res: Response) => {
 
     const whereClause = conditions.join(" AND ");
 
-    // Single round-trip: COUNT(DISTINCT u.id) OVER () annotates each row with
-    // the grouped total so we don't need a separate count query.
+    const countResult = await pool.query(
+      `SELECT COUNT(DISTINCT u.id) AS total
+       FROM recommendations r
+       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
+       JOIN user_roles ur ON u.id = ur.user_id
+       JOIN roles role ON ur.role_id = role.id
+       WHERE ${whereClause}`,
+      values
+    );
+
     const dataResult = await pool.query(
       `SELECT
-         COUNT(*) OVER () AS total_count,
          u.first_name || ' ' || u.last_name AS donor,
          COALESCE(SUM(r.amount), 0) AS amount,
          COUNT(*) AS donations
@@ -465,23 +457,6 @@ router.get("/top-donors", async (req: Request, res: Response) => {
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       [...values, params.perPage, offset]
     );
-    let totalCount: number;
-    if (dataResult.rows.length > 0) {
-      totalCount = parseInt(String(dataResult.rows[0].total_count)) || 0;
-    } else if (offset > 0) {
-      const countResult = await pool.query(
-        `SELECT COUNT(DISTINCT u.id) AS total
-           FROM recommendations r
-           JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-           JOIN user_roles ur ON u.id = ur.user_id
-           JOIN roles role ON ur.role_id = role.id
-          WHERE ${whereClause}`,
-        values
-      );
-      totalCount = parseInt(String(countResult.rows[0]?.total)) || 0;
-    } else {
-      totalCount = 0;
-    }
 
     const items = dataResult.rows.map((row: { donor: string; amount: string; donations: string }) => ({
       donor: row.donor,
@@ -490,7 +465,7 @@ router.get("/top-donors", async (req: Request, res: Response) => {
     }));
 
     res.json({
-      totalCount,
+      totalCount: parseInt(countResult.rows[0].total) || 0,
       items,
     });
   } catch (err) {
@@ -531,11 +506,19 @@ router.get("/top-groups", async (req: Request, res: Response) => {
 
     const whereClause = conditions.join(" AND ");
 
-    // Single round-trip: COUNT(*) OVER () after GROUP BY yields the grouped
-    // row count for pagination without a separate count query.
+    const countResult = await pool.query(
+      `SELECT COUNT(DISTINCT g.id) AS total
+       FROM groups g
+       JOIN account_balance_change_logs log ON g.id = log.group_id
+       JOIN users u ON log.user_id = u.id
+       JOIN user_roles ur ON u.id = ur.user_id
+       JOIN roles role ON ur.role_id = role.id
+       WHERE ${whereClause}`,
+      values
+    );
+
     const dataResult = await pool.query(
       `SELECT
-         COUNT(*) OVER () AS total_count,
          g.id AS group_id,
          g.name AS group_name,
          COALESCE(SUM(log.new_value - log.old_value), 0) AS total_investment,
@@ -551,24 +534,6 @@ router.get("/top-groups", async (req: Request, res: Response) => {
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       [...values, params.perPage, offset]
     );
-    let totalCount: number;
-    if (dataResult.rows.length > 0) {
-      totalCount = parseInt(String(dataResult.rows[0].total_count)) || 0;
-    } else if (offset > 0) {
-      const countResult = await pool.query(
-        `SELECT COUNT(DISTINCT g.id) AS total
-           FROM groups g
-           JOIN account_balance_change_logs log ON g.id = log.group_id
-           JOIN users u ON log.user_id = u.id
-           JOIN user_roles ur ON u.id = ur.user_id
-           JOIN roles role ON ur.role_id = role.id
-          WHERE ${whereClause}`,
-        values
-      );
-      totalCount = parseInt(String(countResult.rows[0]?.total)) || 0;
-    } else {
-      totalCount = 0;
-    }
 
     const items = dataResult.rows.map((row: { group_name: string; total_investment: string; members: string }) => ({
       group: row.group_name,
@@ -577,326 +542,12 @@ router.get("/top-groups", async (req: Request, res: Response) => {
     }));
 
     res.json({
-      totalCount,
+      totalCount: parseInt(countResult.rows[0].total) || 0,
       items,
     });
   } catch (err) {
     console.error("Top groups error:", err);
     res.status(500).json({ message: "Internal server error" });
-  }
-});
-
-// ──────────────────────────────────────────────────────────────────────
-// Batched overview endpoint
-// ──────────────────────────────────────────────────────────────────────
-// The admin Dashboard previously fanned out 6 parallel GETs on mount
-// (`/summary`, `/investment-by-theme`, `/investment-chart`, `/recent-investments`,
-// `/top-donors`, `/top-groups`), each handler internally running 2–4 parallel
-// `pool.query` calls. Combined with scheduler ticks and the runtime `ensure*`
-// startup migrations, that easily pushed total session usage past Supavisor's
-// 15-session session-mode cap and surfaced as 500s with
-// `EMAXCONNSESSION ... pool_size: 15`.
-//
-// This single endpoint pins one pooled client for the entire response and
-// runs the same query logic sequentially. The JSON shape matches the per-card
-// endpoints, so the frontend selects each card off one cache entry. The per-
-// card endpoints remain in place for paginated/sorted refreshes.
-router.get("/overview", async (_req: Request, res: Response) => {
-  let client: import("pg").PoolClient | null = null;
-  try {
-    client = await pool.connect();
-    const now = new Date();
-    const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-
-    // ── summary ──
-    const [recStats, groupStats, userStats, lastMonthUserResult] = [
-      await client.query(
-        `SELECT
-           COALESCE(SUM(CASE WHEN LOWER(TRIM(r.status)) = 'approved' THEN r.amount ELSE 0 END), 0) AS total_approved,
-           COUNT(CASE WHEN LOWER(TRIM(r.status)) = 'approved' THEN 1 END) AS approved_count,
-           COALESCE(SUM(CASE WHEN r.date_created >= $1 THEN r.amount ELSE 0 END), 0) AS this_month_amount,
-           COUNT(CASE WHEN r.date_created >= $1 THEN 1 END) AS this_month_count,
-           COALESCE(SUM(CASE WHEN r.date_created >= $2 AND r.date_created < $1 THEN r.amount ELSE 0 END), 0) AS last_month_amount,
-           COUNT(CASE WHEN r.date_created >= $2 AND r.date_created < $1 THEN 1 END) AS last_month_count
-         FROM recommendations r
-         WHERE ${SOFT_DELETE_FILTER("r")}
-           AND LOWER(r.user_email) IN (
-             SELECT LOWER(u.email) FROM users u
-             JOIN user_roles ur ON u.id = ur.user_id
-             JOIN roles role ON ur.role_id = role.id
-             WHERE role.name = $3
-               AND ${SOFT_DELETE_FILTER("u")}
-           )`,
-        [startOfThisMonth.toISOString(), startOfLastMonth.toISOString(), USER_ROLE]
-      ),
-      await client.query(
-        `SELECT COUNT(*) AS total,
-                COUNT(CASE WHEN created_at >= $1 AND created_at < $2 THEN 1 END) AS last_month
-         FROM groups WHERE ${SOFT_DELETE_FILTER("groups")}`,
-        [startOfLastMonth.toISOString(), startOfThisMonth.toISOString()]
-      ),
-      await client.query(
-        `SELECT COUNT(*) AS total
-         FROM users u
-         JOIN user_roles ur ON u.id = ur.user_id
-         JOIN roles role ON ur.role_id = role.id
-         WHERE role.name = $1 AND ${SOFT_DELETE_FILTER("u")}`,
-        [USER_ROLE]
-      ),
-      await client.query(
-        `SELECT COUNT(*) AS total
-         FROM users u
-         WHERE u.date_created >= $1 AND u.date_created < $2 AND ${SOFT_DELETE_FILTER("u")}`,
-        [startOfLastMonth.toISOString(), startOfThisMonth.toISOString()]
-      ),
-    ];
-
-    const stats = recStats.rows[0];
-    const totalDonations = parseFloat(stats.total_approved) || 0;
-    const approvedCount = parseInt(stats.approved_count) || 0;
-    const averageDonation = approvedCount === 0 ? 0 : totalDonations / approvedCount;
-    const lastMonthDonations = parseFloat(stats.last_month_amount) || 0;
-    const thisMonthCount = parseInt(stats.this_month_count) || 0;
-    const lastMonthCount = parseInt(stats.last_month_count) || 0;
-    const thisMonthDonations = parseFloat(stats.this_month_amount) || 0;
-    const thisMonthAvg = thisMonthCount === 0 ? 0 : thisMonthDonations / thisMonthCount;
-    const lastMonthAvg = lastMonthCount === 0 ? 0 : lastMonthDonations / lastMonthCount;
-    const totalGroups = parseInt(groupStats.rows[0].total) || 0;
-    const lastMonthGroups = parseInt(groupStats.rows[0].last_month) || 0;
-    const totalUsers = parseInt(userStats.rows[0].total) || 0;
-    const lastMonthUsers = parseInt(lastMonthUserResult.rows[0].total) || 0;
-
-    const summary = {
-      totalDonations: Math.round(totalDonations),
-      totalGroups,
-      totalUsers,
-      averageDonation: Math.round(averageDonation),
-      donationGrowthPercentage: calculateGrowth(totalDonations, lastMonthDonations),
-      groupGrowthPercentage: calculateGrowth(totalGroups, lastMonthGroups),
-      userGrowthPercentage: calculateGrowth(totalUsers, lastMonthUsers),
-      avgDonationGrowthPercentage: calculateGrowth(thisMonthAvg, lastMonthAvg),
-    };
-
-    // ── investmentByTheme ──
-    const themes = await client.query(`SELECT id, name FROM themes`);
-    const campaigns = await client.query(
-      `SELECT id, themes FROM campaigns WHERE ${SOFT_DELETE_FILTER("campaigns")}`
-    );
-    const recResult = await client.query(
-      `SELECT r.campaign_id, r.amount, r.status
-       FROM recommendations r
-       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-       JOIN user_roles ur ON u.id = ur.user_id
-       JOIN roles role ON ur.role_id = role.id
-       WHERE role.name = $1
-         AND (r.status = 'pending' OR r.status = 'approved')
-         AND ${SOFT_DELETE_FILTER("r")}
-         AND ${SOFT_DELETE_FILTER("u")}`,
-      [USER_ROLE]
-    );
-
-    const campaignThemeMap = new Map<number, number[]>();
-    for (const c of campaigns.rows) {
-      campaignThemeMap.set(
-        Number(c.id),
-        c.themes
-          ? String(c.themes).split(",").map((t: string) => parseInt(t.trim(), 10)).filter((n: number) => !isNaN(n))
-          : []
-      );
-    }
-    const themeStats = new Map<number, { name: string; total: number }>();
-    for (const t of themes.rows) themeStats.set(Number(t.id), { name: t.name, total: 0 });
-    for (const rec of recResult.rows) {
-      const themeIds = campaignThemeMap.get(Number(rec.campaign_id)) || [];
-      if (themeIds.length === 0) continue;
-      const splitAmount = (parseFloat(rec.amount) || 0) / themeIds.length;
-      for (const themeId of themeIds) {
-        const s = themeStats.get(themeId);
-        if (s) s.total += splitAmount;
-      }
-    }
-    const themeRows = Array.from(themeStats.values())
-      .filter((s) => s.total > 0)
-      .sort((a, b) => b.total - a.total);
-    const themeGrand = themeRows.reduce((sum, s) => sum + s.total, 0);
-    const investmentByTheme = themeRows.map((s) => ({
-      name: s.name,
-      totalAmount: Math.round(s.total * 100) / 100,
-      percentage: themeGrand === 0 ? 0 : Math.round((s.total / themeGrand) * 100),
-    }));
-
-    // ── investmentChart (all-time, no months filter, matches default UI) ──
-    const minResult = await client.query(
-      `SELECT MIN(date_created) AS min_date FROM recommendations r
-       WHERE date_created IS NOT NULL AND ${SOFT_DELETE_FILTER("r")}`
-    );
-    const minDate = minResult.rows[0]?.min_date;
-    const chartStart = minDate
-      ? new Date(new Date(minDate).getFullYear(), new Date(minDate).getMonth(), 1)
-      : new Date(now.getFullYear(), now.getMonth(), 1);
-    const chartDataResult = await client.query(
-      `SELECT r.amount, r.date_created, r.user_email
-       FROM recommendations r
-       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-       JOIN user_roles ur ON u.id = ur.user_id
-       JOIN roles role ON ur.role_id = role.id
-       WHERE role.name = $1
-         AND r.status = 'approved'
-         AND r.date_created IS NOT NULL
-         AND r.date_created >= $2
-         AND r.date_created <= $3
-         AND ${SOFT_DELETE_FILTER("r")}
-         AND ${SOFT_DELETE_FILTER("u")}`,
-      [USER_ROLE, chartStart.toISOString(), now.toISOString()]
-    );
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const monthlyMap = new Map<string, number>();
-    const investorEmails = new Set<string>();
-    for (const row of chartDataResult.rows) {
-      const d = dayjs(row.date_created);
-      const key = `${d.year()}-${d.month()}`;
-      monthlyMap.set(key, (monthlyMap.get(key) || 0) + (parseFloat(row.amount) || 0));
-      if (row.user_email) investorEmails.add(row.user_email);
-    }
-    const chartData: Array<{ month: string; amount: number }> = [];
-    let loopDate = dayjs(chartStart);
-    const nowDayjs = dayjs(now);
-    while (loopDate.isBefore(nowDayjs) || loopDate.isSame(nowDayjs)) {
-      const key = `${loopDate.year()}-${loopDate.month()}`;
-      chartData.push({ month: monthNames[loopDate.month()], amount: Math.round(monthlyMap.get(key) || 0) });
-      loopDate = loopDate.add(1, "month");
-    }
-    const chartTotal = chartDataResult.rows.reduce(
-      (sum: number, r: { amount: string }) => sum + (parseFloat(r.amount) || 0),
-      0
-    );
-    const investmentChart = {
-      totalDonations: Math.round(chartTotal),
-      totalInvestments: Math.round(chartTotal),
-      growthRate: 0,
-      investors: investorEmails.size,
-      chartData,
-    };
-
-    // ── recentInvestments (page 1, perPage 10, default sort) ──
-    const recentResult = await client.query(
-      `SELECT
-         COUNT(*) OVER () AS total_count,
-         u.first_name || ' ' || u.last_name AS investor,
-         u.first_name AS first_name,
-         u.email AS email,
-         '@' || u.user_name AS "userName",
-         c.name AS investment,
-         COALESCE(r.amount, 0) AS amount,
-         r.status,
-         r.date_created
-       FROM recommendations r
-       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-       JOIN campaigns c ON r.campaign_id = c.id
-       JOIN user_roles ur ON u.id = ur.user_id
-       JOIN roles role ON ur.role_id = role.id
-       WHERE role.name = $1
-         AND ${SOFT_DELETE_FILTER("r")}
-         AND ${SOFT_DELETE_FILTER("u")}
-         AND ${SOFT_DELETE_FILTER("c")}
-       ORDER BY r.date_created DESC
-       LIMIT 10 OFFSET 0`,
-      [USER_ROLE]
-    );
-    const recentInvestments = {
-      totalCount: recentResult.rows.length > 0 ? parseInt(String(recentResult.rows[0].total_count)) || 0 : 0,
-      items: recentResult.rows.map((row: { investor: string; first_name: string | null; email: string | null; userName: string; investment: string; amount: string; status: string; date_created: string }) => {
-        const d = row.date_created ? dayjs(row.date_created) : null;
-        return {
-          investor: row.investor,
-          firstName: row.first_name || "",
-          email: row.email || "",
-          userName: row.userName,
-          investment: row.investment,
-          amount: Math.round(parseFloat(row.amount) || 0),
-          status: row.status,
-          date: d && d.isValid() ? d.format("MMM DD") : "",
-        };
-      }),
-    };
-
-    // ── topDonors (page 1, perPage 10) ──
-    const donorsResult = await client.query(
-      `SELECT
-         COUNT(*) OVER () AS total_count,
-         u.first_name || ' ' || u.last_name AS donor,
-         COALESCE(SUM(r.amount), 0) AS amount,
-         COUNT(*) AS donations
-       FROM recommendations r
-       JOIN users u ON LOWER(r.user_email) = LOWER(u.email)
-       JOIN user_roles ur ON u.id = ur.user_id
-       JOIN roles role ON ur.role_id = role.id
-       WHERE role.name = $1
-         AND r.status = 'approved'
-         AND ${SOFT_DELETE_FILTER("r")}
-         AND ${SOFT_DELETE_FILTER("u")}
-       GROUP BY u.id, u.first_name, u.last_name
-       ORDER BY donations DESC
-       LIMIT 10 OFFSET 0`,
-      [USER_ROLE]
-    );
-    const topDonors = {
-      totalCount: donorsResult.rows.length > 0 ? parseInt(String(donorsResult.rows[0].total_count)) || 0 : 0,
-      items: donorsResult.rows.map((row: { donor: string; amount: string; donations: string }) => ({
-        donor: row.donor,
-        amount: Math.round(parseFloat(row.amount) || 0),
-        donations: parseInt(row.donations) || 0,
-      })),
-    };
-
-    // ── topGroups (page 1, perPage 10) ──
-    const groupsResult = await client.query(
-      `SELECT
-         COUNT(*) OVER () AS total_count,
-         g.id AS group_id,
-         g.name AS group_name,
-         COALESCE(SUM(log.new_value - log.old_value), 0) AS total_investment,
-         (SELECT COUNT(*) FROM requests req WHERE req.group_to_follow_id = g.id AND req.status = 'accepted' AND req.is_deleted = false) AS members
-       FROM groups g
-       JOIN account_balance_change_logs log ON g.id = log.group_id
-       JOIN users u ON log.user_id = u.id
-       JOIN user_roles ur ON u.id = ur.user_id
-       JOIN roles role ON ur.role_id = role.id
-       WHERE role.name = $1
-         AND log.group_id IS NOT NULL
-         AND (log.new_value - log.old_value) > 0
-         AND ${SOFT_DELETE_FILTER("g")}
-         AND ${SOFT_DELETE_FILTER("u")}
-       GROUP BY g.id, g.name
-       ORDER BY total_investment DESC
-       LIMIT 10 OFFSET 0`,
-      [USER_ROLE]
-    );
-    const topGroups = {
-      totalCount: groupsResult.rows.length > 0 ? parseInt(String(groupsResult.rows[0].total_count)) || 0 : 0,
-      items: groupsResult.rows.map((row: { group_name: string; total_investment: string; members: string }) => ({
-        group: row.group_name,
-        investment: Math.round(parseFloat(row.total_investment) || 0),
-        members: parseInt(row.members) || 0,
-      })),
-    };
-
-    res.json({
-      summary,
-      investmentByTheme,
-      investmentChart,
-      recentInvestments,
-      topDonors,
-      topGroups,
-    });
-  } catch (err) {
-    console.error("Dashboard overview error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ message: "Internal server error" });
-    }
-  } finally {
-    if (client) client.release();
   }
 });
 

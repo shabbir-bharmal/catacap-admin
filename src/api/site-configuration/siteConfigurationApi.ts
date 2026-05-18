@@ -249,63 +249,56 @@ export interface AllSiteConfigurations {
     dafProviders: DAFProviderItem[];
 }
 
-interface BulkRawPayload {
-    sourcedby?: RawValueItem[];
-    themes?: RawThemeItem[];
-    "special-filters"?: RawValueItem[];
-    "transaction-type"?: RawValueItem[];
-    "investment-type-category"?: RawValueItem[];
-    "investment-terms"?: RawStaticValueItem[];
-    configuration?: RawStaticValueItem[];
-    "news-type"?: RawValueItem[];
-    "news-audience"?: RawValueItem[];
-    statistics?: StatisticsItem[];
-    "meta-information"?: RawMetaInformationItem[];
-    "contact-info"?: ContactInfoItem[];
-    "daf-providers"?: RawDAFProviderItem[];
-}
-
 /**
- * Single batched call returning every site-configuration section the page
- * cares about. Replaces the previous N parallel per-type GETs that exhausted
- * Supabase's 15-session session-mode connection pool when the page mounted.
- * Individual missing sections collapse to empty arrays — matches the existing
- * tolerance of `fetchAllSiteConfigurations`.
+ * Fetches all site-configuration sections in parallel.
+ * Individual failures are swallowed – the section returns an empty array.
  */
 export async function fetchAllSiteConfigurations(): Promise<AllSiteConfigurations> {
-    const response = await axiosInstance.get<BulkRawPayload>(
-        "/api/admin/site-configuration/bulk"
-    );
-    const data = response.data ?? {};
+    const [
+        sourcedByRes,
+        themesRes,
+        specialFiltersRes,
+        transactionTypesRes,
+        investmentTypeCategoriesRes,
+        staticValuesRes,
+        configurationsRes,
+        newsTypesRes,
+        newsAudiencesRes,
+        statisticsRes,
+        metaInformationRes,
+        contactInfoRes,
+        dafProvidersRes,
+    ] =
+        await Promise.allSettled([
+            fetchSourcedBy(),
+            fetchThemes(),
+            fetchSpecialFilters(),
+            fetchTransactionTypes(),
+            fetchInvestmentTypeCategories(),
+            fetchStaticValues(),
+            fetchConfigurations(),
+            fetchNewsTypes(),
+            fetchNewsAudiences(),
+            fetchStatistics(),
+            fetchMetaInformation(),
+            fetchContactInfo(),
+            fetchDAFProviders(),
+        ]);
 
     return {
-        sourcedBy: (data.sourcedby ?? []).map((i) => ({ id: i.id, name: i.value })),
-        themes: (data.themes ?? []).map((i) => ({
-            id: i.id,
-            name: i.value,
-            imageFileName: i.imageFileName,
-            image: i.imageFileName ? getUrlBlobContainerImage(i.imageFileName) : undefined,
-            description: i.description ?? undefined,
-        })),
-        specialFilters: (data["special-filters"] ?? []).map((i) => ({ id: i.id, tag: i.value })),
-        transactionTypes: (data["transaction-type"] ?? []).map((i) => ({ id: i.id, name: i.value })),
-        investmentTypeCategories: (data["investment-type-category"] ?? []).map((i) => ({ id: i.id, name: i.value })),
-        staticValues: data["investment-terms"] ?? [],
-        configurations: data.configuration ?? [],
-        newsTypes: (data["news-type"] ?? []).map((i) => ({ id: i.id, name: i.value })),
-        newsAudiences: (data["news-audience"] ?? []).map((i) => ({ id: i.id, name: i.value })),
-        statistics: data.statistics ?? [],
-        metaInformation: (data["meta-information"] ?? []).map((i) => ({
-            ...i,
-            image: i.imageName ? getUrlBlobContainerImage(i.imageName) : undefined,
-        })),
-        contactInfo: data["contact-info"] ?? [],
-        dafProviders: (data["daf-providers"] ?? []).map((i) => ({
-            id: i.id,
-            name: i.value ?? "",
-            url: i.link ?? "",
-            isActive: i.isActive,
-        })),
+        sourcedBy: sourcedByRes.status === "fulfilled" ? sourcedByRes.value : [],
+        themes: themesRes.status === "fulfilled" ? themesRes.value : [],
+        specialFilters: specialFiltersRes.status === "fulfilled" ? specialFiltersRes.value : [],
+        transactionTypes: transactionTypesRes.status === "fulfilled" ? transactionTypesRes.value : [],
+        investmentTypeCategories: investmentTypeCategoriesRes.status === "fulfilled" ? investmentTypeCategoriesRes.value : [],
+        staticValues: staticValuesRes.status === "fulfilled" ? staticValuesRes.value : [],
+        configurations: configurationsRes.status === "fulfilled" ? configurationsRes.value : [],
+        newsTypes: newsTypesRes.status === "fulfilled" ? newsTypesRes.value : [],
+        newsAudiences: newsAudiencesRes.status === "fulfilled" ? newsAudiencesRes.value : [],
+        statistics: statisticsRes.status === "fulfilled" ? statisticsRes.value : [],
+        metaInformation: metaInformationRes.status === "fulfilled" ? metaInformationRes.value : [],
+        contactInfo: contactInfoRes.status === "fulfilled" ? contactInfoRes.value : [],
+        dafProviders: dafProvidersRes.status === "fulfilled" ? dafProvidersRes.value : [],
     };
 }
 

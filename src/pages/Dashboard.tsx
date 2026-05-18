@@ -12,10 +12,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   fetchInvestmentChart,
+  fetchSummary,
+  fetchInvestmentByTheme,
   fetchRecentInvestments,
   fetchTopDonors,
   fetchTopGroups,
-  fetchDashboardOverview,
   type InvestmentChart,
   type SummaryData,
   type ThemeInvestment,
@@ -165,47 +166,35 @@ export default function AdminDashboard() {
   };
 
   const [themeError, setThemeError] = useState(false);
-  // Skip the per-card useEffects on the first render — the batched overview
-  // call below populates all of them in a single round-trip. The flags flip
-  // to false once the user actually changes pagination/sort/chartPeriod so
-  // those interactions still hit the per-card endpoints.
-  const skipDonorsFetchRef = useRef(true);
-  const skipGroupsFetchRef = useRef(true);
-  const skipInvestsFetchRef = useRef(true);
-  const skipChartFetchRef = useRef(true);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetchDashboardOverview()
-      .then((data) => {
-        if (cancelled) return;
-        setSummary(data.summary);
-        setThemeInvestments(data.investmentByTheme);
+    const fetchMainData = async () => {
+      setLoading(true);
+      const [summaryResult, themeResult] = await Promise.allSettled([
+        fetchSummary(),
+        fetchInvestmentByTheme(),
+      ]);
+
+      if (summaryResult.status === "fulfilled") {
+        setSummary(summaryResult.value);
+      } else {
+        console.error("Error fetching summary data:", summaryResult.reason);
+      }
+
+      if (themeResult.status === "fulfilled") {
+        setThemeInvestments(themeResult.value);
         setThemeError(false);
-        setInvestmentChart(data.investmentChart);
-        setRecentInvests(data.recentInvestments);
-        setTopDonorList(data.topDonors);
-        setTopGroupList(data.topGroups);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error("Error fetching dashboard overview:", err);
+      } else {
+        console.error("Error fetching investment by theme:", themeResult.reason);
         setThemeError(true);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
+      }
+
+      setLoading(false);
     };
+    fetchMainData();
   }, []);
 
   useEffect(() => {
-    if (skipDonorsFetchRef.current) {
-      skipDonorsFetchRef.current = false;
-      return;
-    }
     fetchTopDonors({
       CurrentPage: donorsPage,
       PerPage: 10,
@@ -217,10 +206,6 @@ export default function AdminDashboard() {
   }, [donorsPage, donorsSortField, donorsSortDirection]);
 
   useEffect(() => {
-    if (skipGroupsFetchRef.current) {
-      skipGroupsFetchRef.current = false;
-      return;
-    }
     fetchTopGroups({
       CurrentPage: groupsPage,
       PerPage: 10,
@@ -232,10 +217,6 @@ export default function AdminDashboard() {
   }, [groupsPage, groupsSortField, groupsSortDirection]);
 
   useEffect(() => {
-    if (skipInvestsFetchRef.current) {
-      skipInvestsFetchRef.current = false;
-      return;
-    }
     fetchRecentInvestments({
       CurrentPage: recentInvestsPage,
       PerPage: 10,
@@ -249,10 +230,6 @@ export default function AdminDashboard() {
   }, [recentInvestsPage, investsSearchValue, investsStatus, investsSortField, investsSortDirection]);
 
   useEffect(() => {
-    if (skipChartFetchRef.current) {
-      skipChartFetchRef.current = false;
-      return;
-    }
     const months = chartPeriod === "1m" ? 1 : chartPeriod === "6m" ? 6 : undefined;
     fetchInvestmentChart(months).then(setInvestmentChart).catch(console.error);
   }, [chartPeriod]);

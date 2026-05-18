@@ -415,20 +415,7 @@ export async function reconcileOrphanedRunningLogs(
       continue;
     }
 
-    // Tolerate transient acquire failures (e.g. Supavisor's
-    // `EMAXCONNSESSION` when the startup sweep races BackupDatabase for the
-    // last available session). Log and move on — the next periodic sweep
-    // (5-minute interval) will retry naturally rather than crashing the
-    // scheduler with a fatal-looking error.
-    let client: import("pg").PoolClient;
-    try {
-      client = await pool.connect();
-    } catch (acquireErr) {
-      console.warn(
-        `[SCHEDULER] Skipping orphan reconcile for row ${row.id} (${row.job_name}): could not acquire DB client — ${(acquireErr as Error)?.message || acquireErr}. Will retry next sweep.`,
-      );
-      continue;
-    }
+    const client = await pool.connect();
     try {
       const lockResult = await client.query(
         `SELECT pg_try_advisory_lock($1) AS acquired`,

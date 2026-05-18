@@ -14,7 +14,6 @@ import { Plus, Pencil, Trash2, ListPlus, Upload, X, Bold, Italic, Underline, Lin
 import { getUrlBlobContainerImage, defaultImage, catacapDefaultImageLogo } from "@/lib/image-utils";
 import { Switch } from "@/components/ui/switch";
 import {
-  fetchAllSiteConfigurations,
   fetchSourcedBy,
   fetchThemes,
   fetchSpecialFilters,
@@ -105,33 +104,83 @@ export default function SiteConfiguration() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number | string; name: string; configType: SiteConfigType } | null>(null);
 
-  // Single batched load for every tab. Replaces the previous per-tab lazy
-  // fetch (which fired one or more parallel GETs each time the user switched
-  // tabs) with a single round-trip that pins one DB session on the server.
-  // This is the front-end half of the EMAXCONNSESSION mitigation; see
-  // `server/src/routes/siteConfiguration.ts#/bulk`.
   useEffect(() => {
+    if (loadedTabsRef.current.has(activeTab)) {
+      setLoading(false);
+      setFetchError(null);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setFetchError(null);
     (async () => {
       try {
-        const data = await fetchAllSiteConfigurations();
-        if (cancelled) return;
-        setSourcedBy(data.sourcedBy);
-        setThemes(data.themes);
-        setSpecialFilters(data.specialFilters);
-        setStaticValues(data.staticValues.map(v => ({ ...v, configType: "investment-terms" as SiteConfigType })));
-        setConfigurations(data.configurations.map(v => ({ ...v, configType: "Configuration" as SiteConfigType })));
-        setTransactionTypes(data.transactionTypes);
-        setInvestmentTypeCategories(data.investmentTypeCategories);
-        setNewsTypes(data.newsTypes);
-        setNewsAudiences(data.newsAudiences);
-        setStatistics(data.statistics);
-        setMetaInformation(data.metaInformation);
-        setContactInfo(data.contactInfo);
-        setDafProviders(data.dafProviders);
-        for (const tab of TABS) loadedTabsRef.current.add(tab);
+        switch (activeTab) {
+          case "Sourced By": {
+            const data = await fetchSourcedBy();
+            if (!cancelled) setSourcedBy(data);
+            break;
+          }
+          case "Themes": {
+            const data = await fetchThemes();
+            if (!cancelled) setThemes(data);
+            break;
+          }
+          case "Special Filters": {
+            const data = await fetchSpecialFilters();
+            if (!cancelled) setSpecialFilters(data);
+            break;
+          }
+          case "Configuration": {
+            const [sv, cv] = await Promise.all([fetchStaticValues(), fetchConfigurations()]);
+            if (!cancelled) {
+              setStaticValues(sv.map(v => ({ ...v, configType: "investment-terms" as SiteConfigType })));
+              setConfigurations(cv.map(v => ({ ...v, configType: "Configuration" as SiteConfigType })));
+            }
+            break;
+          }
+          case "Transaction Type": {
+            const data = await fetchTransactionTypes();
+            if (!cancelled) setTransactionTypes(data);
+            break;
+          }
+          case "Investment Type": {
+            const data = await fetchInvestmentTypeCategories();
+            if (!cancelled) setInvestmentTypeCategories(data);
+            break;
+          }
+          case "News Type": {
+            const data = await fetchNewsTypes();
+            if (!cancelled) setNewsTypes(data);
+            break;
+          }
+          case "News Audience": {
+            const data = await fetchNewsAudiences();
+            if (!cancelled) setNewsAudiences(data);
+            break;
+          }
+          case "Statistics": {
+            const data = await fetchStatistics();
+            if (!cancelled) setStatistics(data);
+            break;
+          }
+          case "Meta Information": {
+            const data = await fetchMetaInformation();
+            if (!cancelled) setMetaInformation(data);
+            break;
+          }
+          case "Contact Info": {
+            const data = await fetchContactInfo();
+            if (!cancelled) setContactInfo(data);
+            break;
+          }
+          case "DAF Providers": {
+            const data = await fetchDAFProviders();
+            if (!cancelled) setDafProviders(data);
+            break;
+          }
+        }
+        if (!cancelled) loadedTabsRef.current.add(activeTab);
       } catch {
         if (!cancelled) setFetchError("Failed to load site configuration. Please try again.");
       } finally {
@@ -141,7 +190,7 @@ export default function SiteConfiguration() {
     return () => {
       cancelled = true;
     };
-  }, [retryToken]);
+  }, [activeTab, retryToken]);
 
   // ─── Assign Popover (real API) ──────────────────────────────────────────────
   function AssignPopover({ itemId, itemName, type }: { itemId: number; itemName: string; type: SiteConfigType }) {
