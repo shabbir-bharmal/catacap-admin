@@ -24,7 +24,7 @@
  * has committed.
  */
 
-import pool from "../db.js";
+import pool, { sessionPool } from "../db.js";
 
 interface ApplyMatchArgs {
   campaignId: number;
@@ -127,7 +127,12 @@ export async function applySingleGrant(opts: {
     campaignName,
   } = opts;
 
-  const client = await pool.connect();
+  // Routed via sessionPool: this transaction spans multiple round-trips with
+  // a `SELECT ... FOR UPDATE` row lock on the donor wallet. Transaction-mode
+  // pooling preserves the lock within BEGIN..COMMIT, but session-mode gives
+  // identical lock semantics and avoids any risk of a future caller pulling
+  // the same connection mid-transaction.
+  const client = await sessionPool.connect();
   try {
     const reserved = parseFloat(grant.reserved_amount) || 0;
     const amountUsed = parseFloat(grant.amount_used) || 0;
