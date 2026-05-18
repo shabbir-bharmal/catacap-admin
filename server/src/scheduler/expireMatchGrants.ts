@@ -6,7 +6,7 @@
  * refund in account_balance_change_logs, and marks the grant inactive.
  */
 
-import { schedulerPool as pool } from "../db.js";
+import pool from "../db.js";
 
 export async function runExpireMatchGrants(): Promise<void> {
   console.log("[ExpireMatchGrants] Starting expiry check...");

@@ -1,4 +1,4 @@
-import { schedulerPool as pool } from "../db.js";
+import pool from "../db.js";
 import { CAMPAIGN_UPDATE_RECIPIENT_USER_IDS_SQL } from "../utils/campaignUpdateRecipients.js";
 
 function truncate(s: string | null | undefined, n: number): string {

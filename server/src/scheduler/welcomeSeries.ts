@@ -1,4 +1,4 @@
-import { schedulerPool as pool } from "../db.js";
+import pool from "../db.js";
 import { sendTemplateEmail } from "../utils/emailService.js";
 
 const FORM_TYPE_LEARN_MORE = 4;
