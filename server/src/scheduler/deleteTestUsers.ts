@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 import type { PoolClient } from "pg";
 
 interface PgDatabaseError extends Error {

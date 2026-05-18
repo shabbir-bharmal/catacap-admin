@@ -28,6 +28,7 @@ import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useDebounce } from "../hooks/useDebounce";
 import { cn } from "@/lib/utils";
+import { RequiredMark, FieldError } from "@/components/ui/required-mark";
 
 // ------------------------------------------------------------------ //
 // Types
@@ -320,6 +321,7 @@ function GrantFormDialog({
   const { toast } = useToast();
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const isEdit = !!initial.id;
 
   // Edit-mode cap adjuster: user picks "Add" or "Remove" + amount instead
@@ -332,6 +334,7 @@ function GrantFormDialog({
     setForm(initial);
     setCapAdjustMode("add");
     setCapAdjustAmount("");
+    setSubmitted(false);
   }, [initial, open]);
 
   const upd = (key: keyof typeof EMPTY_FORM, val: any) =>
@@ -391,12 +394,21 @@ function GrantFormDialog({
   })();
 
   const handleSave = async () => {
+    setSubmitted(true);
     if (!form.donorUserId) {
       toast({ title: "Error", description: "Please select a donor.", variant: "destructive" });
       return;
     }
     if (form.campaignIds.length === 0) {
       toast({ title: "Error", description: "Please select at least one campaign.", variant: "destructive" });
+      return;
+    }
+    if (form.matchType === "capped" && (form.perInvestmentCap === "" || Number(form.perInvestmentCap) <= 0)) {
+      toast({
+        title: "Per-Investment Cap required",
+        description: "Please enter a Per-Investment Cap greater than 0.",
+        variant: "destructive",
+      });
       return;
     }
     if (form.applyRetroactive && !form.retroactiveFrom) {
@@ -469,7 +481,11 @@ function GrantFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[90vw] max-w-[90vw] sm:max-w-[90vw] max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="w-[90vw] max-w-[90vw] sm:max-w-[90vw] max-h-[90vh] overflow-y-auto"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit Match Grant" : "New Match Grant"}</DialogTitle>
         </DialogHeader>
@@ -486,7 +502,7 @@ function GrantFormDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-sm">Matching Donor *</Label>
+            <Label className="text-sm">Matching Donor<RequiredMark /></Label>
             <DonorSearch
               value={form.donorUserId}
               displayName={form.donorFullName || form.donorEmail}
@@ -497,6 +513,11 @@ function GrantFormDialog({
                 upd("donorBalance", d.accountBalance);
               }}
             />
+            <FieldError
+              show={submitted && !form.donorUserId}
+              message="Matching Donor is required."
+              testId="error-donor-required"
+            />
             {form.donorUserId && (
               <p className="text-xs text-muted-foreground">
                 {form.donorEmail} · Current balance: {currency_format(form.donorBalance)}
@@ -505,11 +526,16 @@ function GrantFormDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-sm">Eligible Campaigns *</Label>
+            <Label className="text-sm">Eligible Campaigns<RequiredMark /></Label>
             <CampaignMultiSelect
               options={campaigns}
               selected={form.campaignIds}
               onChange={(ids) => upd("campaignIds", ids)}
+            />
+            <FieldError
+              show={submitted && form.campaignIds.length === 0}
+              message="Eligible Campaigns is required."
+              testId="error-campaigns-required"
             />
             <p className="text-xs text-muted-foreground">
               Investments into any selected campaign will trigger this match.
@@ -722,7 +748,7 @@ function GrantFormDialog({
 
           {form.matchType === "capped" && (
             <div className="space-y-1.5">
-              <Label className="text-sm">Per-Investment Cap ($) *</Label>
+              <Label className="text-sm">Per-Investment Cap ($)<RequiredMark /></Label>
               <Input
                 type="number"
                 min="0"
@@ -730,6 +756,15 @@ function GrantFormDialog({
                 onChange={(e) => upd("perInvestmentCap", e.target.value)}
                 placeholder="e.g. 5000"
                 data-testid="input-per-cap"
+              />
+              <FieldError
+                show={
+                  submitted &&
+                  form.matchType === "capped" &&
+                  (form.perInvestmentCap === "" || Number(form.perInvestmentCap) <= 0)
+                }
+                message="Per-Investment Cap is required."
+                testId="error-per-cap-required"
               />
               <p className="text-xs text-muted-foreground">
                 Max match per single investor investment.
@@ -768,13 +803,18 @@ function GrantFormDialog({
             </p>
             {form.applyRetroactive && (
               <div className="space-y-1.5 pt-1">
-                <Label className="text-sm">Match investments on or after *</Label>
+                <Label className="text-sm">Match investments on or after<RequiredMark /></Label>
                 <Input
                   type="date"
                   value={form.retroactiveFrom}
                   onChange={(e) => upd("retroactiveFrom", e.target.value)}
                   max={new Date().toISOString().slice(0, 10)}
                   data-testid="input-retroactive-from"
+                />
+                <FieldError
+                  show={submitted && form.applyRetroactive && !form.retroactiveFrom}
+                  message="Match investments on or after is required."
+                  testId="error-retroactive-from-required"
                 />
                 {isEdit && (
                   <p className="text-xs text-muted-foreground">

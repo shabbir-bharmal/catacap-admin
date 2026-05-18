@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import { testConnection } from "./db.js";
+import { testConnection, getDbPoolStats } from "./db.js";
 import pool from "./db.js";
 
 import authRoutes from "./routes/auth.js";
@@ -62,6 +62,136 @@ app.use(express.json({ limit: "50mb", strict: false }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Liveness probe for the database. Returns 200 with pool stats when at least
+// one pool can run `SELECT 1` within a short window; 503 otherwise. Useful
+// for fast diagnosis of "the API is up but DB is wedged" outages without
+// having to read application logs.
+// Hard total deadline (acquire + query) for the DB liveness probe. Set
+// well below the HTTP pool's 20s `connectionTimeoutMillis` so the
+// endpoint is a TRUE starvation signal — it must return 503 within ~2s
+// even when every HTTP pool slot is occupied. Otherwise the probe just
+// joins the wait queue and reports "healthy" 20s later, after the
+// incident has already resolved itself.
+const HEALTHZ_DB_DEADLINE_MS = 2_000;
+
+app.get("/api/healthz/db", async (_req, res) => {
+  const started = Date.now();
+  const snapshotAtStart = getDbPoolStats();
+  let timedOut = false;
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`Acquire+query exceeded ${HEALTHZ_DB_DEADLINE_MS}ms deadline`));
+    }, HEALTHZ_DB_DEADLINE_MS);
+  });
+
+  // Acquire the client through Promise.race so that even a starved pool
+  // (every slot busy) returns 503 within the deadline instead of waiting
+  // 20s for `connectionTimeoutMillis`. If `pool.connect()` later resolves
+  // after we already responded, we still release the orphaned client so
+  // it doesn't leak — that's what `connectPromise.then(release)` does.
+  const connectPromise = pool.connect();
+  let client: import("pg").PoolClient | null = null;
+  try {
+    client = (await Promise.race([connectPromise, deadline])) as import("pg").PoolClient;
+    // Also bound the SELECT itself so a wedged DB can't keep us past the
+    // deadline. 5s is well under our 2s race ceiling — defensive only.
+    await client.query("SET statement_timeout = '5s'");
+    const result = (await Promise.race([
+      client.query("SELECT 1 AS ok"),
+      deadline,
+    ])) as { rows: Array<{ ok: number }> };
+    res.json({
+      status: "ok",
+      latencyMs: Date.now() - started,
+      pools: getDbPoolStats(),
+      ping: result.rows[0] ?? null,
+    });
+  } catch (err: any) {
+    res.status(503).json({
+      status: "error",
+      latencyMs: Date.now() - started,
+      // Snapshot at the moment the probe failed — combined with the
+      // start snapshot in the logs, this pinpoints which pool was full.
+      poolsAtStart: snapshotAtStart,
+      pools: getDbPoolStats(),
+      message: err?.message || String(err),
+      timedOut,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (client) {
+      try {
+        await client.query("SET statement_timeout = '20s'");
+      } catch {
+        /* ignore — client may be in a broken state */
+      }
+      client.release();
+    } else {
+      // Acquire raced past the deadline — when (and if) the underlying
+      // connect eventually resolves, release that orphan client so we
+      // don't leak it back to the pool with no owner.
+      connectPromise
+        .then((late) => {
+          try {
+            late.release();
+          } catch {
+            /* ignore */
+          }
+        })
+        .catch(() => {
+          /* original acquire error already surfaced via 503 */
+        });
+    }
+  }
+});
+
+// Per-request timeout. If a handler hasn't replied within 25s we abort it
+// with a 504 so the client gets a clear error instead of waiting on a
+// stuck pool acquire. The worst-case theoretical handler latency is 20s
+// pool-acquire + 20s statement_timeout = 40s, so 25s is intentionally
+// AGGRESSIVE — it cuts off requests that are blocked on a second slow
+// step rather than letting them tie up resources to the worst-case
+// ceiling. A single slow query that completes its acquire fast will
+// still finish well inside 25s; anything that exceeds it is almost
+// certainly stuck behind a starved pool, which is precisely the failure
+// mode this task targets.
+//
+// Long-running endpoints (Excel exports, file uploads, backups, stream
+// responses) opt out by matching one of the patterns below — they get
+// `requestTimeout` (30s, from `server.requestTimeout`) for the headers/body
+// and no application-level cap. Reviewers asked specifically for this
+// exclusion list so a 25s ceiling doesn't truncate a 1MB Excel export.
+const REQUEST_TIMEOUT_MS = 25_000;
+const LONG_REQUEST_PATTERNS: RegExp[] = [
+  /\/export(\b|\/|-)/i,       // /export, /export-by-daf, /:id/export, /export-disbursal-request-list
+  /\/uploads?(\b|\/)/i,        // /api/uploads/*
+  /\/backup(\b|\/)/i,          // backup endpoints
+  /\/admin\/scheduler\//i,     // manual scheduler triggers (e.g. /trigger/DailyCleanup)
+];
+const isLongRequest = (req: express.Request): boolean => {
+  if (req.query?.stream === "true") return true;
+  return LONG_REQUEST_PATTERNS.some((rx) => rx.test(req.path));
+};
+
+app.use((req, res, next) => {
+  if (isLongRequest(req)) {
+    return next();
+  }
+  res.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        message: "Request timed out after 25s",
+      });
+    } else {
+      try { res.end(); } catch {}
+    }
+  });
+  next();
 });
 
 app.use("/api/uploads", express.static(path.resolve(process.cwd(), "server", "uploads")));
@@ -143,10 +273,19 @@ async function start() {
     process.exit(1);
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
     initScheduler();
   });
+
+  // Tune HTTP keep-alive so we don't hold sockets open longer than the
+  // upstream proxy expects. `headersTimeout` MUST be greater than
+  // `keepAliveTimeout` (Node will otherwise truncate the response).
+  // Source: https://nodejs.org/api/http.html#serverkeepalivetimeout
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 70_000;
+  // Hard cap on how long Node will wait for the request to arrive in full.
+  server.requestTimeout = 30_000;
 }
 
 start();

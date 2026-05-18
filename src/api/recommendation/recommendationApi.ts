@@ -27,6 +27,7 @@ export interface RecommendationEntry {
   rejectedBy: string | null;
   rejectionMemo: string | null;
   isMatch?: boolean;
+  matchDonorName?: string | null;
 }
 
 export interface PaginatedRecommendationResponse {

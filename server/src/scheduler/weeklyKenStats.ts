@@ -1,5 +1,5 @@
 import { Resend } from "resend";
-import pool from "../db.js";
+import { schedulerPool as pool } from "../db.js";
 import { buildFromEmail } from "../utils/emailService.js";
 
 const RECIPIENT = "ken@catacap.org";

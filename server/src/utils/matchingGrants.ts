@@ -24,7 +24,12 @@
  * has committed.
  */
 
-import pool from "../db.js";
+// Use the scheduler pool: these helpers run heavy multi-statement work
+// (`applyMatchGrants` is invoked fire-and-forget from HTTP handlers, and
+// `runRetroactiveSweep` walks every eligible recommendation). Routing
+// them through `schedulerPool` keeps the small HTTP pool free for live
+// admin requests, so a 200-row sweep can never starve the dashboard.
+import { schedulerPool as pool } from "../db.js";
 
 interface ApplyMatchArgs {
   campaignId: number;
@@ -118,6 +123,13 @@ export async function applySingleGrant(opts: {
   triggeringRecommendationId: number;
   investmentAmount: number;
   campaignName: string;
+  // Optional pre-acquired client. When provided we DO NOT call
+  // `pool.connect()` / `client.release()` — the caller owns the lifecycle.
+  // The function still uses its own BEGIN/COMMIT, so the client must be
+  // outside of a transaction when handed in. Reused by `runRetroactiveSweep`
+  // so a sweep over hundreds of recommendations doesn't acquire-and-release
+  // N pool connections sequentially.
+  client?: import("pg").PoolClient;
 }): Promise<number> {
   const {
     grant,
@@ -127,7 +139,8 @@ export async function applySingleGrant(opts: {
     campaignName,
   } = opts;
 
-  const client = await pool.connect();
+  const ownClient = !opts.client;
+  const client = opts.client ?? (await pool.connect());
   try {
     const reserved = parseFloat(grant.reserved_amount) || 0;
     const amountUsed = parseFloat(grant.amount_used) || 0;
@@ -225,6 +238,11 @@ export async function applySingleGrant(opts: {
       );
       if (escrowDonorRes.rows.length > 0) {
         const escrowBalance = parseFloat(escrowDonorRes.rows[0].account_balance) || 0;
+        const investorRes = await client.query(
+          `SELECT user_full_name FROM recommendations WHERE id = $1`,
+          [triggeringRecommendationId],
+        );
+        const investorName = investorRes.rows[0]?.user_full_name || "";
         await client.query(
           `INSERT INTO account_balance_change_logs
              (user_id, payment_type, investment_name, campaign_id,
@@ -238,7 +256,7 @@ export async function applySingleGrant(opts: {
             escrowBalance,
             escrowDonorRes.rows[0].user_name || "",
             escrowBalance,
-            `$${matchAmount.toFixed(2)} matched from escrow via grant "${grant.name || `Grant #${grant.id}`}"`,
+            `$${matchAmount.toFixed(2)} matched from "${grant.name || `Grant #${grant.id}`}" on behalf of ${investorName}`,
           ],
         );
       }
@@ -300,7 +318,7 @@ export async function applySingleGrant(opts: {
     );
     return 0;
   } finally {
-    client.release();
+    if (ownClient) client.release();
   }
 }
 
@@ -393,33 +411,65 @@ export async function runRetroactiveSweep(grantId: number): Promise<{
       `runRetroactiveSweep: grant ${grantId} → ${summary.scanned} candidate recommendation(s) on/after ${grant.retroactive_from}`,
     );
 
-    for (const rec of recsRes.rows) {
-      // Re-read live grant state each iteration so amount_used / reserved_amount
-      // reflect the most recent applications inside this sweep.
-      const liveGrantRes = await pool.query(
-        `SELECT id, donor_user_id, total_cap, amount_used, reserved_amount,
-                match_type, per_investment_cap, name, expires_at
-           FROM campaign_match_grants WHERE id = $1`,
-        [grantId],
-      );
-      if (liveGrantRes.rows.length === 0) break;
-      const liveGrant = liveGrantRes.rows[0];
+    // Reuse a single pooled client across every iteration. Previously each
+    // call to `applySingleGrant` did its own `pool.connect()`/`release()`,
+    // which on a 50-rec sweep means 50 round-trips through the pool wait
+    // queue — enough to stall a parallel HTTP burst when the pool is small.
+    const sweepClient = await pool.connect();
+    try {
+      // The default per-connection statement_timeout is 20s (set via
+      // connection-string options=). A retroactive sweep over hundreds of
+      // recommendations can legitimately exceed that on the largest grants,
+      // and an aborted sweep leaves donor wallet reservations in a
+      // confusing partial state. Lift the cap on THIS client only for the
+      // duration of the sweep — the next caller to acquire this client
+      // gets the 20s default again because we release it before returning,
+      // and `testConnection`'s reset also restores '20s'.
+      await sweepClient.query("SET statement_timeout = '5min'");
 
-      const applied = await applySingleGrant({
-        grant: liveGrant,
-        campaignId: Number(rec.campaign_id),
-        investorUserId: rec.user_id,
-        triggeringRecommendationId: Number(rec.id),
-        investmentAmount: parseFloat(rec.amount) || 0,
-        campaignName: rec.campaign_name || "",
-      });
+      for (const rec of recsRes.rows) {
+        // Re-read live grant state each iteration so amount_used /
+        // reserved_amount reflect the most recent applications inside this
+        // sweep.
+        const liveGrantRes = await sweepClient.query(
+          `SELECT id, donor_user_id, total_cap, amount_used, reserved_amount,
+                  match_type, per_investment_cap, name, expires_at
+             FROM campaign_match_grants WHERE id = $1`,
+          [grantId],
+        );
+        if (liveGrantRes.rows.length === 0) break;
+        const liveGrant = liveGrantRes.rows[0];
 
-      if (applied > 0) {
-        summary.matched += 1;
-        summary.totalAmount += applied;
-      } else {
-        summary.skipped += 1;
+        const applied = await applySingleGrant({
+          grant: liveGrant,
+          campaignId: Number(rec.campaign_id),
+          investorUserId: rec.user_id,
+          triggeringRecommendationId: Number(rec.id),
+          investmentAmount: parseFloat(rec.amount) || 0,
+          campaignName: rec.campaign_name || "",
+          client: sweepClient,
+        });
+
+        if (applied > 0) {
+          summary.matched += 1;
+          summary.totalAmount += applied;
+        } else {
+          summary.skipped += 1;
+        }
       }
+    } finally {
+      // Restore the per-client default before returning to the pool, so a
+      // future scheduler task acquiring this same client doesn't inherit
+      // the lifted 5-minute cap.
+      try {
+        await sweepClient.query("SET statement_timeout = '20s'");
+      } catch (resetErr) {
+        console.warn(
+          "runRetroactiveSweep: failed to reset statement_timeout (non-fatal):",
+          (resetErr as any)?.message || resetErr,
+        );
+      }
+      sweepClient.release();
     }
 
     summary.totalAmount = Math.round(summary.totalAmount * 100) / 100;

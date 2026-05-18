@@ -190,7 +190,7 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
       res.status(400).json({ success: false, message: "Invalid id" });
       return;
     }
-    const [result, projections] = await Promise.all([
+    const [result, projections, grantRes] = await Promise.all([
       pool.query(
         `SELECT a.id, a.amount, a.created_at,
                 c.name   AS campaign_name,
@@ -207,7 +207,22 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         [id],
       ),
       projectPendingMatchesForGrant(id),
+      pool.query(
+        `SELECT reserved_amount, amount_used FROM campaign_match_grants WHERE id = $1`,
+        [id],
+      ),
     ]);
+
+    const grantRow = grantRes.rows[0] || {};
+    const reserved = parseFloat(grantRow.reserved_amount) || 0;
+    const used = parseFloat(grantRow.amount_used) || 0;
+    const remaining = Math.max(0, reserved - used);
+    const projectionSum = projections.reduce((s, p) => s + p.projectedAmount, 0);
+    // Independent CC/ACH projections can sum to more than the grant's real
+    // remaining budget (each row shows its full would-be match in isolation).
+    // Cap the displayed total at remaining budget so the panel header
+    // accurately reflects the grant's actual exposure.
+    const cappedPendingTotal = Math.round(Math.min(projectionSum, remaining) * 100) / 100;
     res.json({
       success: true,
       items: result.rows.map((r: any) => ({
@@ -231,7 +246,7 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerStatus: p.trigger.triggerStatus,
         triggerAmount: p.trigger.triggerAmount,
       })),
-      pendingTotal: Math.round(projections.reduce((s, p) => s + p.projectedAmount, 0) * 100) / 100,
+      pendingTotal: cappedPendingTotal,
     });
   } catch (err: any) {
     console.error("Error fetching match grant activity:", err);
@@ -284,6 +299,7 @@ router.get("/donor-search", async (req: Request, res: Response) => {
 // ------------------------------------------------------------------ //
 router.post("/", async (req: Request, res: Response) => {
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     const b = req.body || {};
 
@@ -353,6 +369,10 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
+    // Release the HTTP pool client BEFORE the sweep so we don't hold two
+    // pool connections (this one + the sweep's own) concurrently.
+    client.release();
+    clientReleased = true;
 
     // Run retroactive sweep AFTER commit so that the grant + campaign links
     // are visible to the sweep query and any errors don't roll back the grant.
@@ -368,11 +388,11 @@ router.post("/", async (req: Request, res: Response) => {
       retroactive: retroSummary,
     });
   } catch (err: any) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!clientReleased) await client.query("ROLLBACK").catch(() => {});
     console.error("Error creating match grant:", err);
     res.status(500).json({ success: false, message: err.message });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 });
 
@@ -381,6 +401,7 @@ router.post("/", async (req: Request, res: Response) => {
 // ------------------------------------------------------------------ //
 router.put("/:id", async (req: Request, res: Response) => {
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) {
@@ -527,6 +548,10 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
+    // Release the HTTP pool client BEFORE the sweep so we don't hold two
+    // pool connections (this one + the sweep's own) concurrently.
+    client.release();
+    clientReleased = true;
 
     // If retroactive_from is set (or was changed), run a sweep. The sweep
     // itself dedups via the unique index, so re-running on edit is safe and
@@ -543,11 +568,11 @@ router.put("/:id", async (req: Request, res: Response) => {
       retroactive: retroSummary,
     });
   } catch (err: any) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!clientReleased) await client.query("ROLLBACK").catch(() => {});
     console.error("Error updating match grant:", err);
     res.status(500).json({ success: false, message: err.message });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 });
 

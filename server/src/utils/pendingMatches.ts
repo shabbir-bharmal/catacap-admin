@@ -46,6 +46,17 @@ export type ProjectionTrigger = {
   /** 'pending' | 'in transit' | 'pending' (orphan pgs are always pending). */
   triggerStatus: "pending" | "in transit";
   pendingGrantId: number | null;
+  /**
+   * Whether this trigger should subtract its projected amount from the grant's
+   * remaining-budget pool when projected. DAF-linked recs and orphan
+   * pending_grants are real money in flight that will land in order, so FIFO
+   * budget-decrement reflects what will actually happen. CC/ACH-pending recs
+   * are unsettled payments that may or may not clear and have no enforced
+   * order — projecting them independently lets admins see every in-flight
+   * donation without older stalled pendings hiding newer ones behind a
+   * shared budget.
+   */
+  consumesBudget: boolean;
 };
 
 export type ProjectionEntry = {
@@ -73,6 +84,8 @@ type GrantRow = {
   per_investment_cap: string | null;
   is_active: boolean;
   expires_at: Date | null;
+  created_at: Date | string | null;
+  retroactive_from: Date | string | null;
 };
 
 function donorDisplayName(g: GrantRow): string {
@@ -128,6 +141,18 @@ async function fetchPendingTriggers(
         )`;
   }
 
+  const directParams: any[] = [campaignIds];
+  let directCancelExclusion = "";
+  if (excludeForGrantId != null) {
+    directParams.push(excludeForGrantId);
+    directCancelExclusion = `
+        AND NOT EXISTS (
+          SELECT 1 FROM canceled_match_pairs cmp
+           WHERE cmp.match_grant_id = $${directParams.length}
+             AND cmp.triggered_by_recommendation_id = r.id
+        )`;
+  }
+
   const recResult = await pool.query(
     `SELECT r.id, r.user_id, r.user_email, r.user_full_name,
             r.amount::numeric AS amount, r.date_created,
@@ -170,6 +195,29 @@ async function fetchPendingTriggers(
     [campaignIds],
   );
 
+  // CC / ACH pending recommendations: status='pending' with no DAF / pending
+  // grant link. These are in-flight wallet-funded donations that will trigger
+  // matches once they settle (status → 'approved'), so admins should see them
+  // projected the same way DAF-pending recs are.
+  const directRecResult = await pool.query(
+    `SELECT r.id, r.user_id, r.user_email, r.user_full_name,
+            r.amount::numeric AS amount, r.date_created,
+            r.campaign_id, c.name AS campaign_name
+       FROM recommendations r
+       JOIN campaigns c ON c.id = r.campaign_id
+      WHERE r.campaign_id = ANY($1::int[])
+        AND COALESCE(r.is_deleted, false) = false
+        AND r.pending_grants_id IS NULL
+        AND LOWER(COALESCE(r.status, '')) = 'pending'
+        AND r.amount::numeric > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM campaign_match_grant_activity a
+           WHERE a.triggered_by_recommendation_id = r.id
+        )${directCancelExclusion}
+      ORDER BY r.date_created ASC, r.id ASC`,
+    directParams,
+  );
+
   const triggers: ProjectionTrigger[] = [];
 
   for (const r of recResult.rows) {
@@ -185,6 +233,24 @@ async function fetchPendingTriggers(
       triggerDate: r.date_created || null,
       triggerStatus: String(r.pg_status || "").toLowerCase() === "in transit" ? "in transit" : "pending",
       pendingGrantId: r.pending_grants_id != null ? Number(r.pending_grants_id) : null,
+      consumesBudget: true,
+    });
+  }
+
+  for (const r of directRecResult.rows) {
+    triggers.push({
+      triggerType: "recommendation",
+      triggerId: Number(r.id),
+      campaignId: Number(r.campaign_id),
+      campaignName: r.campaign_name || "",
+      triggerUserId: r.user_id || null,
+      triggerName: (r.user_full_name || "").trim() || r.user_email || "Anonymous",
+      triggerEmail: r.user_email || "",
+      triggerAmount: parseFloat(r.amount) || 0,
+      triggerDate: r.date_created || null,
+      triggerStatus: "pending",
+      pendingGrantId: null,
+      consumesBudget: false,
     });
   }
 
@@ -203,6 +269,7 @@ async function fetchPendingTriggers(
       triggerDate: p.date_created || null,
       triggerStatus: "pending",
       pendingGrantId: Number(p.id),
+      consumesBudget: true,
     });
   }
 
@@ -233,7 +300,8 @@ async function fetchGrantsForCampaigns(campaignIds: number[]): Promise<GrantRow[
             u.user_name  AS donor_user_name,
             cmg.total_cap, cmg.amount_used, cmg.reserved_amount,
             cmg.match_type, cmg.per_investment_cap,
-            cmg.is_active, cmg.expires_at
+            cmg.is_active, cmg.expires_at,
+            cmg.created_at, cmg.retroactive_from
        FROM campaign_match_grants cmg
        JOIN campaign_match_grant_campaigns cmgc
             ON cmgc.match_grant_id = cmg.id
@@ -250,17 +318,35 @@ async function fetchGrantsForCampaigns(campaignIds: number[]): Promise<GrantRow[
  * decrementing each grant's virtual remaining budget as we go.
  */
 function project(grants: GrantRow[], triggers: ProjectionTrigger[]): ProjectionEntry[] {
+  const originalRemainingByGrant = new Map<number, number>();
   const remainingByGrant = new Map<number, number>();
   for (const g of grants) {
     if (!isGrantUsable(g)) continue;
     const reserved = parseFloat(g.reserved_amount || "0") || 0;
     const used = parseFloat(g.amount_used || "0") || 0;
-    remainingByGrant.set(g.id, Math.max(0, reserved - used));
+    const remaining = Math.max(0, reserved - used);
+    originalRemainingByGrant.set(g.id, remaining);
+    remainingByGrant.set(g.id, remaining);
   }
 
   const entries: ProjectionEntry[] = [];
 
-  for (const trig of triggers) {
+  // Two-pass projection:
+  //   Pass 1 — budget-consuming triggers (DAF-linked recs, orphan pending
+  //   grants). These represent real money in flight that will land in order,
+  //   so FIFO decrement reflects what will actually happen.
+  //
+  //   Pass 2 — independent triggers (CC/ACH-pending recs). These are
+  //   unsettled payments whose order is unpredictable and many of which may
+  //   never clear. Project each one independently against the grant's
+  //   ORIGINAL remaining budget (unaffected by pass 1 and by sibling
+  //   CC/ACH triggers). This way every in-flight CC/ACH donation is
+  //   visible to admins with its full would-be match amount, even when
+  //   older DAF-pending or stalled CC/ACH pendings would otherwise hide it.
+  const budgetTriggers = triggers.filter((t) => t.consumesBudget);
+  const independentTriggers = triggers.filter((t) => !t.consumesBudget);
+
+  for (const trig of budgetTriggers) {
     for (const g of grants) {
       if (!remainingByGrant.has(g.id)) continue;
       if (g.donor_user_id === trig.triggerUserId) continue;
@@ -278,6 +364,29 @@ function project(grants: GrantRow[], triggers: ProjectionTrigger[]): ProjectionE
         projectedAmount: amount,
       });
       remainingByGrant.set(g.id, Math.max(0, remaining - amount));
+    }
+  }
+
+  for (const trig of independentTriggers) {
+    for (const g of grants) {
+      if (!originalRemainingByGrant.has(g.id)) continue;
+      if (g.donor_user_id === trig.triggerUserId) continue;
+      const remaining = originalRemainingByGrant.get(g.id) || 0;
+      if (remaining <= 0) continue;
+      const amount = computeMatchAmount(trig.triggerAmount, g, remaining);
+      if (amount <= 0) continue;
+      entries.push({
+        grantId: g.id,
+        grantName: g.name || `Grant #${g.id}`,
+        donorUserId: g.donor_user_id,
+        donorEmail: g.donor_email || "",
+        donorName: donorDisplayName(g),
+        trigger: trig,
+        projectedAmount: amount,
+      });
+      // Intentionally NOT decrementing — independent triggers compete for
+      // the same pool but only one will actually fire next; admins need to
+      // see each one's full potential.
     }
   }
 
@@ -332,7 +441,8 @@ export async function projectPendingTotalsForAllGrants(): Promise<
             u.last_name AS donor_last_name, u.user_name AS donor_user_name,
             cmg.total_cap, cmg.amount_used, cmg.reserved_amount,
             cmg.match_type, cmg.per_investment_cap,
-            cmg.is_active, cmg.expires_at
+            cmg.is_active, cmg.expires_at,
+            cmg.created_at, cmg.retroactive_from
        FROM campaign_match_grants cmg
        LEFT JOIN users u ON u.id = cmg.donor_user_id`,
   );
@@ -370,9 +480,17 @@ export async function projectPendingTotalsForAllGrants(): Promise<
     const entries = project([grant], triggers);
     let sum = 0;
     for (const e of entries) sum += e.projectedAmount;
+    // Independent CC/ACH projections can sum to far more than the grant's
+    // actual remaining budget (each row shows its full would-be match in
+    // isolation). Cap the displayed total at remaining budget so the card
+    // accurately reflects the grant's real exposure.
+    const reserved = parseFloat(grant.reserved_amount || "0") || 0;
+    const used = parseFloat(grant.amount_used || "0") || 0;
+    const remaining = Math.max(0, reserved - used);
+    const capped = Math.min(sum, remaining);
     if (entries.length > 0) {
       totals[grantId] = {
-        pendingAmount: Math.round(sum * 100) / 100,
+        pendingAmount: Math.round(capped * 100) / 100,
         pendingCount: entries.length,
       };
     }

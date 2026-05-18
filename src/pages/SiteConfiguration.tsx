@@ -14,7 +14,6 @@ import { Plus, Pencil, Trash2, ListPlus, Upload, X, Bold, Italic, Underline, Lin
 import { getUrlBlobContainerImage, defaultImage, catacapDefaultImageLogo } from "@/lib/image-utils";
 import { Switch } from "@/components/ui/switch";
 import {
-  fetchAllSiteConfigurations,
   fetchSourcedBy,
   fetchThemes,
   fetchSpecialFilters,
@@ -85,6 +84,8 @@ export default function SiteConfiguration() {
 
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const loadedTabsRef = useRef<Set<TabKey>>(new Set());
+  const [retryToken, setRetryToken] = useState(0);
 
   const { toast } = useToast();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -104,27 +105,92 @@ export default function SiteConfiguration() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: number | string; name: string; configType: SiteConfigType } | null>(null);
 
   useEffect(() => {
+    if (loadedTabsRef.current.has(activeTab)) {
+      setLoading(false);
+      setFetchError(null);
+      return;
+    }
+    let cancelled = false;
     setLoading(true);
     setFetchError(null);
-    fetchAllSiteConfigurations()
-      .then((data) => {
-        setSourcedBy(data.sourcedBy);
-        setThemes(data.themes);
-        setSpecialFilters(data.specialFilters);
-        setStaticValues(data.staticValues.map(v => ({ ...v, configType: "investment-terms" as SiteConfigType })));
-        setConfigurations(data.configurations.map(v => ({ ...v, configType: "Configuration" as SiteConfigType })));
-        setTransactionTypes(data.transactionTypes);
-        setInvestmentTypeCategories(data.investmentTypeCategories);
-        setNewsTypes(data.newsTypes);
-        setNewsAudiences(data.newsAudiences);
-        setStatistics(data.statistics);
-        setMetaInformation(data.metaInformation);
-        setContactInfo(data.contactInfo);
-        setDafProviders(data.dafProviders);
-      })
-      .catch(() => setFetchError("Failed to load site configuration. Please try again."))
-      .finally(() => setLoading(false));
-  }, []);
+    (async () => {
+      try {
+        switch (activeTab) {
+          case "Sourced By": {
+            const data = await fetchSourcedBy();
+            if (!cancelled) setSourcedBy(data);
+            break;
+          }
+          case "Themes": {
+            const data = await fetchThemes();
+            if (!cancelled) setThemes(data);
+            break;
+          }
+          case "Special Filters": {
+            const data = await fetchSpecialFilters();
+            if (!cancelled) setSpecialFilters(data);
+            break;
+          }
+          case "Configuration": {
+            const [sv, cv] = await Promise.all([fetchStaticValues(), fetchConfigurations()]);
+            if (!cancelled) {
+              setStaticValues(sv.map(v => ({ ...v, configType: "investment-terms" as SiteConfigType })));
+              setConfigurations(cv.map(v => ({ ...v, configType: "Configuration" as SiteConfigType })));
+            }
+            break;
+          }
+          case "Transaction Type": {
+            const data = await fetchTransactionTypes();
+            if (!cancelled) setTransactionTypes(data);
+            break;
+          }
+          case "Investment Type": {
+            const data = await fetchInvestmentTypeCategories();
+            if (!cancelled) setInvestmentTypeCategories(data);
+            break;
+          }
+          case "News Type": {
+            const data = await fetchNewsTypes();
+            if (!cancelled) setNewsTypes(data);
+            break;
+          }
+          case "News Audience": {
+            const data = await fetchNewsAudiences();
+            if (!cancelled) setNewsAudiences(data);
+            break;
+          }
+          case "Statistics": {
+            const data = await fetchStatistics();
+            if (!cancelled) setStatistics(data);
+            break;
+          }
+          case "Meta Information": {
+            const data = await fetchMetaInformation();
+            if (!cancelled) setMetaInformation(data);
+            break;
+          }
+          case "Contact Info": {
+            const data = await fetchContactInfo();
+            if (!cancelled) setContactInfo(data);
+            break;
+          }
+          case "DAF Providers": {
+            const data = await fetchDAFProviders();
+            if (!cancelled) setDafProviders(data);
+            break;
+          }
+        }
+        if (!cancelled) loadedTabsRef.current.add(activeTab);
+      } catch {
+        if (!cancelled) setFetchError("Failed to load site configuration. Please try again.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, retryToken]);
 
   // ─── Assign Popover (real API) ──────────────────────────────────────────────
   function AssignPopover({ itemId, itemName, type }: { itemId: number; itemName: string; type: SiteConfigType }) {
@@ -655,21 +721,37 @@ export default function SiteConfiguration() {
           Site Configuration
         </h1>
 
-        {/* Error banner */}
-        {fetchError && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {TABS.map((tab) => (
+            <Button
+              key={tab}
+              variant={activeTab === tab ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                if (tab === activeTab && !loadedTabsRef.current.has(tab) && !loading) {
+                  setRetryToken((n) => n + 1);
+                }
+                setActiveTab(tab);
+                localStorage.setItem(STORAGE_KEY, tab);
+              }}
+              className={activeTab === tab ? "bg-[#405189] text-white" : ""}
+              data-testid={`tab-${tab.toLowerCase().replace(/\s+/g, "-")}`}
+            >
+              {tab}
+            </Button>
+          ))}
+        </div>
+
+        {/* Error banner (scoped to active tab) */}
+        {!loading && fetchError && (
           <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700" data-testid="text-fetch-error">
             {fetchError}
           </div>
         )}
 
-        {/* Loading skeleton */}
+        {/* Loading skeleton (scoped to active tab content) */}
         {loading && (
           <div className="space-y-3 animate-pulse" data-testid="skeleton-loading">
-            <div className="flex gap-2">
-              {TABS.map((t) => (
-                <div key={t} className="h-8 w-28 rounded-md bg-muted" />
-              ))}
-            </div>
             <div className="rounded-md border">
               {[1, 2, 3, 4, 5].map((i) => (
                 <div key={i} className="flex items-center gap-4 border-b last:border-b-0 px-4 py-3">
@@ -681,26 +763,8 @@ export default function SiteConfiguration() {
           </div>
         )}
 
-        {!loading && (
+        {!loading && !fetchError && (
           <>
-            <div className="flex items-center gap-2 flex-wrap">
-              {TABS.map((tab) => (
-                <Button
-                  key={tab}
-                  variant={activeTab === tab ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    setActiveTab(tab);
-                    localStorage.setItem(STORAGE_KEY, tab);
-                  }}
-                  className={activeTab === tab ? "bg-[#405189] text-white" : ""}
-                  data-testid={`tab-${tab.toLowerCase().replace(/\s+/g, "-")}`}
-                >
-                  {tab}
-                </Button>
-              ))}
-            </div>
-
             {activeTab === "Contact Info" ? (
               <div className="space-y-4" data-testid="contact-info-sections">
                 <div className="flex justify-end">
