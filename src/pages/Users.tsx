@@ -727,14 +727,24 @@ export default function UsersPage() {
               <table className="w-full text-sm" data-testid="table-user-recommendations">
                 <thead>
                   <tr className="border-b bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="px-3 py-2 text-left font-semibold">Date</th>
                     <th className="px-3 py-2 text-left font-semibold">Investment</th>
                     <th className="px-3 py-2 text-right font-semibold">Amount</th>
                     <th className="px-3 py-2 text-left font-semibold">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {recsDialogItems.map((rec) => (
+                  {[...recsDialogItems]
+                    .sort((a, b) => {
+                      const ta = a.dateCreated ? new Date(a.dateCreated).getTime() : Number.POSITIVE_INFINITY;
+                      const tb = b.dateCreated ? new Date(b.dateCreated).getTime() : Number.POSITIVE_INFINITY;
+                      return ta - tb;
+                    })
+                    .map((rec) => (
                     <tr key={rec.id} className="border-b last:border-b-0" data-testid={`row-user-recommendation-${rec.id}`}>
+                      <td className="px-3 py-2 whitespace-nowrap text-muted-foreground" data-testid={`text-rec-date-${rec.id}`}>
+                        {rec.dateCreated ? formatDate(rec.dateCreated) : "-"}
+                      </td>
                       <td className="px-3 py-2 break-words min-w-0" data-testid={`text-rec-campaign-${rec.id}`}>
                         {rec.campaignName || "-"}
                       </td>
@@ -749,7 +759,7 @@ export default function UsersPage() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t bg-muted/30 font-semibold">
-                    <td className="px-3 py-2 text-left">Total</td>
+                    <td className="px-3 py-2 text-left" colSpan={2}>Total</td>
                     <td className="px-3 py-2 text-right" data-testid="text-rec-total">
                       ${recsDialogItems.reduce((sum, r) => sum + (r.amount ?? 0), 0).toFixed(2)}
                     </td>
