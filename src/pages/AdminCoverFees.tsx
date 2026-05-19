@@ -57,6 +57,8 @@ interface CoverFeesPool {
   timesUsed: number;
   pendingAmount?: number;
   pendingCount?: number;
+  heldAmount?: number;
+  heldCount?: number;
   campaigns: Campaign[];
 }
 interface ActivityEntry {
@@ -104,6 +106,8 @@ const EMPTY_FORM = {
   sponsorBalance: 0,
   reservedAmount: 0,
   amountUsed: 0,
+  heldAmount: 0,
+  heldCount: 0,
   totalCap: "",
   perInvestmentCap: "",
   coverInitialFee: true,
@@ -570,9 +574,22 @@ function GrantFormDialog({
                       <span className="text-muted-foreground">Already covered</span>
                       <span className="font-medium tabular-nums text-amber-600 dark:text-amber-400" data-testid="text-amount-covered">{currency_format(form.amountUsed)}</span>
                     </div>
+                    {(form.heldAmount ?? 0) > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">On hold</span>
+                        <span className="font-medium tabular-nums text-orange-600 dark:text-orange-400" data-testid="text-amount-on-hold">
+                          {currency_format(form.heldAmount || 0)}
+                          {(form.heldCount ?? 0) > 0 && (
+                            <span className="text-xs ml-1 text-muted-foreground">
+                              ({form.heldCount} {form.heldCount === 1 ? "hold" : "holds"})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between border-t pt-0.5 mt-1">
                       <span className="text-muted-foreground">Remaining</span>
-                      <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(remainingCap)}</span>
+                      <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(Math.max(0, remainingCap - (form.heldAmount ?? 0)))}</span>
                     </div>
                     <div className="flex justify-between border-t pt-0.5 mt-1">
                       <span className="text-muted-foreground">Sponsor wallet balance</span>
@@ -1260,6 +1277,8 @@ export default function AdminCoverFees() {
       sponsorBalance: g.sponsorBalance,
       reservedAmount: g.reservedAmount,
       amountUsed: g.amountUsed,
+      heldAmount: g.heldAmount ?? 0,
+      heldCount: g.heldCount ?? 0,
       totalCap: g.totalCap != null ? String(g.totalCap) : "",
       perInvestmentCap: g.perInvestmentCap != null ? String(g.perInvestmentCap) : "",
       coverInitialFee: g.coverInitialFee !== false,
@@ -1429,6 +1448,17 @@ export default function AdminCoverFees() {
                               </span>
                               <span className="text-xs ml-1 text-muted-foreground">
                                 ({g.pendingCount} {g.pendingCount === 1 ? "trigger" : "triggers"})
+                              </span>
+                            </span>
+                          )}
+                          {(g.heldAmount ?? 0) > 0 && (
+                            <span data-testid={`text-on-hold-${g.id}`}>
+                              <span className="font-medium text-foreground">On hold:</span>{" "}
+                              <span className="text-orange-700 dark:text-orange-300 font-medium">
+                                {currency_format(g.heldAmount || 0)}
+                              </span>
+                              <span className="text-xs ml-1 text-muted-foreground">
+                                ({g.heldCount} {g.heldCount === 1 ? "hold" : "holds"})
                               </span>
                             </span>
                           )}

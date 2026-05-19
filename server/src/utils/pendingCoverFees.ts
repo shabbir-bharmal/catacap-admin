@@ -66,6 +66,64 @@ function isPoolUsable(p: PoolRow): boolean {
   return reserved - used > 0;
 }
 
+async function fetchHeldSumByPool(): Promise<Map<number, number>> {
+  const result = await pool.query(
+    `SELECT cover_fee_id,
+            COALESCE(SUM(fee_amount::numeric), 0) AS held_sum
+       FROM campaign_cover_fees_activity
+      WHERE status = 'held'
+        AND fully_reversed_at IS NULL
+      GROUP BY cover_fee_id`,
+  );
+  const out = new Map<number, number>();
+  for (const r of result.rows) {
+    out.set(Number(r.cover_fee_id), parseFloat(r.held_sum) || 0);
+  }
+  return out;
+}
+
+type HeldRowKey = string; // `${triggerKind}:${triggerId}:${coverFeeId}`
+type HeldRowInfo = { feeAmount: number };
+
+function heldKey(
+  triggerKind: "recommendation" | "pending_grant",
+  triggerId: number,
+  pendingGrantId: number | null,
+  coverFeeId: number,
+): HeldRowKey[] {
+  // A held row may be linked via rec FK OR via pending_grant FK; check both.
+  const keys: HeldRowKey[] = [`${triggerKind}:${triggerId}:${coverFeeId}`];
+  if (pendingGrantId != null) {
+    keys.push(`pending_grant:${pendingGrantId}:${coverFeeId}`);
+  }
+  return keys;
+}
+
+async function fetchHeldRowsByTrigger(): Promise<Map<HeldRowKey, HeldRowInfo>> {
+  const result = await pool.query(
+    `SELECT cover_fee_id,
+            triggered_by_recommendation_id,
+            triggered_by_pending_grant_id,
+            triggered_by_asset_based_payment_request_id,
+            fee_amount::numeric AS fee_amount
+       FROM campaign_cover_fees_activity
+      WHERE status = 'held'
+        AND fully_reversed_at IS NULL`,
+  );
+  const out = new Map<HeldRowKey, HeldRowInfo>();
+  for (const r of result.rows) {
+    const fee = parseFloat(r.fee_amount) || 0;
+    const cfId = Number(r.cover_fee_id);
+    if (r.triggered_by_recommendation_id != null) {
+      out.set(`recommendation:${Number(r.triggered_by_recommendation_id)}:${cfId}`, { feeAmount: fee });
+    }
+    if (r.triggered_by_pending_grant_id != null) {
+      out.set(`pending_grant:${Number(r.triggered_by_pending_grant_id)}:${cfId}`, { feeAmount: fee });
+    }
+  }
+  return out;
+}
+
 function computeFeeAmount(triggerAmount: number, p: PoolRow, remaining: number): number {
   const rate = parseFloat(p.fee_rate || "0.05") || 0.05;
   let amt = triggerAmount * rate;
@@ -110,9 +168,16 @@ async function fetchPendingTriggers(
         AND COALESCE(pg.is_deleted, false) = false
         AND LOWER(COALESCE(pg.status, '')) = 'pending'
         AND r.amount::numeric > 0
+        -- Only exclude when there is already an *applied* row for this
+        -- trigger; a 'held' row is exactly what the "Pending fee
+        -- coverage" table is meant to surface (escrowed at create
+        -- time, will fire when the investment lands).
         AND NOT EXISTS (
           SELECT 1 FROM campaign_cover_fees_activity a
-           WHERE a.triggered_by_recommendation_id = r.id
+           WHERE (a.triggered_by_recommendation_id = r.id
+                  OR a.triggered_by_pending_grant_id = pg.id)
+             AND a.fully_reversed_at IS NULL
+             AND a.status = 'applied'
         )${cancelExclusion}
       ORDER BY r.date_created ASC, r.id ASC`,
     params,
@@ -134,6 +199,12 @@ async function fetchPendingTriggers(
           SELECT 1 FROM recommendations r2
            WHERE r2.pending_grants_id = pg.id
              AND COALESCE(r2.is_deleted, false) = false
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM campaign_cover_fees_activity a
+           WHERE a.triggered_by_pending_grant_id = pg.id
+             AND a.fully_reversed_at IS NULL
+             AND a.status = 'applied'
         )
       ORDER BY pg.created_date ASC, pg.id ASC`,
     [campaignIds],
@@ -212,13 +283,25 @@ async function fetchPoolsForCampaigns(campaignIds: number[]): Promise<PoolRow[]>
   return result.rows as PoolRow[];
 }
 
-function project(pools: PoolRow[], triggers: CoverFeeProjectionTrigger[]): CoverFeeProjectionEntry[] {
+function project(
+  pools: PoolRow[],
+  triggers: CoverFeeProjectionTrigger[],
+  heldByPool?: Map<number, number>,
+  heldRowsByTrigger?: Map<HeldRowKey, HeldRowInfo>,
+): CoverFeeProjectionEntry[] {
+  // Remaining starts at reserved - used - heldSum so a pool that has
+  // already escrowed holds doesn't appear to have that capacity free.
+  // For triggers that already have a held row, we surface the actual
+  // held fee_amount and DO NOT subtract from remaining again (it was
+  // already accounted for in heldSum above) — that prevents double-
+  // counting against the pool's remaining capacity.
   const remainingByPool = new Map<number, number>();
   for (const p of pools) {
     if (!isPoolUsable(p)) continue;
     const reserved = parseFloat(p.reserved_amount || "0") || 0;
     const used = parseFloat(p.amount_used || "0") || 0;
-    remainingByPool.set(p.id, Math.max(0, reserved - used));
+    const held = heldByPool?.get(p.id) || 0;
+    remainingByPool.set(p.id, Math.max(0, reserved - used - held));
   }
 
   const entries: CoverFeeProjectionEntry[] = [];
@@ -226,6 +309,31 @@ function project(pools: PoolRow[], triggers: CoverFeeProjectionTrigger[]): Cover
     for (const p of pools) {
       if (!remainingByPool.has(p.id)) continue;
       const remaining = remainingByPool.get(p.id) || 0;
+
+      // Did we already escrow a held row for this trigger against this
+      // pool? If yes, surface that exact fee_amount and skip the
+      // remaining-decrement (already counted via heldByPool).
+      let heldHit: HeldRowInfo | undefined;
+      if (heldRowsByTrigger) {
+        for (const k of heldKey(trig.triggerType, trig.triggerId, trig.pendingGrantId, p.id)) {
+          const hit = heldRowsByTrigger.get(k);
+          if (hit) { heldHit = hit; break; }
+        }
+      }
+
+      if (heldHit) {
+        entries.push({
+          coverFeeId: p.id,
+          poolName: p.name || `Pool #${p.id}`,
+          sponsorUserId: p.sponsor_user_id,
+          sponsorEmail: p.sponsor_email || "",
+          sponsorName: sponsorDisplayName(p),
+          trigger: trig,
+          projectedAmount: heldHit.feeAmount,
+        });
+        continue;
+      }
+
       if (remaining <= 0) continue;
       // Coverage activation cutoff: a pool only projects coverage on
       // triggers dated on/after its coverage_active_from. This prevents
@@ -263,7 +371,11 @@ export async function projectPendingCoverFeesForCampaign(
   if (pools.length === 0) return [];
   const triggers = await fetchPendingTriggers([campaignId]);
   if (triggers.length === 0) return [];
-  return project(pools, triggers);
+  const [held, heldRows] = await Promise.all([
+    fetchHeldSumByPool(),
+    fetchHeldRowsByTrigger(),
+  ]);
+  return project(pools, triggers, held, heldRows);
 }
 
 export async function projectPendingCoverFeesForPool(
@@ -280,7 +392,11 @@ export async function projectPendingCoverFeesForPool(
   if (pools.length === 0) return [];
   const triggers = await fetchPendingTriggers(campaignIds, coverFeeId);
   if (triggers.length === 0) return [];
-  return project(pools, triggers);
+  const [held, heldRows] = await Promise.all([
+    fetchHeldSumByPool(),
+    fetchHeldRowsByTrigger(),
+  ]);
+  return project(pools, triggers, held, heldRows);
 }
 
 export async function projectPendingCoverFeeTotalsForAllPools(): Promise<
@@ -310,6 +426,10 @@ export async function projectPendingCoverFeeTotalsForAllPools(): Promise<
   }
 
   const totals: Record<number, { pendingAmount: number; pendingCount: number }> = {};
+  const [heldByPool, heldRowsByTrigger] = await Promise.all([
+    fetchHeldSumByPool(),
+    fetchHeldRowsByTrigger(),
+  ]);
 
   for (const [pid, campaignIds] of poolToCampaigns.entries()) {
     const p = poolsById.get(pid);
@@ -319,7 +439,7 @@ export async function projectPendingCoverFeeTotalsForAllPools(): Promise<
     // admin cancel — otherwise list-view pending totals would
     // overstate the amount after cancellations.
     const triggers = await fetchPendingTriggers(campaignIds, pid);
-    const entries = project([p], triggers);
+    const entries = project([p], triggers, heldByPool, heldRowsByTrigger);
     let sum = 0;
     for (const e of entries) sum += e.projectedAmount;
     if (entries.length > 0) {
