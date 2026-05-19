@@ -1,4 +1,5 @@
-import { useState, Fragment } from "react";
+import { useState, Fragment, useEffect } from "react";
+import { useSearch } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { formatDate } from "@/helpers/format";
 import { AdminLayout } from "../components/AdminLayout";
@@ -27,7 +28,22 @@ type SortField = "fullName" | "username" | "recommendations" | "totalInvested" |
 export default function UsersPage() {
   const { user: authUser } = useAuth();
   const queryClient = useQueryClient();
-  const [searchQuery, setSearchQuery] = useState("");
+  const searchString = useSearch();
+  const initialSearch = (() => {
+    try {
+      return new URLSearchParams(searchString).get("search") || "";
+    } catch {
+      return "";
+    }
+  })();
+  const [searchQuery, setSearchQuery] = useState(initialSearch);
+  useEffect(() => {
+    try {
+      const fromUrl = new URLSearchParams(searchString).get("search") || "";
+      setSearchQuery((prev) => (prev === fromUrl ? prev : fromUrl));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchString]);
   const debouncedSearch = useDebounce(searchQuery, 500);
   const effectiveSearch = debouncedSearch.length >= 3 || debouncedSearch.length === 0 ? debouncedSearch : "";
   const { sortField, sortDir, handleSort: originalHandleSort } = useSort<SortField>();

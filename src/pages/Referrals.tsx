@@ -107,7 +107,7 @@ function ReferrerEventsRow({ referrerId }: { referrerId: string }) {
                 <td className="px-3 py-2" data-testid={`text-event-referred-${ev.id}`}>
                   {ev.referredUserId ? (
                     <Link
-                      href={`/users?focus=${encodeURIComponent(ev.referredUserId)}`}
+                      href={`/users?search=${encodeURIComponent(ev.referredEmail || ev.referredUserId)}`}
                       className="text-primary hover:underline"
                     >
                       {ev.referredFullName || "—"}
@@ -316,7 +316,7 @@ export default function ReferralsPage() {
                           </td>
                           <td className="px-4 py-3">
                             <Link
-                              href={`/users?focus=${encodeURIComponent(r.referrerId)}`}
+                              href={`/users?search=${encodeURIComponent(r.email || r.refCode || r.referrerId)}`}
                               onClick={(e) => e.stopPropagation()}
                               className="text-sm text-primary hover:underline"
                               data-testid={`link-referrer-${r.referrerId}`}
