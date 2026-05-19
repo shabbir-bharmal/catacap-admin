@@ -200,3 +200,73 @@ Verification
    0 new events.
 5. Pick a referred user that already belongs to another referrer →
    error toast with the 409 message; no rows inserted.
+
+
+D. Referrals: ensure every user has a ref_code
+----------------------------------------------
+
+Migration
+---------
+* 2026_05_19_004_users_ref_code_backfill.sql
+  - Creates helper function public.generate_user_ref_code() that
+    returns a random 8-char alphanumeric code (a-z, A-Z, 0-9) which
+    is not already present in public.users.ref_code.
+  - Back-fills ref_code for every user where it is NULL or '' using
+    the helper (loops in PL/pgSQL, one UPDATE per missing user).
+  - Adds partial unique index idx_users_ref_code_unique
+      ON public.users(ref_code) WHERE ref_code IS NOT NULL AND <> ''
+    so two users can never share a code.
+  - Idempotent: function is CREATE OR REPLACE; backfill targets only
+    NULL/empty rows; index uses IF NOT EXISTS.
+
+Intent
+------
+* Previously ref_code was only populated for a handful of legacy users
+  (e.g. Ken Kurtzig), so the /referrals admin table showed "—" for
+  almost everyone and the public site had no referral link to give
+  out. After this release every account in public.users has a code,
+  and every user created through the Node backend is born with one.
+
+Runtime changes
+---------------
+* server/src/utils/refCode.ts (new)
+    generateUniqueRefCode(client?) — produces an 8-char alphanumeric
+    code (crypto.randomBytes -> CHARS lookup), retried up to 12 times
+    until SELECT confirms the code is not already in users.ref_code.
+    Pass an open PoolClient when generating inside a transaction.
+
+* server/src/utils/anonymousUser.ts
+    findOrCreateAnonymousUser now generates a ref_code inside the
+    insert transaction. On a 23505 hit against the new unique index
+    it retries up to 5 times with a fresh code before failing.
+
+* server/src/routes/adminUsers.ts (POST /api/admin/users — create user)
+    Same pattern: generate ref_code, INSERT with it, retry on
+    23505 / idx_users_ref_code_unique up to 5 times. On exhaustion
+    returns 500 with "Could not allocate a unique referral code."
+
+Caveat
+------
+* The .NET backend (Back-End/) also creates users via the public
+  registration / OAuth paths and is OUT OF SCOPE for edits per the
+  project's user-preference rule. Users created there will land with
+  ref_code = NULL until either the .NET side is patched OR the
+  back-fill migration is re-run (the back-fill is idempotent and will
+  populate any newly-NULL rows on a second invocation).
+
+Rollback
+--------
+  DROP INDEX IF EXISTS public.idx_users_ref_code_unique;
+  DROP FUNCTION IF EXISTS public.generate_user_ref_code();
+  -- (existing ref_code values left intact; harmless if kept)
+
+Verification
+------------
+1. psql -f releases/19_05_2026/migrations/2026_05_19_004_users_ref_code_backfill.sql
+2. SELECT COUNT(*) FILTER (WHERE ref_code IS NULL OR ref_code = '')
+     FROM public.users;
+   Expect 0.
+3. /referrals → REF CODE column shows a code for every row including
+   Lily Kanter and Tim Freundlich.
+4. POST /api/admin/users (admin "Create user" flow) → newly created
+   user row has a populated ref_code.
