@@ -1,5 +1,4 @@
 Release 19_05_2026
-==================
 
 Migrations
 ----------
@@ -21,3 +20,56 @@ Notes
 - The `public.referrals` table itself and `public.users.ref_code` already exist
   in the database and are not changed by this release.
 - The Referrals admin page is read-only; no schema/data writes are performed.
+Release 2026-05-19
+
+Migrations
+
+1. 001_cover_fees_escrow_reconciliation.sql
+   - Schema:
+       * NEW TABLE cover_fees_escrow_reconciliation_log
+             (id serial PK, sponsor_user_id varchar(450) UNIQUE,
+              reconciled_amount numeric(14,2), reconciled_at timestamp,
+              details jsonb)
+       * NEW INDEX cover_fees_escrow_reconciliation_log_sponsor_idx
+             on (sponsor_user_id)
+   - Intent:
+       Reconcile the historical double-debit on escrow-backed Cover Fees
+       pools (task #522). Prior to this release, escrow pools
+       (reserved_amount > 0) debited the sponsor wallet BOTH at funding
+       time AND on every donor fee draw — funds were already in escrow,
+       so the per-donor debit was a second debit on the same money. This
+       migration credits each sponsor back the cumulative
+       still-unreversed per-activity fee debits + the canceled-activity
+       fee debits (the cancel path never returned funds to the wallet)
+       across every escrow pool they sponsor, and writes an
+       account_balance_change_logs entry per sponsor.
+   - Idempotency:
+       Each sponsor's credit is gated on no existing row in
+       cover_fees_escrow_reconciliation_log for that sponsor_user_id;
+       a re-run is a no-op once a sponsor has been reconciled. Schema
+       objects are CREATE ... IF NOT EXISTS.
+   - Transactional: BEGIN/COMMIT.
+   - Rollback: commented at the bottom of the migration. For each row
+     in cover_fees_escrow_reconciliation_log, subtract
+     reconciled_amount back from users.account_balance, then DROP the
+     log table.
+
+Code changes (no separate migration needed)
+
+- server/src/utils/coverFees.ts
+    * applySingleCoverFee, escrow branch: removed the sponsor wallet
+      UPDATE + shortfall clamp. Donor fees now consume ONLY the pool's
+      escrow balance (amount_used). Audit row (pool-remaining before /
+      after) preserved; comment updated.
+    * reverseCoverFeesByPaymentRef: sponsor wallet credit-back is now
+      guarded by `!isEscrowPoolReversal` so reversals on escrow pools
+      return the fee to the pool's escrow (amount_used--) only. Donor
+      audit row unchanged.
+    * reverseCoverFeesByRecommendation: same guard as above.
+    * Live-wallet pools (reserved_amount = 0) behavior UNCHANGED in
+      every path.
+
+- src/pages/AdminCoverFees.tsx (UI copy only — no logic change)
+    * Edit-mode funding panel and create-mode Total Cap helper updated
+      to describe escrow semantics (funds move once, fees draw from
+      the escrow pool).

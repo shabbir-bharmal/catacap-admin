@@ -735,10 +735,10 @@ function GrantFormDialog({
                     </p>
                   ) : form.sponsorUserId ? (
                     <p className="text-xs text-muted-foreground">
-                      Available: {currency_format(form.sponsorBalance)}
+                      Available in sponsor wallet: {currency_format(form.sponsorBalance)}. This amount moves out of the wallet into the pool's escrow when you save. Donor fees draw from that escrow only — the wallet is not debited again.
                     </p>
                   ) : (
-                    <p className="text-xs text-muted-foreground">Max total fees covered across all donations.</p>
+                    <p className="text-xs text-muted-foreground">Max total fees covered across all donations. Funds are moved from the sponsor's wallet into the pool's escrow at save time; donor fees then draw against the escrow.</p>
                   )}
                 </>
               )}
@@ -959,7 +959,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
     })();
     const tail =
       context === "covered"
-        ? "This is independent of the coverage itself: the cover-fee has already been applied from the sponsor wallet (or escrow)."
+        ? "This is independent of the coverage itself: the cover-fee has already been applied from the pool's escrow (or the sponsor's wallet, for live-wallet pools)."
         : "This is a projection only — the cover-fee has NOT been applied yet. It will fire from the sponsor's escrow when this trigger lands.";
     return `Trigger payment status — ${lifecycle}. ${tail}`;
   };
@@ -993,7 +993,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
-        The cover-fee has already been applied from the sponsor wallet (or escrow). The trigger badge below describes the donor's separate payment lifecycle, not the coverage status.
+        The cover-fee has already been applied from the pool's escrow (or the sponsor's wallet, for live-wallet pools). The trigger badge below describes the donor's separate payment lifecycle, not the coverage status.
       </TooltipContent>
     </Tooltip>
   );

@@ -47,6 +47,58 @@ function isSafeHref(href: string): boolean {
   return /^(https?:|mailto:|tel:|#|\/|\.\/|\.\.\/)/i.test(trimmed);
 }
 
+// Quill 2.0 emits both bullet and numbered lists as <ol>, marking each <li>
+// with a non-standard `data-list="bullet"` / `data-list="ordered"` attribute
+// plus a `<span class="ql-ui">` filler. Inside the editor it looks correct
+// (Quill styles `li[data-list="bullet"]` with bullets) but the persisted
+// HTML is not standards-compliant: when rendered outside Quill (FAQ page,
+// emails, exports) the browser treats <ol> as a numbered list and the
+// bullets disappear. Normalize the emitted HTML to use <ul>/<ol> properly.
+function normalizeQuillListHtml(html: string): string {
+  if (!html || (html.indexOf("<ol") === -1 && html.indexOf("ql-ui") === -1)) {
+    return html;
+  }
+  if (typeof DOMParser === "undefined") return html;
+  const doc = new DOMParser().parseFromString(
+    `<!doctype html><body>${html}</body>`,
+    "text/html",
+  );
+
+  // Strip Quill's `<span class="ql-ui" contenteditable="false"></span>` filler
+  // spans that live inside list items.
+  doc.querySelectorAll("li > span.ql-ui").forEach((span) => {
+    span.parentNode?.removeChild(span);
+  });
+
+  // Convert any <ol> whose <li> children are all bullet items into a <ul>.
+  // Leave ordered/mixed/unknown lists as <ol>.
+  doc.querySelectorAll("ol").forEach((ol) => {
+    const items = Array.from(ol.children).filter(
+      (c) => c.tagName === "LI",
+    ) as HTMLLIElement[];
+    if (items.length === 0) return;
+    const allBullet = items.every(
+      (li) => li.getAttribute("data-list") === "bullet",
+    );
+    if (allBullet) {
+      const ul = doc.createElement("ul");
+      for (const attr of Array.from(ol.attributes)) {
+        ul.setAttribute(attr.name, attr.value);
+      }
+      while (ol.firstChild) ul.appendChild(ol.firstChild);
+      ol.parentNode?.replaceChild(ul, ol);
+    }
+  });
+
+  // Drop the `data-list` attribute on all <li> elements once the wrapper
+  // tag conveys the list type.
+  doc.querySelectorAll("li[data-list]").forEach((li) => {
+    li.removeAttribute("data-list");
+  });
+
+  return doc.body.innerHTML;
+}
+
 const Delta = Quill.import("delta") as typeof DeltaType;
 const Embed = Quill.import("blots/embed") as typeof Parchment.EmbedBlot;
 
@@ -251,7 +303,7 @@ export function RichTextEditor({
       quill.clipboard.dangerouslyPasteHTML(value, "silent");
     }
     lastValidContentsRef.current = quill.getContents();
-    lastEmittedValueRef.current = quill.root.innerHTML;
+    lastEmittedValueRef.current = normalizeQuillListHtml(quill.root.innerHTML);
 
     // Mirror the consumer-side `stripHtml(html).length` counter (e.g. in
     // RaiseMoney / AdminInvestmentEdit). `stripHtml` removes tags but does
@@ -303,7 +355,7 @@ export function RichTextEditor({
           !lastValidContentsRef.current.ops.some(
             (op) => op.insert && typeof op.insert === "object",
           );
-        const html = isEmpty ? "" : quill.root.innerHTML;
+        const html = isEmpty ? "" : normalizeQuillListHtml(quill.root.innerHTML);
         lastEmittedValueRef.current = html;
         onChangeRef.current(html);
       },
@@ -329,6 +381,11 @@ export function RichTextEditor({
     if (!quill) return;
     if (isInternalUpdateRef.current) return;
     if (value === lastEmittedValueRef.current) return;
+    // Old records may persist the pre-normalization `<ol data-list="bullet">`
+    // shape. After we paste them into Quill they'll emit as `<ul>`, which
+    // would otherwise trigger an infinite sync loop. Compare normalized
+    // forms so historical values are treated as already in sync.
+    if (normalizeQuillListHtml(value) === lastEmittedValueRef.current) return;
     if (quill.hasFocus()) return;
 
     isInternalUpdateRef.current = true;
@@ -337,7 +394,7 @@ export function RichTextEditor({
       quill.clipboard.dangerouslyPasteHTML(value, "silent");
     }
     lastValidContentsRef.current = quill.getContents();
-    lastEmittedValueRef.current = quill.root.innerHTML;
+    lastEmittedValueRef.current = normalizeQuillListHtml(quill.root.innerHTML);
     isInternalUpdateRef.current = false;
   }, [value]);
 
