@@ -54,11 +54,45 @@ export interface ReferralEvent {
   targetSlug: string | null;
   sourcePath: string | null;
   createdAt: string;
+  amount: number | null;
   referredUserId: string | null;
   referredFirstName: string;
   referredLastName: string;
   referredFullName: string;
   referredEmail: string;
+}
+
+export interface SignupSummary {
+  referredUserId: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  email: string;
+  signupAt: string | null;
+}
+
+export interface GroupSummary {
+  groupId: string | null;
+  groupName: string | null;
+  referralCount: number;
+  lastJoinedAt: string | null;
+}
+
+export interface InvestmentSummary {
+  campaignId: number;
+  campaignName: string | null;
+  campaignSlug: string | null;
+  investorCount: number;
+  recommendationCount: number;
+  totalAmount: number;
+}
+
+export interface RaiseMoneySummary {
+  campaignId: number;
+  campaignName: string | null;
+  campaignSlug: string | null;
+  totalRaised: number;
+  contributionCount: number;
 }
 
 export interface ReferralsByReferrerResponse {
@@ -72,6 +106,10 @@ export interface ReferralsByReferrerResponse {
     refCode: string;
   } | null;
   items: ReferralEvent[];
+  signupSummaries: SignupSummary[];
+  groupSummaries: GroupSummary[];
+  investmentSummaries: InvestmentSummary[];
+  raiseMoneySummaries: RaiseMoneySummary[];
 }
 
 export async function fetchReferralsByReferrer(referrerId: string): Promise<ReferralsByReferrerResponse> {

@@ -12,7 +12,7 @@ import { AddReferralDialog } from "@/components/AddReferralDialog";
 import { SortHeader } from "@/components/ui/table-sort";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 import { useSort } from "../hooks/useSort";
-import { formatDate } from "../helpers/format";
+import { currency_format, formatDate } from "../helpers/format";
 import {
   fetchReferrers,
   fetchReferralsByReferrer,
@@ -29,6 +29,8 @@ type SortField =
   | "investments"
   | "raisemoneysignups"
   | "lastreferredat";
+
+type ViewMode = "events" | "signups" | "groups" | "investments" | "raisemoney";
 
 const ACTION_LABELS: Record<string, string> = {
   signup: "Signup",
@@ -52,7 +54,23 @@ function actionBadgeClass(action: string): string {
   }
 }
 
-function ReferrerEventsRow({ referrerId }: { referrerId: string }) {
+const VIEW_LABEL: Record<ViewMode, string> = {
+  events: "All events",
+  signups: "Signups",
+  groups: "Group joins",
+  investments: "Investments",
+  raisemoney: "Raise money",
+};
+
+function ReferrerEventsRow({
+  referrerId,
+  viewMode,
+  setViewMode,
+}: {
+  referrerId: string;
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
+}) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["referrals", "by-referrer", referrerId],
     queryFn: () => fetchReferralsByReferrer(referrerId),
@@ -73,82 +91,311 @@ function ReferrerEventsRow({ referrerId }: { referrerId: string }) {
       </td>
     );
   }
-  const items = data?.items ?? [];
-  if (items.length === 0) {
-    return (
-      <td colSpan={10} className="px-6 py-4 text-sm text-muted-foreground bg-muted/30">
-        No referral events found.
-      </td>
-    );
-  }
+  const events = data?.items ?? [];
+  const signups = data?.signupSummaries ?? [];
+  const groups = data?.groupSummaries ?? [];
+  const investments = data?.investmentSummaries ?? [];
+  const raiseMoney = data?.raiseMoneySummaries ?? [];
+
+  const tabs: { key: ViewMode; label: string; count: number }[] = [
+    { key: "events", label: "All events", count: events.length },
+    { key: "signups", label: "Signups", count: signups.length },
+    { key: "groups", label: "Group joins", count: groups.length },
+    { key: "investments", label: "Investments", count: investments.length },
+    { key: "raisemoney", label: "Raise money", count: raiseMoney.length },
+  ];
+
   return (
     <td colSpan={10} className="p-0 bg-muted/30">
-      <div className="overflow-x-auto px-6 py-4">
-        <table className="w-full text-sm" data-testid={`table-referral-events-${referrerId}`}>
-          <thead>
-            <tr className="border-b">
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Action</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Referred User</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Target</th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Source Path</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((ev) => (
-              <tr key={ev.id} className="border-b last:border-b-0" data-testid={`row-referral-event-${ev.id}`}>
-                <td className="px-3 py-2 text-muted-foreground whitespace-nowrap" data-testid={`text-event-date-${ev.id}`}>
-                  {ev.createdAt ? formatDate(ev.createdAt) : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  <Badge variant="outline" className={actionBadgeClass(ev.actionType)} data-testid={`badge-event-action-${ev.id}`}>
-                    {ACTION_LABELS[ev.actionType] || ev.actionType}
-                  </Badge>
-                </td>
-                <td className="px-3 py-2" data-testid={`text-event-referred-${ev.id}`}>
-                  {ev.referredUserId ? (
-                    <Link
-                      href={`/users?search=${encodeURIComponent(ev.referredEmail || ev.referredUserId)}`}
-                      className="text-primary hover:underline"
-                    >
-                      {ev.referredFullName || "—"}
-                    </Link>
-                  ) : (
-                    ev.referredFullName || "—"
-                  )}
-                </td>
-                <td className="px-3 py-2 text-muted-foreground" data-testid={`text-event-referred-email-${ev.id}`}>
-                  {ev.referredEmail || "—"}
-                </td>
-                <td className="px-3 py-2" data-testid={`text-event-target-${ev.id}`}>
-                  {ev.targetName ? (
-                    ev.actionType === "investment" && ev.targetSlug ? (
-                      <Link href={`/raisemoney/edit/${ev.targetSlug}`} className="text-primary hover:underline">
-                        {ev.targetName}
-                      </Link>
-                    ) : ev.actionType === "group_join" && ev.targetId ? (
-                      <Link href={`/groups/${ev.targetId}/edit`} className="text-primary hover:underline">
-                        {ev.targetName}
-                      </Link>
-                    ) : (
-                      ev.targetName
-                    )
-                  ) : ev.targetId ? (
-                    <span className="text-muted-foreground">#{ev.targetId}</span>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-muted-foreground max-w-[320px] truncate" title={ev.sourcePath || ""} data-testid={`text-event-source-${ev.id}`}>
-                  {ev.sourcePath || "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="px-6 py-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2" data-testid={`tabs-referral-view-${referrerId}`}>
+          <span className="text-xs uppercase tracking-wider text-muted-foreground mr-1">View:</span>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setViewMode(t.key)}
+              className={
+                "inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs transition-colors " +
+                (viewMode === t.key
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background text-foreground hover:bg-muted")
+              }
+              data-testid={`tab-view-${t.key}-${referrerId}`}
+            >
+              {t.label}
+              <span className="opacity-70">({t.count})</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="overflow-x-auto">
+          {viewMode === "events" && <EventsTable items={events} referrerId={referrerId} />}
+          {viewMode === "signups" && <SignupsTable items={signups} referrerId={referrerId} />}
+          {viewMode === "groups" && <GroupsTable items={groups} referrerId={referrerId} />}
+          {viewMode === "investments" && <InvestmentsTable items={investments} referrerId={referrerId} />}
+          {viewMode === "raisemoney" && <RaiseMoneyTable items={raiseMoney} referrerId={referrerId} />}
+        </div>
       </div>
     </td>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return <div className="py-6 text-center text-sm text-muted-foreground">{message}</div>;
+}
+
+function EventsTable({ items, referrerId }: { items: any[]; referrerId: string }) {
+  if (items.length === 0) return <EmptyState message="No referral events found." />;
+  return (
+    <table className="w-full text-sm" data-testid={`table-referral-events-${referrerId}`}>
+      <thead>
+        <tr className="border-b">
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Action</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Referred User</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Target</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Source Path</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((ev) => (
+          <tr key={ev.id} className="border-b last:border-b-0" data-testid={`row-referral-event-${ev.id}`}>
+            <td className="px-3 py-2 text-muted-foreground whitespace-nowrap" data-testid={`text-event-date-${ev.id}`}>
+              {ev.createdAt ? formatDate(ev.createdAt) : "—"}
+            </td>
+            <td className="px-3 py-2">
+              <Badge variant="outline" className={actionBadgeClass(ev.actionType)} data-testid={`badge-event-action-${ev.id}`}>
+                {ACTION_LABELS[ev.actionType] || ev.actionType}
+              </Badge>
+            </td>
+            <td className="px-3 py-2" data-testid={`text-event-referred-${ev.id}`}>
+              {ev.referredUserId ? (
+                <Link
+                  href={`/users?search=${encodeURIComponent(ev.referredEmail || ev.referredUserId)}`}
+                  className="text-primary hover:underline"
+                >
+                  {ev.referredFullName || "—"}
+                </Link>
+              ) : (
+                ev.referredFullName || "—"
+              )}
+            </td>
+            <td className="px-3 py-2 text-muted-foreground" data-testid={`text-event-referred-email-${ev.id}`}>
+              {ev.referredEmail || "—"}
+            </td>
+            <td className="px-3 py-2" data-testid={`text-event-target-${ev.id}`}>
+              {ev.targetName ? (
+                ev.actionType === "investment" && ev.targetSlug ? (
+                  <Link href={`/raisemoney/edit/${ev.targetSlug}`} className="text-primary hover:underline">
+                    {ev.targetName}
+                  </Link>
+                ) : ev.actionType === "group_join" && ev.targetId ? (
+                  <Link href={`/groups/${ev.targetId}/edit`} className="text-primary hover:underline">
+                    {ev.targetName}
+                  </Link>
+                ) : (
+                  ev.targetName
+                )
+              ) : ev.targetId ? (
+                <span className="text-muted-foreground">#{ev.targetId}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-muted-foreground max-w-[320px] truncate" title={ev.sourcePath || ""} data-testid={`text-event-source-${ev.id}`}>
+              {ev.sourcePath || "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function SignupsTable({ items, referrerId }: { items: any[]; referrerId: string }) {
+  if (items.length === 0) return <EmptyState message="No signups attributed to this referrer." />;
+  return (
+    <table className="w-full text-sm" data-testid={`table-referral-signups-${referrerId}`}>
+      <thead>
+        <tr className="border-b">
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Name</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Joined</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((s) => (
+          <tr key={s.referredUserId} className="border-b last:border-b-0" data-testid={`row-signup-${s.referredUserId}`}>
+            <td className="px-3 py-2" data-testid={`text-signup-name-${s.referredUserId}`}>
+              <Link
+                href={`/users?search=${encodeURIComponent(s.email || s.referredUserId)}`}
+                className="text-primary hover:underline"
+              >
+                {s.fullName || "—"}
+              </Link>
+            </td>
+            <td className="px-3 py-2 text-muted-foreground" data-testid={`text-signup-email-${s.referredUserId}`}>
+              {s.email || "—"}
+            </td>
+            <td className="px-3 py-2 text-muted-foreground whitespace-nowrap" data-testid={`text-signup-date-${s.referredUserId}`}>
+              {s.signupAt ? formatDate(s.signupAt) : "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function GroupsTable({ items, referrerId }: { items: any[]; referrerId: string }) {
+  if (items.length === 0) return <EmptyState message="No group joins attributed to this referrer." />;
+  const total = items.reduce((s, g) => s + (g.referralCount || 0), 0);
+  return (
+    <table className="w-full text-sm" data-testid={`table-referral-groups-${referrerId}`}>
+      <thead>
+        <tr className="border-b">
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Group</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Referrals in Group</th>
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Most Recent Join</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((g) => (
+          <tr key={String(g.groupId)} className="border-b last:border-b-0" data-testid={`row-group-${g.groupId}`}>
+            <td className="px-3 py-2" data-testid={`text-group-name-${g.groupId}`}>
+              {g.groupName ? (
+                <Link href={`/groups/${g.groupId}/edit`} className="text-primary hover:underline">
+                  {g.groupName}
+                </Link>
+              ) : (
+                <span className="text-muted-foreground">#{g.groupId || "—"}</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-right font-medium tabular-nums" data-testid={`text-group-count-${g.groupId}`}>
+              {g.referralCount}
+            </td>
+            <td className="px-3 py-2 text-muted-foreground whitespace-nowrap" data-testid={`text-group-date-${g.groupId}`}>
+              {g.lastJoinedAt ? formatDate(g.lastJoinedAt) : "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="border-t bg-muted/40 font-semibold">
+          <td className="px-3 py-2">Total</td>
+          <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-group-total-${referrerId}`}>{total}</td>
+          <td className="px-3 py-2"></td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+function InvestmentsTable({ items, referrerId }: { items: any[]; referrerId: string }) {
+  if (items.length === 0) return <EmptyState message="No investments attributed to this referrer." />;
+  const totalCount = items.reduce((s, i) => s + (i.recommendationCount || 0), 0);
+  const totalAmount = items.reduce((s, i) => s + (i.totalAmount || 0), 0);
+  return (
+    <table className="w-full text-sm" data-testid={`table-referral-investments-${referrerId}`}>
+      <thead>
+        <tr className="border-b">
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Investment</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Referred Investors</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider"># of Investments</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Invested</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((inv) => (
+          <tr key={inv.campaignId} className="border-b last:border-b-0" data-testid={`row-investment-${inv.campaignId}`}>
+            <td className="px-3 py-2" data-testid={`text-investment-name-${inv.campaignId}`}>
+              {inv.campaignName ? (
+                inv.campaignSlug ? (
+                  <Link href={`/investments/${inv.campaignId}/investors`} className="text-primary hover:underline">
+                    {inv.campaignName}
+                  </Link>
+                ) : (
+                  inv.campaignName
+                )
+              ) : (
+                <span className="text-muted-foreground">#{inv.campaignId}</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-investment-investors-${inv.campaignId}`}>
+              {inv.investorCount}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-investment-count-${inv.campaignId}`}>
+              {inv.recommendationCount}
+            </td>
+            <td className="px-3 py-2 text-right font-medium tabular-nums" data-testid={`text-investment-amount-${inv.campaignId}`}>
+              {currency_format(inv.totalAmount)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="border-t bg-muted/40 font-semibold">
+          <td className="px-3 py-2">Total</td>
+          <td className="px-3 py-2"></td>
+          <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-investment-total-count-${referrerId}`}>{totalCount}</td>
+          <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-investment-total-amount-${referrerId}`}>
+            {currency_format(totalAmount)}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+function RaiseMoneyTable({ items, referrerId }: { items: any[]; referrerId: string }) {
+  if (items.length === 0) return <EmptyState message="No raise-money signups attributed to this referrer." />;
+  const totalRaised = items.reduce((s, c) => s + (c.totalRaised || 0), 0);
+  return (
+    <table className="w-full text-sm" data-testid={`table-referral-raisemoney-${referrerId}`}>
+      <thead>
+        <tr className="border-b">
+          <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Company / Campaign</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Contributions</th>
+          <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Raised on CataCap</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((c) => (
+          <tr key={c.campaignId} className="border-b last:border-b-0" data-testid={`row-raisemoney-${c.campaignId}`}>
+            <td className="px-3 py-2" data-testid={`text-raisemoney-name-${c.campaignId}`}>
+              {c.campaignName ? (
+                c.campaignSlug ? (
+                  <Link href={`/raisemoney/edit/${c.campaignSlug}`} className="text-primary hover:underline">
+                    {c.campaignName}
+                  </Link>
+                ) : (
+                  c.campaignName
+                )
+              ) : (
+                <span className="text-muted-foreground">#{c.campaignId}</span>
+              )}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-raisemoney-count-${c.campaignId}`}>
+              {c.contributionCount}
+            </td>
+            <td className="px-3 py-2 text-right font-medium tabular-nums" data-testid={`text-raisemoney-amount-${c.campaignId}`}>
+              {currency_format(c.totalRaised)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="border-t bg-muted/40 font-semibold">
+          <td className="px-3 py-2">Total</td>
+          <td className="px-3 py-2"></td>
+          <td className="px-3 py-2 text-right tabular-nums" data-testid={`text-raisemoney-total-${referrerId}`}>
+            {currency_format(totalRaised)}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
   );
 }
 
@@ -158,6 +405,7 @@ export default function ReferralsPage() {
   const [searchInput, setSearchInput] = useState("");
   const [searchValue, setSearchValue] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
   const [addReferralOpen, setAddReferralOpen] = useState(false);
 
   const { sortField, sortDir, handleSort: originalHandleSort } = useSort<SortField>("lastreferredat", "desc");
@@ -189,6 +437,15 @@ export default function ReferralsPage() {
   const items: ReferrerEntry[] = data?.items ?? [];
   const totalCount = data?.totalCount ?? 0;
 
+  const openWithView = (id: string, view: ViewMode) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    setViewModes((prev) => ({ ...prev, [id]: view }));
+  };
+
   const toggleExpanded = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -200,6 +457,14 @@ export default function ReferralsPage() {
       return next;
     });
   };
+
+  const setViewMode = (id: string, view: ViewMode) =>
+    setViewModes((prev) => ({ ...prev, [id]: view }));
+
+  const countCellClass = (count: number) =>
+    count > 0
+      ? "text-primary hover:underline cursor-pointer font-medium"
+      : "text-muted-foreground cursor-default";
 
   return (
     <AdminLayout>
@@ -309,6 +574,12 @@ export default function ReferralsPage() {
                   )}
                   {!isLoading && !error && items.map((r) => {
                     const isExpanded = expandedIds.has(r.referrerId);
+                    const view = viewModes[r.referrerId] || "events";
+                    const onCountClick = (e: React.MouseEvent, v: ViewMode, count: number) => {
+                      e.stopPropagation();
+                      if (count <= 0) return;
+                      openWithView(r.referrerId, v);
+                    };
                     return (
                       <Fragment key={r.referrerId}>
                         <tr
@@ -349,16 +620,36 @@ export default function ReferralsPage() {
                           <td className="px-4 py-3 text-sm font-semibold" data-testid={`text-referrer-total-${r.referrerId}`}>
                             {r.totalReferred}
                           </td>
-                          <td className="px-4 py-3 text-sm" data-testid={`text-referrer-signups-${r.referrerId}`}>
+                          <td
+                            className={"px-4 py-3 text-sm " + countCellClass(r.signups)}
+                            onClick={(e) => onCountClick(e, "signups", r.signups)}
+                            data-testid={`text-referrer-signups-${r.referrerId}`}
+                            title={r.signups > 0 ? "Show signups" : undefined}
+                          >
                             {r.signups}
                           </td>
-                          <td className="px-4 py-3 text-sm" data-testid={`text-referrer-groupjoins-${r.referrerId}`}>
+                          <td
+                            className={"px-4 py-3 text-sm " + countCellClass(r.groupJoins)}
+                            onClick={(e) => onCountClick(e, "groups", r.groupJoins)}
+                            data-testid={`text-referrer-groupjoins-${r.referrerId}`}
+                            title={r.groupJoins > 0 ? "Show groups joined" : undefined}
+                          >
                             {r.groupJoins}
                           </td>
-                          <td className="px-4 py-3 text-sm" data-testid={`text-referrer-investments-${r.referrerId}`}>
+                          <td
+                            className={"px-4 py-3 text-sm " + countCellClass(r.investments)}
+                            onClick={(e) => onCountClick(e, "investments", r.investments)}
+                            data-testid={`text-referrer-investments-${r.referrerId}`}
+                            title={r.investments > 0 ? "Show investments" : undefined}
+                          >
                             {r.investments}
                           </td>
-                          <td className="px-4 py-3 text-sm" data-testid={`text-referrer-raisemoney-${r.referrerId}`}>
+                          <td
+                            className={"px-4 py-3 text-sm " + countCellClass(r.raiseMoneySignups)}
+                            onClick={(e) => onCountClick(e, "raisemoney", r.raiseMoneySignups)}
+                            data-testid={`text-referrer-raisemoney-${r.referrerId}`}
+                            title={r.raiseMoneySignups > 0 ? "Show raise-money signups" : undefined}
+                          >
                             {r.raiseMoneySignups}
                           </td>
                           <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap" data-testid={`text-referrer-last-${r.referrerId}`}>
@@ -367,7 +658,11 @@ export default function ReferralsPage() {
                         </tr>
                         {isExpanded && (
                           <tr className="border-b last:border-b-0" data-testid={`row-referrer-expanded-${r.referrerId}`}>
-                            <ReferrerEventsRow referrerId={r.referrerId} />
+                            <ReferrerEventsRow
+                              referrerId={r.referrerId}
+                              viewMode={view}
+                              setViewMode={(v) => setViewMode(r.referrerId, v)}
+                            />
                           </tr>
                         )}
                       </Fragment>
