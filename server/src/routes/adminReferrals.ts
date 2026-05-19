@@ -284,7 +284,7 @@ router.post("/link", async (req: Request, res: Response) => {
       `INSERT INTO public.referrals
          (referrer_user_id, referred_user_id, action_type, target_id, amount, source_path, created_at)
        SELECT $1, $2, 'investment', rec.campaign_id::text,
-              NULLIF(rec.amount, '')::numeric,
+              rec.amount,
               'admin:manual-link', COALESCE(rec.date_created, NOW())
          FROM public.recommendations rec
         WHERE rec.user_id = $2
