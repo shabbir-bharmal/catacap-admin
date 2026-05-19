@@ -331,60 +331,40 @@ export async function applySingleCoverFee(opts: {
         ],
       );
     } else {
-      // Escrow pools: also debit the sponsor's wallet by the fee amount
-      // so the underlying ledger reflects a real movement (matches the
-      // symmetric credit-back performed by reverseCoverFeesByRecommendation).
-      // The Account-History row's Old / New columns, however, intentionally
-      // show the POOL's escrow remaining (reserved − amount_used) before
-      // and after this fee — matching the "$X remaining" figure admins
-      // see on the Cover Fees page and matching the reversal-side row
-      // convention. They do NOT mirror the sponsor's wallet movement.
-      let escrowFeeAmount = feeAmount;
-      if (sponsorBalance < escrowFeeAmount) {
-        escrowFeeAmount = Math.round(sponsorBalance * 100) / 100;
-      }
-      if (escrowFeeAmount > 0) {
-        const newSponsorBalance = parseFloat(
-          (sponsorBalance - escrowFeeAmount).toFixed(2),
-        );
-        await client.query(
-          `UPDATE users SET account_balance = $1 WHERE id = $2`,
-          [newSponsorBalance, sponsor.id],
-        );
-        const poolRemainingBefore = parseFloat(
-          (reserved - amountUsed).toFixed(2),
-        );
-        const poolRemainingAfter = parseFloat(
-          (reserved - amountUsed - escrowFeeAmount).toFixed(2),
-        );
-        await client.query(
-          `INSERT INTO account_balance_change_logs
-             (user_id, payment_type, investment_name, campaign_id,
-              old_value, user_name, new_value, change_date, comment,
-              gross_amount, fees, net_amount)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
-          [
-            sponsor.id,
-            `Cover Fees – escrow applied`,
-            campaignName,
-            campaignId,
-            poolRemainingBefore,
-            sponsor.user_name || sponsorFullName,
-            poolRemainingAfter,
-            `$${escrowFeeAmount.toFixed(2)} fee covered from escrow via pool "${poolRow.name || `Pool #${poolRow.id}`}"`,
-            escrowFeeAmount,
-            0,
-            escrowFeeAmount,
-          ],
-        );
-        feeAmount = escrowFeeAmount;
-      } else {
-        await client.query("ROLLBACK");
-        console.warn(
-          `applyCoverFees: sponsor ${sponsor.id} has zero balance for escrow pool ${poolRow.id}, skipping`,
-        );
-        return 0;
-      }
+      // Escrow pools: the sponsor's wallet was already debited at funding
+      // time (when reserved_amount was committed via reserveCapFromWallet).
+      // Donor fees draw down ONLY against the pool's escrow balance — they
+      // do NOT touch the sponsor's wallet again, otherwise the sponsor
+      // would be double-debited. The Account-History row's Old / New
+      // columns show the POOL's escrow remaining (reserved − amount_used)
+      // before and after this fee, matching the "$X remaining" figure
+      // admins see on the Cover Fees page.
+      const poolRemainingBefore = parseFloat(
+        (reserved - amountUsed).toFixed(2),
+      );
+      const poolRemainingAfter = parseFloat(
+        (reserved - amountUsed - feeAmount).toFixed(2),
+      );
+      await client.query(
+        `INSERT INTO account_balance_change_logs
+           (user_id, payment_type, investment_name, campaign_id,
+            old_value, user_name, new_value, change_date, comment,
+            gross_amount, fees, net_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
+        [
+          sponsor.id,
+          `Cover Fees – escrow applied`,
+          campaignName,
+          campaignId,
+          poolRemainingBefore,
+          sponsor.user_name || sponsorFullName,
+          poolRemainingAfter,
+          `$${feeAmount.toFixed(2)} fee covered from escrow via pool "${poolRow.name || `Pool #${poolRow.id}`}" (sponsor wallet unchanged)`,
+          feeAmount,
+          0,
+          feeAmount,
+        ],
+      );
     }
 
     await client.query(
@@ -715,17 +695,23 @@ export async function reverseCoverFeesByPaymentRef(
     }
     const sponsor = sponsorRes.rows[0];
     const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
+    const isEscrowPoolReversal = poolReservedAmount > 0;
 
-    // Credit the sponsor's wallet by the reversed fee. Mirrors the
-    // matching debit in applySingleCoverFee (both escrow + live-wallet
-    // paths debit the sponsor wallet on application).
-    const newSponsorBalance = parseFloat(
-      (sponsorBalance + proportionalFee).toFixed(2),
-    );
-    await client.query(
-      `UPDATE users SET account_balance = $1 WHERE id = $2`,
-      [newSponsorBalance, sponsor.id],
-    );
+    // Credit the sponsor's wallet by the reversed fee ONLY for live-wallet
+    // pools, mirroring the matching debit in applySingleCoverFee. Escrow
+    // pools never re-debit the sponsor's wallet on apply, so we must not
+    // credit it on reversal either — the reversal returns the fee to the
+    // pool's escrow only (amount_used decrement below).
+    let newSponsorBalance = sponsorBalance;
+    if (!isEscrowPoolReversal) {
+      newSponsorBalance = parseFloat(
+        (sponsorBalance + proportionalFee).toFixed(2),
+      );
+      await client.query(
+        `UPDATE users SET account_balance = $1 WHERE id = $2`,
+        [newSponsorBalance, sponsor.id],
+      );
+    }
 
     // ── Decrement pool amount_used (clamped at 0 via GREATEST) ────────
     await client.query(
@@ -1092,17 +1078,24 @@ export async function reverseCoverFeesByRecommendation(args: {
       if (sponsorRes.rows.length === 0) continue;
       const sponsor = sponsorRes.rows[0];
       const sponsorBalance = parseFloat(sponsor.account_balance) || 0;
+      const isEscrowPoolReversal = poolReservedAmount > 0;
 
-      // Credit the sponsor's wallet by the reversed fee. Mirrors the
-      // matching debit in applySingleCoverFee (both escrow + live-wallet
-      // paths debit the sponsor wallet on application).
-      const newSponsorBalance = parseFloat(
-        (sponsorBalance + remainingFee).toFixed(2),
-      );
-      await client.query(
-        `UPDATE users SET account_balance = $1 WHERE id = $2`,
-        [newSponsorBalance, sponsor.id],
-      );
+      // Credit the sponsor's wallet by the reversed fee ONLY for
+      // live-wallet pools, mirroring the matching debit in
+      // applySingleCoverFee. Escrow pools never re-debit the sponsor's
+      // wallet on apply, so we must not credit it on reversal either —
+      // the reversal returns the fee to the pool's escrow only
+      // (amount_used decrement below).
+      let newSponsorBalance = sponsorBalance;
+      if (!isEscrowPoolReversal) {
+        newSponsorBalance = parseFloat(
+          (sponsorBalance + remainingFee).toFixed(2),
+        );
+        await client.query(
+          `UPDATE users SET account_balance = $1 WHERE id = $2`,
+          [newSponsorBalance, sponsor.id],
+        );
+      }
 
       // ── Decrement pool amount_used (clamped at 0) ─────────────────
       await client.query(

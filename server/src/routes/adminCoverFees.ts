@@ -39,15 +39,19 @@ async function reserveCapFromWallet(
   );
   await client.query(
     `INSERT INTO account_balance_change_logs
-       (user_id, payment_type, investment_name, old_value, user_name, new_value, change_date)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+       (user_id, payment_type, investment_name, old_value, user_name, new_value,
+        change_date, gross_amount, fees, net_amount)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
     [
       sponsorUserId,
-      "Cover Fees pool – funds reserved",
-      poolName || "Cover Fees pool",
+      `Funds Assigned to Cover Fees Pool for ${poolName || "Cover Fees pool"}`,
+      "-",
       oldBalance,
       sponsorRes.rows[0].user_name || sponsorRes.rows[0].email || "",
       newBalance,
+      capAmount,
+      0,
+      capAmount,
     ],
   );
 
@@ -79,15 +83,19 @@ async function returnUnusedFunds(
   ]);
   await client.query(
     `INSERT INTO account_balance_change_logs
-       (user_id, payment_type, investment_name, old_value, user_name, new_value, change_date)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+       (user_id, payment_type, investment_name, old_value, user_name, new_value,
+        change_date, gross_amount, fees, net_amount)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
     [
       sponsorUserId,
-      "Cover Fees pool – unused funds returned",
-      poolName || "Cover Fees pool",
+      `Unused Funds Returned from Cover Fees Pool for ${poolName || "Cover Fees pool"}`,
+      "-",
       oldBalance,
       sponsorRes.rows[0].user_name || sponsorRes.rows[0].email || "",
       newBalance,
+      refund,
+      0,
+      refund,
     ],
   );
 
