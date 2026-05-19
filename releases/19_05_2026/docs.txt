@@ -1,0 +1,23 @@
+Release 19_05_2026
+==================
+
+Migrations
+----------
+1. 2026_05_19_add_referrals_module.sql
+   - Schema: public.modules
+   - Intent: Register the 'referrals' admin module row so the new Referrals
+     admin page (under "Donations to Invest") can be wired into the role /
+     module access permissions system alongside Users, Recommendations,
+     Pending Grants, and Other Assets.
+   - Idempotency: Guarded by `WHERE NOT EXISTS (SELECT 1 FROM public.modules
+     WHERE name = 'referrals')`. Safe to re-run.
+   - Rollback:
+       DELETE FROM public.module_access_permissions
+        WHERE module_id = (SELECT id FROM public.modules WHERE name = 'referrals');
+       DELETE FROM public.modules WHERE name = 'referrals';
+
+Notes
+-----
+- The `public.referrals` table itself and `public.users.ref_code` already exist
+  in the database and are not changed by this release.
+- The Referrals admin page is read-only; no schema/data writes are performed.
