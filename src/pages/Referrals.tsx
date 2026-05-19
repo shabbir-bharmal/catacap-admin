@@ -540,7 +540,7 @@ export default function ReferralsPage() {
                       Group Joins
                     </SortHeader>
                     <SortHeader field="investments" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
-                      Investments
+                      Total Invested
                     </SortHeader>
                     <SortHeader field="raisemoneysignups" sortField={sortField} sortDir={sortDir} handleSort={handleSort}>
                       Raise Money
@@ -637,12 +637,16 @@ export default function ReferralsPage() {
                             {r.groupJoins}
                           </td>
                           <td
-                            className={"px-4 py-3 text-sm " + countCellClass(r.investments)}
+                            className={"px-4 py-3 text-sm tabular-nums " + countCellClass(r.investments)}
                             onClick={(e) => onCountClick(e, "investments", r.investments)}
                             data-testid={`text-referrer-investments-${r.referrerId}`}
-                            title={r.investments > 0 ? "Show investments" : undefined}
+                            title={
+                              r.investments > 0
+                                ? `${r.investments} investment${r.investments === 1 ? "" : "s"} — click for breakdown`
+                                : undefined
+                            }
                           >
-                            {r.investments}
+                            {currency_format(r.investmentsTotal || 0)}
                           </td>
                           <td
                             className={"px-4 py-3 text-sm " + countCellClass(r.raiseMoneySignups)}

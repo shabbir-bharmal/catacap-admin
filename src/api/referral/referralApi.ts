@@ -20,6 +20,7 @@ export interface ReferrerEntry {
   signups: number;
   groupJoins: number;
   investments: number;
+  investmentsTotal: number;
   raiseMoneySignups: number;
   lastReferredAt: string | null;
 }

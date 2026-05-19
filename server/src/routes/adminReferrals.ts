@@ -13,7 +13,10 @@ const SORT_COLUMNS: Record<string, string> = {
   totalreferred: "total_referred",
   signups: "signups",
   groupjoins: "group_joins",
-  investments: "investments",
+  // The Investments column now displays total invested $ rather than
+  // event count, so we sort by the live-summed amount.
+  investments: "investments_total",
+  investmentstotal: "investments_total",
   raisemoneysignups: "raise_money_signups",
   lastreferredat: "last_referred_at",
 };
@@ -61,6 +64,25 @@ router.get("/", async (req: Request, res: Response) => {
         COUNT(*) FILTER (WHERE r.action_type = 'group_join')::int AS group_joins,
         COUNT(*) FILTER (WHERE r.action_type = 'investment')::int AS investments,
         COUNT(*) FILTER (WHERE r.action_type = 'raise_money_signup')::int AS raise_money_signups,
+        -- Sum of live recommendations.amount across every (campaign,
+        -- referred user) pair attributed to this referrer. Matches the
+        -- per-campaign totals shown in the Investments drill-down view.
+        COALESCE((
+          SELECT SUM(rec.amount)
+            FROM (
+              SELECT DISTINCT r2.target_id::int AS campaign_id,
+                              r2.referred_user_id AS user_id
+                FROM public.referrals r2
+               WHERE r2.referrer_user_id = u.id
+                 AND r2.action_type = 'investment'
+                 AND r2.target_id ~ '^[0-9]+$'
+                 AND r2.referred_user_id IS NOT NULL
+            ) ref
+            JOIN public.recommendations rec
+              ON rec.campaign_id = ref.campaign_id
+             AND rec.user_id = ref.user_id
+             AND (rec.is_deleted IS NULL OR rec.is_deleted = false)
+        ), 0)::numeric AS investments_total,
         MAX(r.created_at) AS last_referred_at
       ${baseFrom}
       GROUP BY u.id, u.first_name, u.last_name, u.email, u.ref_code
@@ -98,6 +120,7 @@ router.get("/", async (req: Request, res: Response) => {
       signups: r.signups,
       groupJoins: r.group_joins,
       investments: r.investments,
+      investmentsTotal: r.investments_total != null ? Number(r.investments_total) : 0,
       raiseMoneySignups: r.raise_money_signups,
       lastReferredAt: r.last_referred_at,
     }));
