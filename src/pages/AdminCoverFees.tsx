@@ -332,7 +332,7 @@ function GrantFormDialog({
   onOpenChange: (v: boolean) => void;
   initial: typeof EMPTY_FORM & { id?: number };
   campaigns: Campaign[];
-  onSaved: () => void;
+  onSaved: () => void | Promise<void>;
 }) {
   const { toast } = useToast();
   const [form, setForm] = useState(initial);
@@ -460,11 +460,11 @@ function GrantFormDialog({
         : await axiosInstance.post("/api/admin/cover-fees", payload);
 
       void data;
+      await onSaved();
       toast({
         title: "Saved",
         description: `Cover Fees pool ${isEdit ? "updated" : "created"} successfully.`,
       });
-      onSaved();
       onOpenChange(false);
     } catch (err: any) {
       toast({ title: "Error", description: err.message || "Something went wrong.", variant: "destructive" });
@@ -1255,8 +1255,8 @@ export default function AdminCoverFees() {
     staleTime: 120_000,
   });
 
-  const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["/api/admin/cover-fees"] });
+  const refresh = useCallback(async () => {
+    await queryClient.refetchQueries({ queryKey: ["/api/admin/cover-fees"] });
   }, [queryClient]);
 
   const openCreate = () => {
@@ -1293,9 +1293,9 @@ export default function AdminCoverFees() {
     setDeletingId(id);
     try {
       await axiosInstance.delete(`/api/admin/cover-fees/${id}`);
+      await refresh();
       toast({ title: "Deleted", description: "Cover Fees pool removed." });
       setDeleteTarget(null);
-      refresh();
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     } finally {
