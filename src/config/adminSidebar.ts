@@ -99,6 +99,12 @@ export const sidebarConfig = [
             url: "/other-assets",
             icon: Wallet,
             permission: { module: "other-assets", action: "view" }
+          },
+          {
+            title: "Referrals",
+            url: "/referrals",
+            icon: UsersRound,
+            permission: { module: "referrals", action: "view" }
           }
         ]
       },

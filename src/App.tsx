@@ -50,6 +50,7 @@ import Analytics from "./pages/Analytics";
 import AdminMatching from "./pages/AdminMatching";
 import AdminCoverFees from "./pages/AdminCoverFees";
 import SchemaChangeLogs from "./pages/SchemaChangeLogs";
+import Referrals from "./pages/Referrals";
 
 
 function Router() {
@@ -102,6 +103,7 @@ function Router() {
         <ProtectedRoute path="/db-schema-logs" component={SchemaChangeLogs} moduleName="db schema logs" />
         <ProtectedRoute path="/matching" component={AdminMatching} moduleName="recommendation" />
         <ProtectedRoute path="/cover-fees" component={AdminCoverFees} moduleName="cover-fees" />
+        <ProtectedRoute path="/referrals" component={Referrals} moduleName="referrals" />
 
         <ProtectedRoute path="/profile" component={AdminUserProfile} />
         <ProtectedRoute component={AdminNotFound} />

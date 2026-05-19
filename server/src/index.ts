@@ -43,6 +43,7 @@ import adminSchemaChangesRoutes from "./routes/adminSchemaChanges.js";
 import analyticsRoutes from "./routes/analytics.js";
 import adminMatchingRoutes from "./routes/adminMatching.js";
 import adminCoverFeesRoutes from "./routes/adminCoverFees.js";
+import adminReferralsRoutes from "./routes/adminReferrals.js";
 import reportingRoutes from "./routes/reporting.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 
@@ -101,6 +102,7 @@ app.use("/api/admin/analytics", jwtAuthMiddleware, analyticsRoutes);
 app.use("/api/analytics", jwtAuthMiddleware, analyticsRoutes);
 app.use("/api/admin/matching", jwtAuthMiddleware, adminMatchingRoutes);
 app.use("/api/admin/cover-fees", jwtAuthMiddleware, adminCoverFeesRoutes);
+app.use("/api/admin/referrals", jwtAuthMiddleware, adminReferralsRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/Campaign", campaignRoutes);
 app.use("/api/Group", publicGroupRoutes);
