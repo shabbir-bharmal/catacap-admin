@@ -192,7 +192,6 @@ router.get("/by-referrer/:referrerId", async (req: Request, res: Response) => {
 router.post("/link", async (req: Request, res: Response) => {
   const referrerUserId = String(req.body?.referrerUserId || "").trim();
   const referredUserId = String(req.body?.referredUserId || "").trim();
-  console.log("[referrals/link] incoming", { referrerUserId, referredUserId });
 
   if (!referrerUserId || !referredUserId) {
     res.status(400).json({ success: false, message: "referrerUserId and referredUserId are required" });
@@ -248,11 +247,6 @@ router.post("/link", async (req: Request, res: Response) => {
         [referredUserId]
       );
       const existingReferrer = owner.rows[0]?.referrer_user_id;
-      console.log("[referrals/link] signup-insert suppressed", {
-        existingReferrer,
-        requestedReferrer: referrerUserId,
-        referredUserId,
-      });
       if (existingReferrer && existingReferrer !== referrerUserId) {
         await client.query("ROLLBACK");
         res.status(409).json({
@@ -263,65 +257,95 @@ router.post("/link", async (req: Request, res: Response) => {
       }
     }
 
-    // 2) group_join — every accepted, non-deleted membership the referred user has
+    // Back-fill rules:
+    //   * One referral event per UNIQUE target (group / campaign).
+    //   * If the referred user has multiple accepted memberships for the
+    //     same group, or multiple recommendations for the same campaign,
+    //     we attribute a single first-touch event using the EARLIEST
+    //     timestamp. This matches the existing referrals_first_touch_unique
+    //     index on (referred_user_id, action_type, COALESCE(target_id, ''))
+    //     and avoids self-conflicting INSERTs within one statement.
+
+    // 2) group_join — DISTINCT ON group_to_follow_id, earliest first.
     const gjRes = await client.query(
       `INSERT INTO public.referrals
          (referrer_user_id, referred_user_id, action_type, target_id, source_path, created_at)
-       SELECT $1, $2, 'group_join', req.group_to_follow_id::text,
-              'admin:manual-link', COALESCE(req.created_at, NOW())
-         FROM public.requests req
-        WHERE req.request_owner_id = $2
-          AND req.status = 'accepted'
-          AND (req.is_deleted IS NULL OR req.is_deleted = false)
-          AND req.group_to_follow_id IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM public.referrals r
-             WHERE r.referred_user_id = $2
-               AND r.action_type = 'group_join'
-               AND r.target_id IS NOT DISTINCT FROM req.group_to_follow_id::text
-          )
+       SELECT $1, $2, 'group_join', src.group_id::text,
+              'admin:manual-link', COALESCE(src.created_at, NOW())
+         FROM (
+           SELECT DISTINCT ON (req.group_to_follow_id)
+                  req.group_to_follow_id AS group_id,
+                  req.created_at
+             FROM public.requests req
+            WHERE req.request_owner_id = $2
+              AND req.status = 'accepted'
+              AND (req.is_deleted IS NULL OR req.is_deleted = false)
+              AND req.group_to_follow_id IS NOT NULL
+            ORDER BY req.group_to_follow_id, req.created_at ASC NULLS LAST
+         ) src
+        WHERE NOT EXISTS (
+          SELECT 1 FROM public.referrals r
+           WHERE r.referred_user_id = $2
+             AND r.action_type = 'group_join'
+             AND r.target_id IS NOT DISTINCT FROM src.group_id::text
+        )
        RETURNING id`,
       [referrerUserId, referredUserId]
     );
     inserted.group_join = gjRes.rowCount || 0;
 
-    // 3) investment — every non-deleted recommendation made by the referred user
+    // 3) investment — DISTINCT ON campaign_id, earliest first; amount
+    // carries over from that earliest recommendation row.
     const invRes = await client.query(
       `INSERT INTO public.referrals
          (referrer_user_id, referred_user_id, action_type, target_id, amount, source_path, created_at)
-       SELECT $1, $2, 'investment', rec.campaign_id::text,
-              rec.amount,
-              'admin:manual-link', COALESCE(rec.date_created, NOW())
-         FROM public.recommendations rec
-        WHERE rec.user_id = $2
-          AND (rec.is_deleted IS NULL OR rec.is_deleted = false)
-          AND rec.campaign_id IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM public.referrals r
-             WHERE r.referred_user_id = $2
-               AND r.action_type = 'investment'
-               AND r.target_id IS NOT DISTINCT FROM rec.campaign_id::text
-          )
+       SELECT $1, $2, 'investment', src.campaign_id::text,
+              src.amount,
+              'admin:manual-link', COALESCE(src.date_created, NOW())
+         FROM (
+           SELECT DISTINCT ON (rec.campaign_id)
+                  rec.campaign_id,
+                  rec.amount,
+                  rec.date_created
+             FROM public.recommendations rec
+            WHERE rec.user_id = $2
+              AND (rec.is_deleted IS NULL OR rec.is_deleted = false)
+              AND rec.campaign_id IS NOT NULL
+            ORDER BY rec.campaign_id, rec.date_created ASC NULLS LAST
+         ) src
+        WHERE NOT EXISTS (
+          SELECT 1 FROM public.referrals r
+           WHERE r.referred_user_id = $2
+             AND r.action_type = 'investment'
+             AND r.target_id IS NOT DISTINCT FROM src.campaign_id::text
+        )
        RETURNING id`,
       [referrerUserId, referredUserId]
     );
     inserted.investment = invRes.rowCount || 0;
 
-    // 4) raise_money_signup — every non-deleted campaign owned by the referred user
+    // 4) raise_money_signup — campaigns.id is unique, but DISTINCT ON is
+    // cheap defensive insurance against any future schema change.
     const rmRes = await client.query(
       `INSERT INTO public.referrals
          (referrer_user_id, referred_user_id, action_type, target_id, source_path, created_at)
-       SELECT $1, $2, 'raise_money_signup', c.id::text,
-              'admin:manual-link', COALESCE(c.created_date, NOW())
-         FROM public.campaigns c
-        WHERE c.user_id = $2
-          AND (c.is_deleted IS NULL OR c.is_deleted = false)
-          AND NOT EXISTS (
-            SELECT 1 FROM public.referrals r
-             WHERE r.referred_user_id = $2
-               AND r.action_type = 'raise_money_signup'
-               AND r.target_id IS NOT DISTINCT FROM c.id::text
-          )
+       SELECT $1, $2, 'raise_money_signup', src.campaign_id::text,
+              'admin:manual-link', COALESCE(src.created_date, NOW())
+         FROM (
+           SELECT DISTINCT ON (c.id)
+                  c.id AS campaign_id,
+                  c.created_date
+             FROM public.campaigns c
+            WHERE c.user_id = $2
+              AND (c.is_deleted IS NULL OR c.is_deleted = false)
+            ORDER BY c.id, c.created_date ASC NULLS LAST
+         ) src
+        WHERE NOT EXISTS (
+          SELECT 1 FROM public.referrals r
+           WHERE r.referred_user_id = $2
+             AND r.action_type = 'raise_money_signup'
+             AND r.target_id IS NOT DISTINCT FROM src.campaign_id::text
+        )
        RETURNING id`,
       [referrerUserId, referredUserId]
     );
@@ -344,11 +368,11 @@ router.post("/link", async (req: Request, res: Response) => {
     } catch {}
     // Unique violation on the signup partial index — another admin
     // attributed this referred user to a different referrer in parallel.
-    if (err?.code === "23505") {
-      console.error("[referrals/link] 23505 unique violation", {
-        constraint: err?.constraint,
-        detail: err?.detail,
-      });
+    // Only the signup-uniqueness index implies "different referrer";
+    // other unique violations (e.g. first-touch dupes) are real bugs and
+    // should surface as 500 so we can fix them rather than misleading
+    // the admin.
+    if (err?.code === "23505" && err?.constraint === "idx_referrals_signup_unique_referred_user") {
       res.status(409).json({
         success: false,
         message: "This user is already attributed to a different referrer.",
