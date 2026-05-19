@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
+import { AddReferralDialog } from "@/components/AddReferralDialog";
 import { SortHeader } from "@/components/ui/table-sort";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 import { useSort } from "../hooks/useSort";
@@ -156,6 +158,7 @@ export default function ReferralsPage() {
   const [searchInput, setSearchInput] = useState("");
   const [searchValue, setSearchValue] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [addReferralOpen, setAddReferralOpen] = useState(false);
 
   const { sortField, sortDir, handleSort: originalHandleSort } = useSort<SortField>("lastreferredat", "desc");
   const handleSort = (field: SortField) => {
@@ -201,9 +204,22 @@ export default function ReferralsPage() {
   return (
     <AdminLayout>
       <div className="space-y-6">
-        <h1 className="text-2xl font-semibold" data-testid="text-page-heading">
-          Referrals
-        </h1>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h1 className="text-2xl font-semibold" data-testid="text-page-heading">
+            Referrals
+          </h1>
+          <Button
+            type="button"
+            onClick={() => setAddReferralOpen(true)}
+            data-testid="button-add-referral"
+          >
+            <Plus className="mr-2 h-4 w-4" /> Add Referral
+          </Button>
+        </div>
+        <AddReferralDialog
+          open={addReferralOpen}
+          onOpenChange={setAddReferralOpen}
+        />
 
         <Card>
           <CardHeader className="flex flex-row items-end justify-between gap-4 flex-wrap border-b px-6 py-4">

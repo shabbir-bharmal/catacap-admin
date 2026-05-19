@@ -80,3 +80,27 @@ export async function fetchReferralsByReferrer(referrerId: string): Promise<Refe
   );
   return response.data;
 }
+
+export interface LinkReferralResponse {
+  success: boolean;
+  alreadyLinked: boolean;
+  inserted: {
+    signup: number;
+    group_join: number;
+    investment: number;
+    raise_money_signup: number;
+  };
+  totalNew: number;
+  message?: string;
+}
+
+export async function linkReferral(params: {
+  referrerUserId: string;
+  referredUserId: string;
+}): Promise<LinkReferralResponse> {
+  const response = await axiosInstance.post<LinkReferralResponse>(
+    "/api/admin/referrals/link",
+    params
+  );
+  return response.data;
+}
