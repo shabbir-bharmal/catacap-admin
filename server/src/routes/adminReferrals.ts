@@ -192,6 +192,7 @@ router.get("/by-referrer/:referrerId", async (req: Request, res: Response) => {
 router.post("/link", async (req: Request, res: Response) => {
   const referrerUserId = String(req.body?.referrerUserId || "").trim();
   const referredUserId = String(req.body?.referredUserId || "").trim();
+  console.log("[referrals/link] incoming", { referrerUserId, referredUserId });
 
   if (!referrerUserId || !referredUserId) {
     res.status(400).json({ success: false, message: "referrerUserId and referredUserId are required" });
@@ -247,6 +248,11 @@ router.post("/link", async (req: Request, res: Response) => {
         [referredUserId]
       );
       const existingReferrer = owner.rows[0]?.referrer_user_id;
+      console.log("[referrals/link] signup-insert suppressed", {
+        existingReferrer,
+        requestedReferrer: referrerUserId,
+        referredUserId,
+      });
       if (existingReferrer && existingReferrer !== referrerUserId) {
         await client.query("ROLLBACK");
         res.status(409).json({
@@ -339,6 +345,10 @@ router.post("/link", async (req: Request, res: Response) => {
     // Unique violation on the signup partial index — another admin
     // attributed this referred user to a different referrer in parallel.
     if (err?.code === "23505") {
+      console.error("[referrals/link] 23505 unique violation", {
+        constraint: err?.constraint,
+        detail: err?.detail,
+      });
       res.status(409).json({
         success: false,
         message: "This user is already attributed to a different referrer.",
