@@ -64,11 +64,13 @@ router.get("/", async (req: Request, res: Response) => {
         MAX(r.created_at) AS last_referred_at
       ${baseFrom}
       GROUP BY u.id, u.first_name, u.last_name, u.email, u.ref_code
+      HAVING COUNT(DISTINCT r.referred_user_id) >= 1
     `;
 
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total FROM (
          SELECT u.id ${baseFrom} GROUP BY u.id
+         HAVING COUNT(DISTINCT r.referred_user_id) >= 1
        ) sub`,
       filterParams
     );
