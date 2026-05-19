@@ -294,6 +294,9 @@ router.put("/:id/status", async (req: Request, res: Response) => {
 
     if (oldStatus === "Pending" && newStatus === "In Transit") {
       await client.query(`UPDATE asset_based_payment_requests SET status = $1 WHERE id = $2`, [newStatus, id]);
+      if (asset.camp_id) {
+        await autoEnrollInvestorIfApplicable(client, asset.uid, asset.camp_id);
+      }
     } else if (oldStatus === "In Transit" && newStatus === "Received") {
       const receivedAmount = data.amount > 0 ? data.amount : parseFloat(asset.received_amount) || 0;
 
