@@ -138,3 +138,4 @@ Verification
    "Already covered" increases by the same amount.
 6. Reject a still-Pending pending_grant → "On Hold" decreases,
    "Remaining" returns to pre-hold value.
+

@@ -33,18 +33,21 @@ export async function sendCampaignOwnerFundingNotification(args: {
   const { campaignId, recommendationAmount, donorUserId } = args;
   try {
     const campaignRes = await pool.query(
-      `SELECT id, name, description, property,
-              contact_info_full_name,
-              contact_info_email_address
-         FROM campaigns
-        WHERE id = $1
+      `SELECT c.id, c.name, c.description, c.property,
+              c.contact_info_full_name,
+              ou.email AS owner_email
+         FROM campaigns c
+         LEFT JOIN users ou
+           ON ou.id = c.user_id
+          AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
+        WHERE c.id = $1
         LIMIT 1`,
       [campaignId],
     );
     const campaign = campaignRes.rows[0];
     if (!campaign) return false;
 
-    const contactEmail = String(campaign.contact_info_email_address ?? "")
+    const contactEmail = String(campaign.owner_email ?? "")
       .trim();
     if (!contactEmail) return false;
 
@@ -208,7 +211,7 @@ export async function replaceInvestmentNotificationRecipients(
  * Send a "new investor" notification email to every recipient
  * configured for the campaign. If no recipients are configured the
  * function falls back to the legacy single-recipient column
- * (investment_informational_email, then contact_info_email_address).
+ * (investment_informational_email, then the joined users.email for the owner).
  *
  * Best-effort: per-recipient errors are logged but never thrown; the
  * caller's investment write is never rolled back because of email
@@ -222,11 +225,14 @@ export async function sendNewInvestmentNotifications(args: {
   const { campaignId, donorDisplayName, amount } = args;
   try {
     const campaignRes = await pool.query(
-      `SELECT id, name, property,
-              contact_info_email_address,
-              investment_informational_email
-         FROM campaigns
-        WHERE id = $1
+      `SELECT c.id, c.name, c.property,
+              c.investment_informational_email,
+              ou.email AS owner_email
+         FROM campaigns c
+         LEFT JOIN users ou
+           ON ou.id = c.user_id
+          AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
+        WHERE c.id = $1
         LIMIT 1`,
       [campaignId],
     );
@@ -239,7 +245,7 @@ export async function sendNewInvestmentNotifications(args: {
     if (toSend.length === 0) {
       const fallback = String(
         campaign.investment_informational_email ||
-          campaign.contact_info_email_address ||
+          campaign.owner_email ||
           "",
       )
         .trim()
