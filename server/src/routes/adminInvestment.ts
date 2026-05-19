@@ -442,9 +442,13 @@ router.get("/document", async (req: Request, res: Response) => {
 router.get("/export", async (_req: Request, res: Response) => {
   try {
     const campaignsResult = await pool.query(
-      `SELECT c.*, gpa.name AS group_for_private_access_name
+      `SELECT c.*, gpa.name AS group_for_private_access_name,
+              ou.email AS owner_email
        FROM campaigns c
        LEFT JOIN groups gpa ON c.group_for_private_access_id = gpa.id
+       LEFT JOIN users ou
+         ON ou.id = c.user_id
+        AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
        WHERE (c.is_deleted IS NULL OR c.is_deleted = false)
        ORDER BY c.id`
     );
@@ -579,7 +583,7 @@ router.get("/export", async (_req: Request, res: Response) => {
         c.contact_info_full_name,
         c.contact_info_address,
         c.contact_info_address_2,
-        c.contact_info_email_address,
+        c.owner_email,
         c.investment_informational_email,
         c.contact_info_phone_number,
         c.country,
@@ -1560,17 +1564,25 @@ router.get("/:id", async (req: Request, res: Response) => {
     let campaignResult;
     if (Number.isFinite(numericId) && numericId > 0) {
       campaignResult = await pool.query(
-        `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name
+        `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name,
+                ou.email AS owner_email
          FROM campaigns c
          LEFT JOIN groups gpa ON c.group_for_private_access_id = gpa.id
+         LEFT JOIN users ou
+           ON ou.id = c.user_id
+          AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
          WHERE c.id = $1`,
         [numericId]
       );
     } else {
       campaignResult = await pool.query(
-        `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name
+        `SELECT c.*, gpa.id AS gpa_id, gpa.name AS gpa_name,
+                ou.email AS owner_email
          FROM campaigns c
          LEFT JOIN groups gpa ON c.group_for_private_access_id = gpa.id
+         LEFT JOIN users ou
+           ON ou.id = c.user_id
+          AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
          WHERE LOWER(TRIM(COALESCE(c.property, ''))) = LOWER(TRIM($1))
          LIMIT 1`,
         [idOrSlug]
@@ -1636,7 +1648,7 @@ router.get("/:id", async (req: Request, res: Response) => {
          AND COALESCE(rma.contact_email, '') <> ''
          AND COALESCE(rma.investment_name, '') <> ''
        ORDER BY cscd.id ASC`,
-      [c.contact_info_email_address || "", c.name || ""]
+      [c.owner_email || "", c.name || ""]
     );
     const softCircleDonors: { donorName: string; amount: number }[] = donorResult.rows.map((d: any) => ({
       donorName: `${d.first_name || ""} ${d.last_name || ""}`.trim(),
@@ -1663,7 +1675,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       contactInfoFullName: c.contact_info_full_name,
       contactInfoAddress: c.contact_info_address,
       contactInfoAddress2: c.contact_info_address_2,
-      contactInfoEmailAddress: c.contact_info_email_address,
+      contactInfoEmailAddress: c.owner_email || "",
       investmentInformationalEmail: c.investment_informational_email,
       contactInfoPhoneNumber: c.contact_info_phone_number,
       otherCountryAddress: c.other_country_address,
@@ -1798,7 +1810,6 @@ router.get("/", async (req: Request, res: Response) => {
       SELECT c.id, c.name, c.created_date, c.stage, c.fundraising_close_date,
              c.is_active, c.property, c.original_pdf_file_name, c.image_file_name,
              c.pdf_file_name, c.meta_title, c.meta_description,
-             c.contact_info_email_address,
              c.deleted_at, du.first_name AS deleted_by_first, du.last_name AS deleted_by_last,
              ou.first_name AS owner_first,
              ou.last_name  AS owner_last,
@@ -1806,7 +1817,7 @@ router.get("/", async (req: Request, res: Response) => {
       FROM campaigns c
       LEFT JOIN users du ON c.deleted_by = du.id
       LEFT JOIN users ou
-        ON LOWER(TRIM(ou.email)) = LOWER(TRIM(c.contact_info_email_address))
+        ON ou.id = c.user_id
        AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
       ${whereClause}
     `;
@@ -1841,10 +1852,7 @@ router.get("/", async (req: Request, res: Response) => {
           ownerFullName: (c.owner_first || c.owner_last)
             ? `${c.owner_first || ""} ${c.owner_last || ""}`.trim()
             : null,
-          ownerEmail: c.owner_email
-            || (c.contact_info_email_address && String(c.contact_info_email_address).includes("@")
-              ? String(c.contact_info_email_address).trim()
-              : null),
+          ownerEmail: c.owner_email || null,
         };
       });
 
@@ -1936,7 +1944,7 @@ router.post("/", async (req: Request, res: Response) => {
       `INSERT INTO campaigns (
         name, description, themes, approved_by, sdgs, investment_instruments, terms,
         minimum_investment, website, network_description, contact_info_full_name,
-        contact_info_address, contact_info_address_2, contact_info_email_address,
+        contact_info_address, contact_info_address_2,
         investment_informational_email, contact_info_phone_number, country,
         other_country_address, city, state, zip_code, impact_assets_funding_status,
         investment_role, referred_to_catacap, target, status, stage, is_active,
@@ -1957,8 +1965,8 @@ router.post("/", async (req: Request, res: Response) => {
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
         $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-        $39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
-        $57,$58,$59,$60,$61,$62,$63,$64,NOW(),NOW()
+        $39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,
+        $56,$57,$58,$59,$60,$61,$62,$63,NOW(),NOW()
       ) RETURNING id`,
       [
         campaign.name || null,
@@ -1974,7 +1982,6 @@ router.post("/", async (req: Request, res: Response) => {
         campaign.contactInfoFullName || null,
         campaign.contactInfoAddress || null,
         campaign.contactInfoAddress2 || null,
-        campaign.contactInfoEmailAddress || null,
         campaign.investmentInformationalEmail || null,
         campaign.contactInfoPhoneNumber || null,
         campaign.country || null,
@@ -2042,7 +2049,7 @@ router.post("/", async (req: Request, res: Response) => {
         name: campaign.name || null,
         stage: InvestmentStageEnum.New,
         is_active: false,
-        contact_info_email_address: campaign.contactInfoEmailAddress || null,
+        user_id: userId,
       },
       updatedBy: req.user?.id || null,
     });
@@ -2235,7 +2242,7 @@ router.put("/:id/status", async (req: Request, res: Response) => {
     const oldIsActive = beforeResult.rows[0]?.is_active;
 
     const result = await pool.query(
-      `UPDATE campaigns SET is_active = $1, modified_date = NOW() WHERE id = $2 RETURNING *`,
+      `UPDATE campaigns SET is_active = $1, modified_date = NOW() WHERE id = $2 RETURNING id`,
       [status, id]
     );
 
@@ -2244,7 +2251,16 @@ router.put("/:id/status", async (req: Request, res: Response) => {
       return;
     }
 
-    const campaign = result.rows[0];
+    const reloaded = await pool.query(
+      `SELECT c.*, ou.email AS owner_email
+       FROM campaigns c
+       LEFT JOIN users ou
+         ON ou.id = c.user_id
+        AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
+       WHERE c.id = $1`,
+      [id]
+    );
+    const campaign = reloaded.rows[0];
 
     await logAudit({
       tableName: "campaigns",
@@ -2412,28 +2428,28 @@ router.put("/:id", async (req: Request, res: Response) => {
         name = $1, description = $2, themes = $3, approved_by = $4, sdgs = $5,
         investment_instruments = $6, terms = $7, minimum_investment = $8, website = $9,
         network_description = $10, contact_info_full_name = $11, contact_info_address = $12,
-        contact_info_address_2 = $13, contact_info_email_address = $14,
-        investment_informational_email = $15, contact_info_phone_number = $16,
-        country = $17, other_country_address = $18, city = $19, state = $20,
-        zip_code = $21, impact_assets_funding_status = $22, investment_role = $23,
-        referred_to_catacap = $24, target = $25, pdf_file_name = $26,
-        original_pdf_file_name = $27, image_file_name = $28, tile_image_file_name = $29,
-        logo_file_name = $30, property = $31, stage = $32, is_active = $33,
-        added_total_admin_raised = $34, group_for_private_access_id = $35,
-        email_sends = $36, fundraising_close_date = $37, mission_and_vision = $38,
-        personalized_thank_you = $39, has_existing_investors = $40, expected_total = $41,
-        is_part_of_fund = $42, associated_fund_id = $43, featured_investment = $44,
-        investment_type_category = $45, equity_valuation = $46, equity_security_type = $47,
-        fund_term = $48, equity_target_return = $49, debt_payment_frequency = $50,
-        debt_maturity_date = $51, debt_interest_rate = $52,
-        user_id = $53,
-        meta_title = $54, meta_description = $55,
-        has_corporate_bank_account = $56, has_personal_financial_benefit = $57,
-        personal_financial_benefit_description = $58, has_regulatory_issues = $59,
-        regulatory_issues_description = $60, is_in_good_legal_standing = $61,
-        owner_group_id = $62, auto_enroll_investors = $63,
+        contact_info_address_2 = $13,
+        investment_informational_email = $14, contact_info_phone_number = $15,
+        country = $16, other_country_address = $17, city = $18, state = $19,
+        zip_code = $20, impact_assets_funding_status = $21, investment_role = $22,
+        referred_to_catacap = $23, target = $24, pdf_file_name = $25,
+        original_pdf_file_name = $26, image_file_name = $27, tile_image_file_name = $28,
+        logo_file_name = $29, property = $30, stage = $31, is_active = $32,
+        added_total_admin_raised = $33, group_for_private_access_id = $34,
+        email_sends = $35, fundraising_close_date = $36, mission_and_vision = $37,
+        personalized_thank_you = $38, has_existing_investors = $39, expected_total = $40,
+        is_part_of_fund = $41, associated_fund_id = $42, featured_investment = $43,
+        investment_type_category = $44, equity_valuation = $45, equity_security_type = $46,
+        fund_term = $47, equity_target_return = $48, debt_payment_frequency = $49,
+        debt_maturity_date = $50, debt_interest_rate = $51,
+        user_id = $52,
+        meta_title = $53, meta_description = $54,
+        has_corporate_bank_account = $55, has_personal_financial_benefit = $56,
+        personal_financial_benefit_description = $57, has_regulatory_issues = $58,
+        regulatory_issues_description = $59, is_in_good_legal_standing = $60,
+        owner_group_id = $61, auto_enroll_investors = $62,
         modified_date = NOW()
-      WHERE id = $64`;
+      WHERE id = $63`;
     const campaignUpdateParams: any[] = [
         campaign.name || existing.name,
         campaign.description ?? existing.description,
@@ -2448,7 +2464,6 @@ router.put("/:id", async (req: Request, res: Response) => {
         campaign.contactInfoFullName ?? existing.contact_info_full_name,
         campaign.contactInfoAddress ?? existing.contact_info_address,
         campaign.contactInfoAddress2 ?? existing.contact_info_address_2,
-        campaign.contactInfoEmailAddress ?? existing.contact_info_email_address,
         campaign.investmentInformationalEmail ?? existing.investment_informational_email,
         campaign.contactInfoPhoneNumber ?? existing.contact_info_phone_number,
         campaign.country ?? existing.country,
@@ -2712,7 +2727,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       target: existing.target,
       minimum_investment: existing.minimum_investment,
       property: existing.property,
-      contact_info_email_address: existing.contact_info_email_address,
+      user_id: existing.user_id,
       meta_title: existing.meta_title,
       meta_description: existing.meta_description,
       featured_investment: existing.featured_investment,
@@ -2726,7 +2741,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       target: campaign.target ?? existing.target,
       minimum_investment: finalMinimumInvestment ?? existing.minimum_investment,
       property: finalProperty ?? existing.property,
-      contact_info_email_address: campaign.contactInfoEmailAddress ?? existing.contact_info_email_address,
+      user_id: finalUserId,
       meta_title: campaign.metaTitle ?? existing.meta_title,
       meta_description: campaign.metaDescription ?? existing.meta_description,
       featured_investment: campaign.featuredInvestment ?? existing.featured_investment,
@@ -2805,7 +2820,15 @@ router.put("/:id", async (req: Request, res: Response) => {
       newStatus: n.new_status || null,
     }));
 
-    const updatedResult = await pool.query(`SELECT * FROM campaigns WHERE id = $1`, [id]);
+    const updatedResult = await pool.query(
+      `SELECT c.*, ou.email AS owner_email
+       FROM campaigns c
+       LEFT JOIN users ou
+         ON ou.id = c.user_id
+        AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
+       WHERE c.id = $1`,
+      [id]
+    );
     const updatedCampaign = updatedResult.rows[0];
 
     const tagResult = await pool.query(
@@ -3120,7 +3143,7 @@ function mapCampaignRow(c: any): any {
     contactInfoFullName: c.contact_info_full_name,
     contactInfoAddress: c.contact_info_address,
     contactInfoAddress2: c.contact_info_address_2,
-    contactInfoEmailAddress: c.contact_info_email_address,
+    contactInfoEmailAddress: c.owner_email || "",
     investmentInformationalEmail: c.investment_informational_email,
     contactInfoPhoneNumber: c.contact_info_phone_number,
     country: c.country,
@@ -3255,9 +3278,14 @@ function normalizeImpactHighlights(
 
 async function getCampaignForUpdates(campaignId: number): Promise<any | null> {
   const result = await pool.query(
-    `SELECT id, name, stage, property, image_file_name, tile_image_file_name,
-            user_id, contact_info_email_address, investment_informational_email
-     FROM campaigns WHERE id = $1 LIMIT 1`,
+    `SELECT c.id, c.name, c.stage, c.property, c.image_file_name, c.tile_image_file_name,
+            c.user_id, c.investment_informational_email,
+            ou.email AS owner_email
+     FROM campaigns c
+     LEFT JOIN users ou
+       ON ou.id = c.user_id
+      AND (ou.is_deleted IS NULL OR ou.is_deleted = false)
+     WHERE c.id = $1 LIMIT 1`,
     [campaignId]
   );
   return result.rows[0] || null;
@@ -3860,9 +3888,11 @@ async function buildInvestmentUpdateEmail(
   return { subject, bodyHtml, campaignUrl, ccList: [] };
 }
 
-// Resolves the Investment Owner email for a campaign using the same
-// precedence as the previous CC logic: owning user's account email first,
-// then contact_info_email_address, then investment_informational_email.
+// Resolves the Investment Owner email for a campaign. The campaigns table
+// no longer stores a snapshot contact email — the owner email is the
+// account email of the linked user (`campaigns.user_id → users.email`).
+// Falls back to `investment_informational_email` if the user join is
+// missing or returns no usable email.
 async function resolveInvestmentOwnerEmail(campaign: any): Promise<string | null> {
   let ownerEmail: string | null = null;
   if (campaign.user_id) {
@@ -3878,9 +3908,6 @@ async function resolveInvestmentOwnerEmail(campaign: any): Promise<string | null
     } catch (ownerErr) {
       console.error("Failed to fetch investment owner email:", ownerErr);
     }
-  }
-  if (!ownerEmail && campaign.contact_info_email_address && String(campaign.contact_info_email_address).includes("@")) {
-    ownerEmail = String(campaign.contact_info_email_address).trim();
   }
   if (!ownerEmail && campaign.investment_informational_email && String(campaign.investment_informational_email).includes("@")) {
     ownerEmail = String(campaign.investment_informational_email).trim();

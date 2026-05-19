@@ -14,7 +14,13 @@ import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembersh
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
 import { sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
-import { applyCoverFees } from "../utils/coverFees.js";
+import {
+  applyCoverFees,
+  convertHeldCoverFeeToApplied,
+  ensureHoldForRequest,
+  releaseHeldCoverFeeForRequest,
+  reverseAppliedCoverFeeForRequest,
+} from "../utils/coverFees.js";
 import ExcelJS from "exceljs";
 
 const router = Router();
@@ -591,6 +597,21 @@ router.put("/:id", async (req: Request, res: Response) => {
       amount: number; email: string; campaignName: string;
     } | null = null;
 
+    // Guarantee a cover-fee hold exists for this still-Pending grant
+    // before we touch its status. Runs in its OWN connection (no client
+    // arg) and BEFORE the status-change transaction starts, so we never
+    // attempt to place a hold and convert it to applied inside the same
+    // txn. No-op if a hold/applied row already exists or no eligible
+    // pool covers this campaign. Failures here are logged but never
+    // block the admin's status change.
+    if (currentStatus === "Pending") {
+      try {
+        await ensureHoldForRequest({ requestKind: "pending_grant", requestId: id });
+      } catch (err: any) {
+        console.error("ensureHoldForRequest (pendingGrants) error:", err?.message || err);
+      }
+    }
+
     await client.query("BEGIN");
     await client.query(`UPDATE pending_grants SET modified_date = NOW() WHERE id = $1`, [id]);
 
@@ -672,6 +693,19 @@ router.put("/:id", async (req: Request, res: Response) => {
         );
         const newRecId: number | null = newRecResult.rows[0]?.id ?? null;
         if (newRecId) {
+          // Flip any 'held' cover-fees activity row for this pending
+          // grant to 'applied' and link the freshly-minted rec FK.
+          // Runs INSIDE the status-change transaction so we never
+          // commit a Pending -> In Transit status flip without the
+          // corresponding pool draw. The post-commit applyCoverFees
+          // below then silently no-ops on the (pool, rec) unique index.
+          await convertHeldCoverFeeToApplied({
+            requestKind: "pending_grant",
+            requestId: id,
+            triggeringRecommendationId: newRecId,
+            campaignName: grant.campaign_name || "",
+            client,
+          });
           matchAfterCommit = {
             campaignId: Number(grant.camp_id),
             userId: grant.uid,
@@ -909,6 +943,24 @@ router.put("/:id", async (req: Request, res: Response) => {
           `UPDATE pending_grants SET status = 'Rejected', rejected_by = $1, rejection_memo = $2, rejection_date = NOW() WHERE id = $3`,
           [loginUserId, data.rejectionMemo?.trim() || null, id]
         );
+        // Release any 'held' cover-fee escrow for this still-Pending grant.
+        // Runs INSIDE the txn so a failure rolls back the rejection too.
+        await releaseHeldCoverFeeForRequest({
+          requestKind: "pending_grant",
+          requestId: id,
+          client,
+        });
+      }
+      if (currentStatus === "In Transit") {
+        // Reverse any already-'applied' cover-fee draw on the
+        // sponsor pool — the donation got rejected after we'd debited
+        // the escrow. Runs INSIDE the txn so we never end up with
+        // status='Rejected' but the pool still showing the fee as used.
+        await reverseAppliedCoverFeeForRequest({
+          requestKind: "pending_grant",
+          requestId: id,
+          client,
+        });
       }
     } else if (data.status === "Received" && currentStatus === "In Transit") {
       await client.query(`UPDATE pending_grants SET status = 'Received' WHERE id = $1`, [id]);
@@ -1070,6 +1122,18 @@ router.delete("/:id", async (req: Request, res: Response) => {
        WHERE id = $2`,
       [loginUserId, id]
     );
+
+    // Release any 'held' cover-fee escrow tied to this pending grant,
+    // and reverse any already-'applied' draw on the sponsor pool. Both
+    // are no-ops if nothing matches.
+    await releaseHeldCoverFeeForRequest({
+      requestKind: "pending_grant",
+      requestId: id,
+    });
+    await reverseAppliedCoverFeeForRequest({
+      requestKind: "pending_grant",
+      requestId: id,
+    });
 
     res.json({ success: true, message: "Pending grant deleted successfully." });
   } catch (err: any) {

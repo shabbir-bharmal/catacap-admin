@@ -57,6 +57,8 @@ interface CoverFeesPool {
   timesUsed: number;
   pendingAmount?: number;
   pendingCount?: number;
+  heldAmount?: number;
+  heldCount?: number;
   campaigns: Campaign[];
 }
 interface ActivityEntry {
@@ -84,9 +86,10 @@ interface PendingActivityEntry {
   campaignName: string;
   investorFullName: string;
   investorEmail: string;
-  triggerType: "recommendation" | "pending_grant";
+  triggerType: "recommendation" | "pending_grant" | "asset_based_payment_request";
   triggerStatus: string;
   triggerAmount: number;
+  triggerLabel?: string;
 }
 interface ActivityResponse {
   items: ActivityEntry[];
@@ -104,6 +107,8 @@ const EMPTY_FORM = {
   sponsorBalance: 0,
   reservedAmount: 0,
   amountUsed: 0,
+  heldAmount: 0,
+  heldCount: 0,
   totalCap: "",
   perInvestmentCap: "",
   coverInitialFee: true,
@@ -570,9 +575,22 @@ function GrantFormDialog({
                       <span className="text-muted-foreground">Already covered</span>
                       <span className="font-medium tabular-nums text-amber-600 dark:text-amber-400" data-testid="text-amount-covered">{currency_format(form.amountUsed)}</span>
                     </div>
+                    {(form.heldAmount ?? 0) > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">On hold</span>
+                        <span className="font-medium tabular-nums text-orange-600 dark:text-orange-400" data-testid="text-amount-on-hold">
+                          {currency_format(form.heldAmount || 0)}
+                          {(form.heldCount ?? 0) > 0 && (
+                            <span className="text-xs ml-1 text-muted-foreground">
+                              ({form.heldCount} {form.heldCount === 1 ? "hold" : "holds"})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between border-t pt-0.5 mt-1">
                       <span className="text-muted-foreground">Remaining</span>
-                      <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(remainingCap)}</span>
+                      <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-cap-remaining">{currency_format(Math.max(0, remainingCap - (form.heldAmount ?? 0)))}</span>
                     </div>
                     <div className="flex justify-between border-t pt-0.5 mt-1">
                       <span className="text-muted-foreground">Sponsor wallet balance</span>
@@ -921,14 +939,16 @@ function ActivityPanel({ grantId }: { grantId: number }) {
     );
   }
 
+  // Cover-fee surface only ever exposes three trigger states:
+  //   Pending — donor's payment has not been advanced yet.
+  //   Approved — payment has moved forward (In Transit / Received /
+  //              approved on the underlying record).
+  //   Rejected — payment was rejected.
   const triggerStatusLabel = (s: string) => {
     const v = (s || "").trim().toLowerCase();
-    if (v === "" || v === "pending") return "Pending";
-    if (v === "in transit") return "In Transit";
-    if (v === "received") return "Received";
     if (v === "rejected") return "Rejected";
-    if (v === "approved") return "Approved";
-    return s;
+    if (v === "in transit" || v === "received" || v === "approved") return "Approved";
+    return "Pending";
   };
 
   const triggerTooltipCopy = (
@@ -936,22 +956,17 @@ function ActivityPanel({ grantId }: { grantId: number }) {
     status: string,
     context: "covered" | "pending",
   ) => {
-    const v = (status || "").trim().toLowerCase();
+    const label = triggerStatusLabel(status);
     const subject = paymentType
       ? `the donor's ${paymentType.toLowerCase()}`
       : "the donor's direct recommendation";
     const lifecycle = (() => {
-      switch (v) {
-        case "":
-        case "pending":
-          return `${subject} has not been marked In Transit yet`;
-        case "in transit":
-          return `${subject} is on its way but has not been received`;
-        case "received":
-          return `${subject} has been received`;
-        case "approved":
+      switch (label) {
+        case "Pending":
+          return `${subject} has not been approved yet`;
+        case "Approved":
           return `${subject} has been approved`;
-        case "rejected":
+        case "Rejected":
           return `${subject} was rejected`;
         default:
           return `${subject} is in "${status}" state`;
@@ -1039,7 +1054,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                       ) : (
                         <CoveredPill />
                       )}
-                      {renderTriggerBadge(a.triggerPaymentType || (a.triggeringRecommendationId != null ? "Direct" : ""), a.triggerStatus || "")}
+                      {renderTriggerBadge(a.triggerPaymentType || (a.triggeringRecommendationId != null ? "Direct" : ""), a.reversed ? "rejected" : "approved")}
                       {a.triggeringRecommendationId != null && (
                         <div className="text-muted-foreground">Rec #{a.triggeringRecommendationId}</div>
                       )}
@@ -1121,7 +1136,7 @@ function ActivityPanel({ grantId }: { grantId: number }) {
                     <td className="px-3 py-2 text-xs">
                       <div className="tabular-nums">{currency_format(p.triggerAmount)}</div>
                       <div className="mt-1">
-                        {renderTriggerBadge("DAF Grant", p.triggerStatus, "pending")}
+                        {renderTriggerBadge(p.triggerLabel || (p.triggerType === "asset_based_payment_request" ? "Other Asset" : "DAF Grant"), p.triggerStatus, "pending")}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-amber-900 dark:text-amber-200">
@@ -1260,6 +1275,8 @@ export default function AdminCoverFees() {
       sponsorBalance: g.sponsorBalance,
       reservedAmount: g.reservedAmount,
       amountUsed: g.amountUsed,
+      heldAmount: g.heldAmount ?? 0,
+      heldCount: g.heldCount ?? 0,
       totalCap: g.totalCap != null ? String(g.totalCap) : "",
       perInvestmentCap: g.perInvestmentCap != null ? String(g.perInvestmentCap) : "",
       coverInitialFee: g.coverInitialFee !== false,
@@ -1429,6 +1446,17 @@ export default function AdminCoverFees() {
                               </span>
                               <span className="text-xs ml-1 text-muted-foreground">
                                 ({g.pendingCount} {g.pendingCount === 1 ? "trigger" : "triggers"})
+                              </span>
+                            </span>
+                          )}
+                          {(g.heldAmount ?? 0) > 0 && (
+                            <span data-testid={`text-on-hold-${g.id}`}>
+                              <span className="font-medium text-foreground">On hold:</span>{" "}
+                              <span className="text-orange-700 dark:text-orange-300 font-medium">
+                                {currency_format(g.heldAmount || 0)}
+                              </span>
+                              <span className="text-xs ml-1 text-muted-foreground">
+                                ({g.heldCount} {g.heldCount === 1 ? "hold" : "holds"})
                               </span>
                             </span>
                           )}

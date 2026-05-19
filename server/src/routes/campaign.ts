@@ -160,13 +160,15 @@ router.get("/user-disbursal-investments", jwtUserAuthMiddleware, async (req: Req
     }
 
     const result = await pool.query(
-      `SELECT id, name, property, investment_role, impact_assets_funding_status,
-              contact_info_phone_number, investment_instruments
-       FROM campaigns
-       WHERE is_active = true
-         AND (is_deleted IS NULL OR is_deleted = false)
-         AND COALESCE(TRIM(contact_info_email_address), '') = $1
-       ORDER BY name ASC`,
+      `SELECT c.id, c.name, c.property, c.investment_role, c.impact_assets_funding_status,
+              c.contact_info_phone_number, c.investment_instruments
+       FROM campaigns c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.is_active = true
+         AND (c.is_deleted IS NULL OR c.is_deleted = false)
+         AND (u.is_deleted IS NULL OR u.is_deleted = false)
+         AND LOWER(TRIM(COALESCE(u.email, ''))) = $1
+       ORDER BY c.name ASC`,
       [email]
     );
 
@@ -591,7 +593,14 @@ router.get("/send-investment-qr-code-email", jwtUserAuthMiddleware, async (req: 
     }
 
     const campaignResult = await pool.query(
-      `SELECT id, name, property, contact_info_email_address, contact_info_full_name FROM campaigns WHERE id = $1 AND (is_deleted IS NULL OR is_deleted = false)`,
+      `SELECT c.id, c.name, c.property, c.contact_info_full_name,
+              u.email AS owner_email
+         FROM campaigns c
+         LEFT JOIN users u
+           ON u.id = c.user_id
+          AND (u.is_deleted IS NULL OR u.is_deleted = false)
+        WHERE c.id = $1
+          AND (c.is_deleted IS NULL OR c.is_deleted = false)`,
       [id]
     );
 
@@ -601,8 +610,9 @@ router.get("/send-investment-qr-code-email", jwtUserAuthMiddleware, async (req: 
     }
 
     const investment = campaignResult.rows[0];
+    const ownerEmail = String(investment.owner_email ?? "").trim();
 
-    if (!investment.contact_info_email_address || !investment.contact_info_email_address.trim()) {
+    if (!ownerEmail) {
       res.json({ success: false, message: "You can't send QR by email because your organizational email isn't set up yet" });
       return;
     }
@@ -639,7 +649,7 @@ router.get("/send-investment-qr-code-email", jwtUserAuthMiddleware, async (req: 
     try {
       emailSent = await sendTemplateEmailWithAttachments(
         17,
-        investment.contact_info_email_address.trim().toLowerCase(),
+        ownerEmail.toLowerCase(),
         {
           logoUrl,
           firstName,
@@ -907,7 +917,7 @@ router.post("/raisemoney", async (req: Request, res: Response) => {
       `INSERT INTO campaigns (
         name, description, themes, approved_by, sdgs, investment_instruments, terms,
         minimum_investment, website, network_description, contact_info_full_name,
-        contact_info_address, contact_info_address_2, contact_info_email_address,
+        contact_info_address, contact_info_address_2,
         investment_informational_email, contact_info_phone_number, country,
         other_country_address, city, state, zip_code, impact_assets_funding_status,
         investment_role, referred_to_catacap, target, status, stage, is_active,
@@ -923,7 +933,7 @@ router.post("/raisemoney", async (req: Request, res: Response) => {
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
         $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-        $39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,NOW(),NOW()
+        $39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,NOW(),NOW()
       ) RETURNING id`,
       [
         campaign.name || null,
@@ -939,7 +949,6 @@ router.post("/raisemoney", async (req: Request, res: Response) => {
         campaign.contactInfoFullName || null,
         campaign.contactInfoAddress || null,
         campaign.contactInfoAddress2 || null,
-        campaign.contactInfoEmailAddress || null,
         campaign.investmentInformationalEmail || null,
         campaign.contactInfoPhoneNumber || null,
         campaign.country || null,

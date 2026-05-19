@@ -1,4 +1,13 @@
 Release 19_05_2026
+==================
+
+This release bundles two independent change sets:
+  A. Referrals admin module registration
+  B. Cover Fees: hold-on-create for Pending Grants / Other Assets
+
+
+A. Referrals admin module
+-------------------------
 
 Migrations
 ----------
@@ -20,56 +29,113 @@ Notes
 - The `public.referrals` table itself and `public.users.ref_code` already exist
   in the database and are not changed by this release.
 - The Referrals admin page is read-only; no schema/data writes are performed.
-Release 2026-05-19
 
-Migrations
 
-1. 001_cover_fees_escrow_reconciliation.sql
-   - Schema:
-       * NEW TABLE cover_fees_escrow_reconciliation_log
-             (id serial PK, sponsor_user_id varchar(450) UNIQUE,
-              reconciled_amount numeric(14,2), reconciled_at timestamp,
-              details jsonb)
-       * NEW INDEX cover_fees_escrow_reconciliation_log_sponsor_idx
-             on (sponsor_user_id)
-   - Intent:
-       Reconcile the historical double-debit on escrow-backed Cover Fees
-       pools (task #522). Prior to this release, escrow pools
-       (reserved_amount > 0) debited the sponsor wallet BOTH at funding
-       time AND on every donor fee draw — funds were already in escrow,
-       so the per-donor debit was a second debit on the same money. This
-       migration credits each sponsor back the cumulative
-       still-unreversed per-activity fee debits + the canceled-activity
-       fee debits (the cancel path never returned funds to the wallet)
-       across every escrow pool they sponsor, and writes an
-       account_balance_change_logs entry per sponsor.
-   - Idempotency:
-       Each sponsor's credit is gated on no existing row in
-       cover_fees_escrow_reconciliation_log for that sponsor_user_id;
-       a re-run is a no-op once a sponsor has been reconciled. Schema
-       objects are CREATE ... IF NOT EXISTS.
-   - Transactional: BEGIN/COMMIT.
-   - Rollback: commented at the bottom of the migration. For each row
-     in cover_fees_escrow_reconciliation_log, subtract
-     reconciled_amount back from users.account_balance, then DROP the
-     log table.
+B. Cover Fees — hold-on-create for Pending Grants / Other Assets
+================================================================
 
-Code changes (no separate migration needed)
+Migrations (apply in order)
+---------------------------
+1. 2026_05_19_001_cover_fees_hold_status.sql
+   - Adds `status` (TEXT, default 'applied', CHECK in ('held','applied'))
+     to campaign_cover_fees_activity.
+   - Adds FK columns:
+        * triggered_by_pending_grant_id              -> pending_grants(id)               ON DELETE SET NULL
+        * triggered_by_asset_based_payment_request_id -> asset_based_payment_requests(id) ON DELETE SET NULL
+   - Adds partial unique indexes guaranteeing at most one ACTIVE
+     (fully_reversed_at IS NULL) activity row per (pool, pending_grant)
+     and per (pool, asset_based_payment_request).
+   - Adds `idx_ccfa_held` for fast SUM-by-pool of currently-held escrow.
+   - Idempotent: all DDL guarded by IF NOT EXISTS / DO blocks.
 
-- server/src/utils/coverFees.ts
-    * applySingleCoverFee, escrow branch: removed the sponsor wallet
-      UPDATE + shortfall clamp. Donor fees now consume ONLY the pool's
-      escrow balance (amount_used). Audit row (pool-remaining before /
-      after) preserved; comment updated.
-    * reverseCoverFeesByPaymentRef: sponsor wallet credit-back is now
-      guarded by `!isEscrowPoolReversal` so reversals on escrow pools
-      return the fee to the pool's escrow (amount_used--) only. Donor
-      audit row unchanged.
-    * reverseCoverFeesByRecommendation: same guard as above.
-    * Live-wallet pools (reserved_amount = 0) behavior UNCHANGED in
-      every path.
+2. 2026_05_19_002_cover_fees_holds_backfill.sql
+   - Materializes 'held' rows for every Pending pending_grant / asset
+     payment request linked to an active capped pool.
+   - Materializes 'applied' rows (incrementing pool.amount_used) for
+     every In Transit row that doesn't already have an active activity
+     row. Where a recommendation already exists for the pending grant
+     it is linked via triggered_by_recommendation_id.
+   - First-come-first-served by request creation date, single-cover
+     policy (one pool per request), respects coverage_active_from.
+   - Idempotent: re-running the migration is a no-op (NOT EXISTS guards
+     plus partial unique indexes from migration 001).
 
-- src/pages/AdminCoverFees.tsx (UI copy only — no logic change)
-    * Edit-mode funding panel and create-mode Total Cap helper updated
-      to describe escrow semantics (funds move once, fees draw from
-      the escrow pool).
+Runtime behavior added by this release
+--------------------------------------
+* Cover Fees activity rows now carry one of two statuses:
+    - 'held'    : pool escrow reserved, amount_used NOT yet incremented.
+    - 'applied' : pool escrow drawn, amount_used incremented, donor /
+                  sponsor Account-History row written.
+
+* server/src/utils/coverFees.ts
+    - `holdCoverFeeForRequest({ requestKind, requestId, ... })`
+        Places a 'held' activity row against the first eligible pool
+        (matches campaign, active, coverage_active_from satisfied,
+        budget remaining after existing amount_used + outstanding holds).
+        Idempotent — re-invoking on an already-held request is a no-op.
+
+    - `convertHeldCoverFeeToApplied({ requestKind, requestId,
+        triggeringRecommendationId })`
+        Flips status='held' -> 'applied', increments pool.amount_used,
+        backfills the recommendation FK, and writes the same
+        "Cover Fees - escrow applied" donor / sponsor Account-History
+        row that applySingleCoverFee writes today. Returns the converted
+        fee amount (0 if no held row existed for this request).
+
+    - `releaseHeldCoverFeeForRequest({ requestKind, requestId })`
+        Deletes any active 'held' activity rows for the request.
+        Used on cancel / reject / soft-delete of a still-Pending request.
+        Holds never touched the sponsor's wallet (escrow only), so
+        releasing simply frees pool capacity — no Account-History row
+        is written.
+
+    - `backfillRecommendationLinkForRequest({ requestKind, requestId,
+        triggeringRecommendationId })`
+        Sets triggered_by_recommendation_id on an existing 'applied'
+        row when the rec is created strictly after the row was applied
+        (Other Assets In Transit -> Received transition).
+
+    - `reconcilePendingHoldsForAllPools()`
+        Runs the same logic as the backfill migration on demand to
+        catch new requests created by the .NET backend (the Node side
+        does not own the create path). Called from
+        GET /api/admin/cover-fees so the admin always sees an up-to-date
+        "On Hold" amount.
+
+* Existing applyCoverFees / applySingleCoverFee continue to fire on
+  Pending -> In Transit transitions when the row was created BEFORE the
+  cover-fees pool existed (no hold to convert). When a hold IS present,
+  convertHeldCoverFeeToApplied runs instead and the fire-and-forget
+  applyCoverFees becomes a no-op (idempotent skip on the unique index).
+
+* Pool "Remaining" everywhere now subtracts outstanding 'held' escrow
+  alongside amount_used so the UI never overstates pool capacity.
+
+* AdminCoverFees.tsx — Edit Cover Fees Pool page now shows an
+  "On Hold" row alongside "Already covered" / "Remaining" so the sponsor
+  can see escrowed-but-not-yet-drawn amounts at a glance.
+
+* Pending fee coverage projection (server/src/utils/pendingCoverFees.ts)
+  no longer hides pending grants / DAF requests that already have a
+  'held' activity row — those are exactly what the "Pending fee
+  coverage" table is meant to surface. Triggers with a held row are
+  rendered using the actual stored fee_amount and do not double-count
+  against pool remaining capacity (heldSum already subtracted once).
+
+Verification
+------------
+1. psql -f releases/19_05_2026/migrations/2026_05_19_001_cover_fees_hold_status.sql
+2. psql -f releases/19_05_2026/migrations/2026_05_19_002_cover_fees_holds_backfill.sql
+3. Verify:
+     SELECT status, COUNT(*), SUM(fee_amount)
+       FROM campaign_cover_fees_activity
+      GROUP BY status;
+   Expect at least one 'held' row if Pending pending_grants /
+   asset_based_payment_requests existed at apply time.
+4. Open /admin/cover-fees → edit any capped pool → confirm
+   "On Hold $X.XX" appears between "Already covered" and "Remaining".
+5. Move a Pending pending_grant to In Transit → "On Hold" decreases,
+   "Already covered" increases by the same amount.
+6. Reject a still-Pending pending_grant → "On Hold" decreases,
+   "Remaining" returns to pre-hold value.
+

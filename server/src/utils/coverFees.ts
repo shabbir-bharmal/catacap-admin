@@ -157,22 +157,33 @@ export async function applyCoverFees(args: ApplyCoverFeesArgs): Promise<void> {
 
     if (poolsResult.rows.length === 0) return;
 
-    // Filter out pools that already covered this recommendation OR
-    // whose (pool, recommendation) pair was tombstoned by an admin
-    // cancel. Without the tombstone check, hooks firing on subsequent
-    // status transitions of the same recommendation would silently
-    // resurrect canceled coverage.
-    const skipResult = await pool.query(
-      `SELECT cover_fee_id FROM campaign_cover_fees_activity
+    // Single-cover policy + double-draw guard: a given recommendation's
+    // 5% fee is only ever covered by ONE pool, total. If ANY active
+    // activity row already exists for this recommendation (e.g. it was
+    // just converted from 'held' to 'applied' by the Pending->In Transit
+    // flow, or the legacy path already covered it via another pool),
+    // OR if ANY (pool, recommendation) pair was tombstoned by an admin
+    // cancel for this rec, return immediately. Per-pool filtering is
+    // insufficient because overlapping pools would otherwise each draw
+    // for the same rec on a subsequent invocation.
+    const guardResult = await pool.query(
+      `SELECT 1
+         FROM campaign_cover_fees_activity
         WHERE triggered_by_recommendation_id = $1
-       UNION
-       SELECT cover_fee_id FROM canceled_cover_fees_pairs
-        WHERE triggered_by_recommendation_id = $1`,
+          AND fully_reversed_at IS NULL
+        LIMIT 1`,
       [triggeringRecommendationId],
     );
-    const alreadyCovered = new Set(
-      skipResult.rows.map((r: any) => r.cover_fee_id),
+    if (guardResult.rows.length > 0) return;
+
+    const tombstoneResult = await pool.query(
+      `SELECT 1
+         FROM canceled_cover_fees_pairs
+        WHERE triggered_by_recommendation_id = $1
+        LIMIT 1`,
+      [triggeringRecommendationId],
     );
+    if (tombstoneResult.rows.length > 0) return;
 
     // Single-cover policy: a given donation's 5% fee is only ever
     // covered by ONE pool. Walk pools in deterministic order and stop
@@ -180,7 +191,6 @@ export async function applyCoverFees(args: ApplyCoverFeesArgs): Promise<void> {
     // overlapping pools on the same campaign would each debit the same
     // recommendation, double/triple-counting the fee against sponsors.
     for (const p of poolsResult.rows) {
-      if (alreadyCovered.has(p.id)) continue;
       const covered = await applySingleCoverFee({
         pool: p,
         campaignId,
@@ -250,12 +260,28 @@ export async function applySingleCoverFee(opts: {
     const isEscrow = reserved > 0;
     const feeRate = parseFloat(locked.fee_rate) || COVER_FEE_RATE;
 
+    // Outstanding escrow held against still-Pending requests (hold-on-create).
+    // Subtracted from available so we don't overcommit the pool between the
+    // moment a hold is placed and the moment it converts to applied.
+    const heldRes = await client.query(
+      `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS held_sum
+         FROM campaign_cover_fees_activity
+        WHERE cover_fee_id = $1
+          AND status = 'held'
+          AND fully_reversed_at IS NULL`,
+      [poolRow.id],
+    );
+    const heldSum = parseFloat(heldRes.rows[0]?.held_sum || "0") || 0;
+
     // ── Available budget (recomputed under lock) ─────────────────────
     let availableBudget: number;
     if (isEscrow) {
-      availableBudget = Math.max(0, reserved - amountUsed);
+      availableBudget = Math.max(0, reserved - amountUsed - heldSum);
     } else if (locked.total_cap != null) {
-      availableBudget = Math.max(0, parseFloat(locked.total_cap) - amountUsed);
+      availableBudget = Math.max(
+        0,
+        parseFloat(locked.total_cap) - amountUsed - heldSum,
+      );
     } else {
       availableBudget = Infinity;
     }
@@ -1214,4 +1240,762 @@ export async function reverseCoverFeesByRecommendation(args: {
   } finally {
     if (ownClient) client.release();
   }
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// HOLD-ON-CREATE SUPPORT (Pending Grants + Other Assets)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Lifecycle:
+//   create  -> holdCoverFeeForRequest()           (status='held')
+//   In Tx   -> convertHeldCoverFeeToApplied()     ('held' -> 'applied')
+//   cancel  -> releaseHeldCoverFeeForRequest()    (delete 'held' rows)
+//   reject  -> reverseAppliedCoverFeeForRequest() (reverse 'applied' rows)
+//
+// All helpers accept an optional `client` so the caller can run them
+// inside its own status-change transaction. When `client` is omitted the
+// helper opens its own connection and wraps the work in a transaction.
+//
+// Holds reserve pool capacity WITHOUT incrementing pool.amount_used.
+// Every "remaining" computation (here and in pendingCoverFees.ts)
+// subtracts the SUM of outstanding held escrow alongside amount_used.
+
+export type CoverFeeRequestKind = "pending_grant" | "other_asset";
+
+function requestFkColumn(kind: CoverFeeRequestKind): string {
+  return kind === "pending_grant"
+    ? "triggered_by_pending_grant_id"
+    : "triggered_by_asset_based_payment_request_id";
+}
+
+async function withTxn<T>(
+  provided: PoolClient | undefined,
+  fn: (c: PoolClient) => Promise<T>,
+): Promise<T> {
+  if (provided) return fn(provided);
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const r = await fn(c);
+    await c.query("COMMIT");
+    return r;
+  } catch (err) {
+    await c.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+async function writeSponsorEscrowLog(
+  client: PoolClient,
+  args: {
+    sponsorUserId: string;
+    campaignId: number | null;
+    campaignName: string;
+    poolName: string;
+    poolId: number;
+    feeAmount: number;
+    remainingBefore: number;
+    remainingAfter: number;
+    action: "held" | "released" | "applied" | "reversed";
+  },
+): Promise<void> {
+  const sponsorRes = await client.query(
+    `SELECT id, user_name, first_name, last_name FROM users WHERE id = $1`,
+    [args.sponsorUserId],
+  );
+  if (sponsorRes.rows.length === 0) return;
+  const sponsor = sponsorRes.rows[0];
+  const sponsorFullName =
+    `${sponsor.first_name || ""} ${sponsor.last_name || ""}`.trim() ||
+    sponsor.user_name ||
+    "";
+
+  const paymentTypeMap = {
+    held: "Cover Fees – escrow held",
+    released: "Cover Fees – escrow released",
+    applied: "Cover Fees – escrow applied",
+    reversed: "Cover Fees – escrow reversed",
+  } as const;
+  const commentMap = {
+    held: `$${args.feeAmount.toFixed(2)} reserved (held) in pool "${args.poolName}" pending donation completion`,
+    released: `$${args.feeAmount.toFixed(2)} hold released back to pool "${args.poolName}" (donation canceled / rejected)`,
+    applied: `$${args.feeAmount.toFixed(2)} fee covered from escrow via pool "${args.poolName}" (sponsor wallet unchanged)`,
+    reversed: `$${args.feeAmount.toFixed(2)} fee reversed back to pool "${args.poolName}" (donation rejected after In Transit)`,
+  } as const;
+
+  await client.query(
+    `INSERT INTO account_balance_change_logs
+       (user_id, payment_type, investment_name, campaign_id,
+        old_value, user_name, new_value, change_date, comment,
+        gross_amount, fees, net_amount)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)`,
+    [
+      sponsor.id,
+      paymentTypeMap[args.action],
+      args.campaignName,
+      args.campaignId,
+      args.remainingBefore,
+      sponsor.user_name || sponsorFullName,
+      args.remainingAfter,
+      commentMap[args.action],
+      args.feeAmount,
+      0,
+      args.feeAmount,
+    ],
+  );
+}
+
+/**
+ * Place a 'held' activity row against the first eligible pool for a
+ * Pending pending_grant / asset request. Idempotent — re-invoking for a
+ * request that already has an active activity row (held or applied)
+ * for any pool is a no-op.
+ *
+ * Writes a "Cover Fees – escrow held" row on the sponsor's
+ * account_balance_change_logs so admins can audit when capacity was
+ * reserved.
+ */
+export async function holdCoverFeeForRequest(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+  campaignId: number;
+  donorUserId: string | null;
+  donationAmount: number;
+  triggerDate?: Date | string | null;
+  client?: PoolClient;
+}): Promise<number> {
+  const { requestKind, requestId, campaignId, donorUserId, donationAmount } = args;
+  if (!Number.isFinite(requestId) || !Number.isFinite(campaignId)) return 0;
+  if (donationAmount <= 0) return 0;
+
+  const fkCol = requestFkColumn(requestKind);
+
+  return withTxn(args.client, async (client) => {
+    const existing = await client.query(
+      `SELECT 1 FROM campaign_cover_fees_activity
+        WHERE ${fkCol} = $1
+          AND fully_reversed_at IS NULL
+        LIMIT 1`,
+      [requestId],
+    );
+    if (existing.rows.length > 0) return 0;
+
+    let triggerDateParam: Date | null = null;
+    if (args.triggerDate instanceof Date) {
+      triggerDateParam = args.triggerDate;
+    } else if (typeof args.triggerDate === "string" && args.triggerDate) {
+      const parsed = new Date(args.triggerDate);
+      triggerDateParam = Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const campRes = await client.query(
+      `SELECT name FROM campaigns WHERE id = $1`,
+      [campaignId],
+    );
+    const campaignName = campRes.rows[0]?.name || "";
+
+    const poolsResult = await client.query(
+      `SELECT ccf.id
+         FROM campaign_cover_fees ccf
+         JOIN campaign_cover_fees_campaigns ccfc
+              ON ccfc.cover_fee_id = ccf.id AND ccfc.campaign_id = $1
+        WHERE ccf.is_active = TRUE
+          AND COALESCE(ccf.cover_initial_fee, TRUE) = TRUE
+          AND (ccf.expires_at IS NULL OR ccf.expires_at > NOW())
+          AND (ccf.reserved_amount IS NOT NULL
+               AND ccf.reserved_amount::numeric > 0)
+          AND ccf.coverage_active_from <= COALESCE($2::timestamp, NOW())
+        ORDER BY ccf.id ASC`,
+      [campaignId, triggerDateParam],
+    );
+
+    for (const p of poolsResult.rows) {
+      const lockedRes = await client.query(
+        `SELECT id, name, sponsor_user_id, reserved_amount, amount_used,
+                fee_rate, per_investment_cap
+           FROM campaign_cover_fees WHERE id = $1 FOR UPDATE`,
+        [p.id],
+      );
+      if (lockedRes.rows.length === 0) continue;
+      const locked = lockedRes.rows[0];
+
+      const reserved = parseFloat(locked.reserved_amount) || 0;
+      const used = parseFloat(locked.amount_used) || 0;
+
+      const heldRes = await client.query(
+        `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS held_sum
+           FROM campaign_cover_fees_activity
+          WHERE cover_fee_id = $1
+            AND status = 'held'
+            AND fully_reversed_at IS NULL`,
+        [p.id],
+      );
+      const heldSum = parseFloat(heldRes.rows[0]?.held_sum || "0") || 0;
+
+      const available = Math.max(0, reserved - used - heldSum);
+      if (available <= 0) continue;
+
+      const feeRate = parseFloat(locked.fee_rate) || COVER_FEE_RATE;
+      let feeAmount = donationAmount * feeRate;
+      if (locked.per_investment_cap != null) {
+        feeAmount = Math.min(feeAmount, parseFloat(locked.per_investment_cap));
+      }
+      feeAmount = Math.min(feeAmount, available);
+      feeAmount = Math.round(feeAmount * 100) / 100;
+      if (feeAmount <= 0) continue;
+
+      try {
+        await client.query(
+          `INSERT INTO campaign_cover_fees_activity
+             (cover_fee_id, campaign_id, triggered_by_user_id,
+              triggered_by_recommendation_id, ${fkCol},
+              fee_amount, donation_amount, status)
+           VALUES ($1, $2, $3, NULL, $4, $5, $6, 'held')`,
+          [p.id, campaignId, donorUserId, requestId, feeAmount, donationAmount],
+        );
+      } catch (err: any) {
+        if (err?.code === "23505") return 0; // race: someone else placed it
+        throw err;
+      }
+
+      const remainingBefore = parseFloat((reserved - used - heldSum).toFixed(2));
+      const remainingAfter = parseFloat((reserved - used - heldSum - feeAmount).toFixed(2));
+      await writeSponsorEscrowLog(client, {
+        sponsorUserId: locked.sponsor_user_id,
+        campaignId,
+        campaignName,
+        poolName: locked.name || `Pool #${locked.id}`,
+        poolId: locked.id,
+        feeAmount,
+        remainingBefore,
+        remainingAfter,
+        action: "held",
+      });
+
+      console.log(
+        `holdCoverFeeForRequest: pool ${p.id} held $${feeAmount} for ${requestKind} ${requestId}`,
+      );
+      return feeAmount;
+    }
+
+    return 0;
+  });
+}
+
+/**
+ * Flip an existing 'held' activity row to 'applied', increment
+ * pool.amount_used, write the donor / sponsor account-history row, and
+ * optionally backfill the triggering recommendation FK. Returns the
+ * converted fee amount (0 if no held row existed).
+ */
+export async function convertHeldCoverFeeToApplied(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+  triggeringRecommendationId?: number | null;
+  campaignName?: string;
+  client?: PoolClient;
+}): Promise<number> {
+  const { requestKind, requestId, triggeringRecommendationId, campaignName } = args;
+  if (!Number.isFinite(requestId)) return 0;
+  const fkCol = requestFkColumn(requestKind);
+
+  return withTxn(args.client, async (client) => {
+    const heldRes = await client.query(
+      `SELECT a.id, a.cover_fee_id, a.campaign_id, a.fee_amount,
+              ccf.name AS pool_name, ccf.sponsor_user_id,
+              ccf.reserved_amount, ccf.amount_used
+         FROM campaign_cover_fees_activity a
+         JOIN campaign_cover_fees ccf ON ccf.id = a.cover_fee_id
+        WHERE a.${fkCol} = $1
+          AND a.status = 'held'
+          AND a.fully_reversed_at IS NULL
+        FOR UPDATE OF a, ccf`,
+      [requestId],
+    );
+    if (heldRes.rows.length === 0) return 0;
+
+    let totalConverted = 0;
+    for (const row of heldRes.rows) {
+      const feeAmount = parseFloat(row.fee_amount) || 0;
+      if (feeAmount <= 0) continue;
+
+      const reserved = parseFloat(row.reserved_amount) || 0;
+      const used = parseFloat(row.amount_used) || 0;
+      // Held -> Applied is a net-zero move on Remaining: held_sum drops
+      // by feeAmount and amount_used grows by feeAmount in the same txn.
+      // Include this hold's feeAmount in the "before" picture so the
+      // audit log accurately reflects that conversion does NOT decrease
+      // Remaining (only Pending->In Transit reclassification).
+      const heldSumRes = await client.query(
+        `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS s
+           FROM campaign_cover_fees_activity
+          WHERE cover_fee_id = $1
+            AND status = 'held'
+            AND fully_reversed_at IS NULL`,
+        [row.cover_fee_id],
+      );
+      const heldSum = parseFloat(heldSumRes.rows[0]?.s || "0") || 0;
+      const remainingBefore = parseFloat((reserved - used - heldSum).toFixed(2));
+      const remainingAfter = remainingBefore;
+
+      if (triggeringRecommendationId) {
+        await client.query(
+          `UPDATE campaign_cover_fees_activity
+              SET status = 'applied',
+                  triggered_by_recommendation_id =
+                      COALESCE(triggered_by_recommendation_id, $2)
+            WHERE id = $1`,
+          [row.id, triggeringRecommendationId],
+        );
+      } else {
+        await client.query(
+          `UPDATE campaign_cover_fees_activity SET status = 'applied' WHERE id = $1`,
+          [row.id],
+        );
+      }
+
+      await client.query(
+        `UPDATE campaign_cover_fees
+            SET amount_used = amount_used + $1, updated_at = NOW()
+          WHERE id = $2`,
+        [feeAmount, row.cover_fee_id],
+      );
+
+      await writeSponsorEscrowLog(client, {
+        sponsorUserId: row.sponsor_user_id,
+        campaignId: row.campaign_id,
+        campaignName: campaignName || "",
+        poolName: row.pool_name || `Pool #${row.cover_fee_id}`,
+        poolId: row.cover_fee_id,
+        feeAmount,
+        remainingBefore,
+        remainingAfter,
+        action: "applied",
+      });
+
+      totalConverted += feeAmount;
+      console.log(
+        `convertHeldCoverFeeToApplied: activity ${row.id} (pool ${row.cover_fee_id}) flipped held -> applied $${feeAmount} for ${requestKind} ${requestId}`,
+      );
+    }
+
+    return Math.round(totalConverted * 100) / 100;
+  });
+}
+
+/**
+ * Delete active 'held' activity rows for a request and write an
+ * "escrow released" audit row per pool. Used on Pending -> Rejected
+ * (or soft-delete) when the cover-fee was never drawn.
+ */
+export async function releaseHeldCoverFeeForRequest(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+  client?: PoolClient;
+}): Promise<number> {
+  const { requestKind, requestId } = args;
+  if (!Number.isFinite(requestId)) return 0;
+  const fkCol = requestFkColumn(requestKind);
+
+  return withTxn(args.client, async (client) => {
+    const heldRes = await client.query(
+      `SELECT a.id, a.cover_fee_id, a.campaign_id, a.fee_amount,
+              ccf.name AS pool_name, ccf.sponsor_user_id,
+              ccf.reserved_amount, ccf.amount_used,
+              c.name AS campaign_name
+         FROM campaign_cover_fees_activity a
+         JOIN campaign_cover_fees ccf ON ccf.id = a.cover_fee_id
+         LEFT JOIN campaigns c ON c.id = a.campaign_id
+        WHERE a.${fkCol} = $1
+          AND a.status = 'held'
+          AND a.fully_reversed_at IS NULL
+        FOR UPDATE OF a, ccf`,
+      [requestId],
+    );
+    if (heldRes.rows.length === 0) return 0;
+
+    let released = 0;
+    for (const row of heldRes.rows) {
+      const feeAmount = parseFloat(row.fee_amount) || 0;
+      const reserved = parseFloat(row.reserved_amount) || 0;
+      const used = parseFloat(row.amount_used) || 0;
+
+      // Total held BEFORE we delete this row (pool currently reflects
+      // it as held). Re-query so concurrent holds on other requests are
+      // accounted for.
+      const heldSumRes = await client.query(
+        `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS s
+           FROM campaign_cover_fees_activity
+          WHERE cover_fee_id = $1 AND status = 'held' AND fully_reversed_at IS NULL`,
+        [row.cover_fee_id],
+      );
+      const heldSum = parseFloat(heldSumRes.rows[0]?.s || "0") || 0;
+      const remainingBefore = parseFloat((reserved - used - heldSum).toFixed(2));
+      const remainingAfter = parseFloat((reserved - used - heldSum + feeAmount).toFixed(2));
+
+      await client.query(`DELETE FROM campaign_cover_fees_activity WHERE id = $1`, [row.id]);
+
+      await writeSponsorEscrowLog(client, {
+        sponsorUserId: row.sponsor_user_id,
+        campaignId: row.campaign_id,
+        campaignName: row.campaign_name || "",
+        poolName: row.pool_name || `Pool #${row.cover_fee_id}`,
+        poolId: row.cover_fee_id,
+        feeAmount,
+        remainingBefore,
+        remainingAfter,
+        action: "released",
+      });
+
+      released += 1;
+    }
+
+    console.log(
+      `releaseHeldCoverFeeForRequest: released ${released} hold(s) for ${requestKind} ${requestId}`,
+    );
+    return released;
+  });
+}
+
+/**
+ * Reverse an already-'applied' cover-fee activity row in response to a
+ * Pending/In-Transit -> Rejected (or soft-delete) transition. Mirrors
+ * reverseCoverFeesByRecommendation's semantics but keyed by request FK
+ * (since Other Assets may not have a recommendation yet at In Transit).
+ *
+ * - Decrements pool.amount_used by the remaining (un-reversed) fee.
+ * - Marks the activity row fully_reversed_at = NOW(), reversed_fee_amount = fee_amount.
+ * - Writes a paired sponsor "escrow reversed" account-history row.
+ */
+export async function reverseAppliedCoverFeeForRequest(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+  client?: PoolClient;
+}): Promise<number> {
+  const { requestKind, requestId } = args;
+  if (!Number.isFinite(requestId)) return 0;
+  const fkCol = requestFkColumn(requestKind);
+
+  return withTxn(args.client, async (client) => {
+    let appliedRes = await client.query(
+      `SELECT a.id, a.cover_fee_id, a.campaign_id, a.fee_amount,
+              a.reversed_fee_amount,
+              ccf.name AS pool_name, ccf.sponsor_user_id,
+              ccf.reserved_amount, ccf.amount_used,
+              c.name AS campaign_name
+         FROM campaign_cover_fees_activity a
+         JOIN campaign_cover_fees ccf ON ccf.id = a.cover_fee_id
+         LEFT JOIN campaigns c ON c.id = a.campaign_id
+        WHERE a.${fkCol} = $1
+          AND a.status = 'applied'
+          AND a.fully_reversed_at IS NULL
+        FOR UPDATE OF a, ccf`,
+      [requestId],
+    );
+
+    // Legacy fallback: pre-feature 'applied' rows may have only
+    // triggered_by_recommendation_id set (no request FK). If the
+    // request-FK lookup returned nothing, fall back to walking the
+    // recommendation(s) tied to this request and reversing any active
+    // applied rows on that linkage. Only meaningful for pending_grants
+    // today (recommendations.pending_grants_id); other-asset rec
+    // creation already runs the request-FK backfill so there is no
+    // separate column to fall back through.
+    if (appliedRes.rows.length === 0 && requestKind === "pending_grant") {
+      appliedRes = await client.query(
+        `SELECT a.id, a.cover_fee_id, a.campaign_id, a.fee_amount,
+                a.reversed_fee_amount,
+                ccf.name AS pool_name, ccf.sponsor_user_id,
+                ccf.reserved_amount, ccf.amount_used,
+                c.name AS campaign_name
+           FROM campaign_cover_fees_activity a
+           JOIN campaign_cover_fees ccf ON ccf.id = a.cover_fee_id
+           JOIN recommendations r ON r.id = a.triggered_by_recommendation_id
+           LEFT JOIN campaigns c ON c.id = a.campaign_id
+          WHERE r.pending_grants_id = $1
+            AND COALESCE(r.is_deleted, false) = false
+            AND a.status = 'applied'
+            AND a.fully_reversed_at IS NULL
+          FOR UPDATE OF a, ccf`,
+        [requestId],
+      );
+    }
+
+    if (appliedRes.rows.length === 0) return 0;
+
+    let totalReversed = 0;
+    for (const row of appliedRes.rows) {
+      const feeAmount = parseFloat(row.fee_amount) || 0;
+      const alreadyReversed = parseFloat(row.reversed_fee_amount) || 0;
+      const remainingFee = Math.max(0, feeAmount - alreadyReversed);
+      if (remainingFee <= 0) {
+        await client.query(
+          `UPDATE campaign_cover_fees_activity
+              SET fully_reversed_at = NOW() WHERE id = $1`,
+          [row.id],
+        );
+        continue;
+      }
+
+      const reserved = parseFloat(row.reserved_amount) || 0;
+      const used = parseFloat(row.amount_used) || 0;
+      const remainingBefore = parseFloat((reserved - used).toFixed(2));
+      const remainingAfter = parseFloat((reserved - used + remainingFee).toFixed(2));
+
+      await client.query(
+        `UPDATE campaign_cover_fees
+            SET amount_used = GREATEST(0, amount_used - $1),
+                updated_at = NOW()
+          WHERE id = $2`,
+        [remainingFee, row.cover_fee_id],
+      );
+
+      await client.query(
+        `UPDATE campaign_cover_fees_activity
+            SET reversed_fee_amount = $2,
+                fully_reversed_at = NOW()
+          WHERE id = $1`,
+        [row.id, feeAmount],
+      );
+
+      await writeSponsorEscrowLog(client, {
+        sponsorUserId: row.sponsor_user_id,
+        campaignId: row.campaign_id,
+        campaignName: row.campaign_name || "",
+        poolName: row.pool_name || `Pool #${row.cover_fee_id}`,
+        poolId: row.cover_fee_id,
+        feeAmount: remainingFee,
+        remainingBefore,
+        remainingAfter,
+        action: "reversed",
+      });
+
+      totalReversed += remainingFee;
+      console.log(
+        `reverseAppliedCoverFeeForRequest: activity ${row.id} (pool ${row.cover_fee_id}) reversed $${remainingFee} for ${requestKind} ${requestId}`,
+      );
+    }
+
+    return Math.round(totalReversed * 100) / 100;
+  });
+}
+
+/**
+ * Backfill triggered_by_recommendation_id on an already-applied row
+ * when the rec is created strictly after the row was applied (Other
+ * Assets In Transit -> Received). Idempotent.
+ */
+export async function backfillRecommendationLinkForRequest(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+  triggeringRecommendationId: number;
+  client?: PoolClient;
+}): Promise<number> {
+  const { requestKind, requestId, triggeringRecommendationId } = args;
+  if (!Number.isFinite(requestId) || !Number.isFinite(triggeringRecommendationId)) return 0;
+  const fkCol = requestFkColumn(requestKind);
+
+  const querier = args.client ?? pool;
+  const result = await querier.query(
+    `UPDATE campaign_cover_fees_activity
+        SET triggered_by_recommendation_id = $2
+      WHERE ${fkCol} = $1
+        AND triggered_by_recommendation_id IS NULL
+        AND fully_reversed_at IS NULL`,
+    [requestId, triggeringRecommendationId],
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Bounded on-demand reconciliation: place 'held' rows for every Pending
+ * request that doesn't yet have an active activity row. Called from
+ * GET /api/admin/cover-fees so admin readouts reflect reality even for
+ * requests created by the legacy .NET backend before the next runtime
+ * touch-point. Each per-request hold uses its own transaction so a
+ * single failure can't cascade.
+ */
+export async function reconcilePendingHoldsForAllPools(): Promise<{
+  pendingGrants: number;
+  otherAssets: number;
+}> {
+  const summary = { pendingGrants: 0, otherAssets: 0 };
+
+  try {
+    const pgRes = await pool.query(
+      `SELECT pg.id, pg.campaign_id, pg.user_id,
+              COALESCE(NULLIF(pg.amount, ''), '0')::numeric AS amount,
+              pg.created_date
+         FROM pending_grants pg
+        WHERE COALESCE(pg.is_deleted, false) = false
+          AND LOWER(TRIM(COALESCE(pg.status, ''))) = 'pending'
+          AND COALESCE(NULLIF(pg.amount, ''), '0')::numeric > 0
+          AND NOT EXISTS (
+              SELECT 1 FROM campaign_cover_fees_activity a
+               WHERE a.triggered_by_pending_grant_id = pg.id
+                 AND a.fully_reversed_at IS NULL
+          )
+        ORDER BY pg.created_date ASC NULLS LAST, pg.id ASC
+        LIMIT 500`,
+    );
+
+    for (const r of pgRes.rows) {
+      try {
+        const placed = await holdCoverFeeForRequest({
+          requestKind: "pending_grant",
+          requestId: Number(r.id),
+          campaignId: Number(r.campaign_id),
+          donorUserId: r.user_id || null,
+          donationAmount: parseFloat(r.amount) || 0,
+          triggerDate: r.created_date || null,
+        });
+        if (placed > 0) summary.pendingGrants += 1;
+      } catch (err: any) {
+        console.error(
+          `reconcilePendingHoldsForAllPools: pending_grant ${r.id} failed:`,
+          err?.message || err,
+        );
+      }
+    }
+
+    const abprRes = await pool.query(
+      `SELECT abpr.id, abpr.campaign_id, abpr.user_id,
+              COALESCE(abpr.approximate_amount, 0)::numeric AS amount,
+              abpr.created_at
+         FROM asset_based_payment_requests abpr
+        WHERE COALESCE(abpr.is_deleted, false) = false
+          AND LOWER(TRIM(COALESCE(abpr.status, ''))) = 'pending'
+          AND COALESCE(abpr.approximate_amount, 0)::numeric > 0
+          AND abpr.campaign_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM campaign_cover_fees_activity a
+               WHERE a.triggered_by_asset_based_payment_request_id = abpr.id
+                 AND a.fully_reversed_at IS NULL
+          )
+        ORDER BY abpr.created_at ASC NULLS LAST, abpr.id ASC
+        LIMIT 500`,
+    );
+
+    for (const r of abprRes.rows) {
+      try {
+        const placed = await holdCoverFeeForRequest({
+          requestKind: "other_asset",
+          requestId: Number(r.id),
+          campaignId: Number(r.campaign_id),
+          donorUserId: r.user_id || null,
+          donationAmount: parseFloat(r.amount) || 0,
+          triggerDate: r.created_at || null,
+        });
+        if (placed > 0) summary.otherAssets += 1;
+      } catch (err: any) {
+        console.error(
+          `reconcilePendingHoldsForAllPools: other_asset ${r.id} failed:`,
+          err?.message || err,
+        );
+      }
+    }
+  } catch (err: any) {
+    console.error("reconcilePendingHoldsForAllPools error:", err?.message || err);
+  }
+  return summary;
+}
+
+/**
+ * Place a hold for a single request if one isn't already in place.
+ * Called at the top of admin status-change endpoints so the very next
+ * authoritative touch-point after .NET creates the row guarantees a
+ * hold (or a no-op if no eligible pool covers the campaign).
+ */
+export async function ensureHoldForRequest(args: {
+  requestKind: CoverFeeRequestKind;
+  requestId: number;
+}): Promise<number> {
+  const { requestKind, requestId } = args;
+  if (!Number.isFinite(requestId)) return 0;
+  const fkCol = requestFkColumn(requestKind);
+
+  try {
+    const existing = await pool.query(
+      `SELECT 1 FROM campaign_cover_fees_activity
+        WHERE ${fkCol} = $1 AND fully_reversed_at IS NULL LIMIT 1`,
+      [requestId],
+    );
+    if (existing.rows.length > 0) return 0;
+
+    if (requestKind === "pending_grant") {
+      const r = await pool.query(
+        `SELECT id, campaign_id, user_id,
+                COALESCE(NULLIF(amount, ''), '0')::numeric AS amount,
+                created_date,
+                LOWER(TRIM(COALESCE(status, ''))) AS status_norm
+           FROM pending_grants
+          WHERE id = $1 AND COALESCE(is_deleted, false) = false`,
+        [requestId],
+      );
+      if (r.rows.length === 0) return 0;
+      const row = r.rows[0];
+      if (row.status_norm !== "pending") return 0;
+      if (!Number.isFinite(Number(row.campaign_id))) return 0;
+      return await holdCoverFeeForRequest({
+        requestKind,
+        requestId,
+        campaignId: Number(row.campaign_id),
+        donorUserId: row.user_id || null,
+        donationAmount: parseFloat(row.amount) || 0,
+        triggerDate: row.created_date || null,
+      });
+    } else {
+      const r = await pool.query(
+        `SELECT id, campaign_id, user_id,
+                COALESCE(approximate_amount, 0)::numeric AS amount,
+                created_at,
+                LOWER(TRIM(COALESCE(status, ''))) AS status_norm
+           FROM asset_based_payment_requests
+          WHERE id = $1 AND COALESCE(is_deleted, false) = false`,
+        [requestId],
+      );
+      if (r.rows.length === 0) return 0;
+      const row = r.rows[0];
+      if (row.status_norm !== "pending") return 0;
+      if (!Number.isFinite(Number(row.campaign_id))) return 0;
+      return await holdCoverFeeForRequest({
+        requestKind,
+        requestId,
+        campaignId: Number(row.campaign_id),
+        donorUserId: row.user_id || null,
+        donationAmount: parseFloat(row.amount) || 0,
+        triggerDate: row.created_at || null,
+      });
+    }
+  } catch (err: any) {
+    console.error(
+      `ensureHoldForRequest: ${requestKind} ${requestId} error:`,
+      err?.message || err,
+    );
+    return 0;
+  }
+}
+
+export async function fetchHeldTotalsByPool(): Promise<
+  Record<number, { heldAmount: number; heldCount: number }>
+> {
+  const result = await pool.query(
+    `SELECT cover_fee_id, COUNT(*) AS held_count,
+            COALESCE(SUM(fee_amount::numeric), 0) AS held_sum
+       FROM campaign_cover_fees_activity
+      WHERE status = 'held'
+        AND fully_reversed_at IS NULL
+      GROUP BY cover_fee_id`,
+  );
+  const out: Record<number, { heldAmount: number; heldCount: number }> = {};
+  for (const r of result.rows) {
+    out[Number(r.cover_fee_id)] = {
+      heldAmount: Math.round((parseFloat(r.held_sum) || 0) * 100) / 100,
+      heldCount: parseInt(r.held_count, 10) || 0,
+    };
+  }
+  return out;
 }

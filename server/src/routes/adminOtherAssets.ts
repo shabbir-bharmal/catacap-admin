@@ -14,7 +14,13 @@ import { autoEnrollInvestorIfApplicable } from "../utils/autoEnrollGroupMembersh
 import { backfillCampaignUpdateNotifications } from "../utils/backfillCampaignUpdateNotifications.js";
 import { sendCampaignOwnerFundingNotification } from "../utils/investmentNotifications.js";
 import { applyMatchGrants } from "../utils/matchingGrants.js";
-import { applyCoverFees } from "../utils/coverFees.js";
+import {
+  applyCoverFees,
+  convertHeldCoverFeeToApplied,
+  ensureHoldForRequest,
+  releaseHeldCoverFeeForRequest,
+  reverseAppliedCoverFeeForRequest,
+} from "../utils/coverFees.js";
 import ExcelJS from "exceljs";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
@@ -268,6 +274,21 @@ router.put("/:id/status", async (req: Request, res: Response) => {
       amount: number; email: string; campaignName: string;
     } | null = null;
 
+    // Guarantee a cover-fee hold exists for this still-Pending asset
+    // request before we touch its status. Runs in its OWN connection
+    // (no client arg) and BEFORE the status-change transaction starts,
+    // so we never attempt to place a hold and convert it to applied
+    // inside the same txn. No-op if a hold/applied row already exists
+    // or no eligible pool covers this campaign. Failures here are
+    // logged but never block the admin's status change.
+    if (oldStatus === "Pending") {
+      try {
+        await ensureHoldForRequest({ requestKind: "other_asset", requestId: id });
+      } catch (err: any) {
+        console.error("ensureHoldForRequest (otherAssets) error:", err?.message || err);
+      }
+    }
+
     await client.query("BEGIN");
 
     let insertedNoteId: number | null = null;
@@ -297,6 +318,11 @@ router.put("/:id/status", async (req: Request, res: Response) => {
       if (asset.camp_id) {
         await autoEnrollInvestorIfApplicable(client, asset.uid, asset.camp_id);
       }
+      // For Other-Assets the cover-fee is deliberately NOT flipped from
+      // 'held' → 'applied' at In Transit. Unlike DAF grants, the asset
+      // isn't actually realized until Received — so we keep the row in
+      // "Pending fee coverage" through In Transit and only convert
+      // (and draw from the pool) when the status reaches Received.
     } else if (oldStatus === "In Transit" && newStatus === "Received") {
       const receivedAmount = data.amount > 0 ? data.amount : parseFloat(asset.received_amount) || 0;
 
@@ -347,6 +373,20 @@ router.put("/:id/status", async (req: Request, res: Response) => {
         );
         const newRecId = newRecResult.rows[0]?.id ?? null;
         if (newRecId) {
+          // Flip the still-'held' cover-fees activity row for this asset
+          // request to 'applied', stamping the just-created rec FK in
+          // the same step. (For Other-Assets the flip is deferred from
+          // In Transit to Received — see the In Transit branch above.)
+          // Post-commit applyCoverFees then silently no-ops on the
+          // (pool, rec) unique index because the rec FK now matches.
+          // Runs INSIDE the txn so status flip and pool draw stay atomic.
+          await convertHeldCoverFeeToApplied({
+            requestKind: "other_asset",
+            requestId: id,
+            triggeringRecommendationId: newRecId,
+            campaignName: asset.campaign_name || "",
+            client,
+          });
           matchAfterCommit = {
             campaignId: Number(asset.camp_id),
             userId: asset.uid,
@@ -412,6 +452,20 @@ router.put("/:id/status", async (req: Request, res: Response) => {
       }
     } else if ((oldStatus === "Pending" || oldStatus === "In Transit") && newStatus === "Rejected") {
       await client.query(`UPDATE asset_based_payment_requests SET status = $1 WHERE id = $2`, [newStatus, id]);
+      // Release still-'held' escrow (Pending -> Rejected) and reverse
+      // any already-'applied' draw on the sponsor pool (In Transit ->
+      // Rejected). Both run INSIDE the txn so status flip + pool
+      // bookkeeping stay atomic.
+      await releaseHeldCoverFeeForRequest({
+        requestKind: "other_asset",
+        requestId: id,
+        client,
+      });
+      await reverseAppliedCoverFeeForRequest({
+        requestKind: "other_asset",
+        requestId: id,
+        client,
+      });
     }
 
     await client.query("COMMIT");
@@ -620,6 +674,18 @@ router.delete("/:id", async (req: Request, res: Response) => {
        WHERE id = $2`,
       [loginUserId, id]
     );
+
+    // Release still-'held' escrow and reverse any already-'applied'
+    // pool draw tied to this asset request. Both are no-ops if nothing
+    // matches.
+    await releaseHeldCoverFeeForRequest({
+      requestKind: "other_asset",
+      requestId: id,
+    });
+    await reverseAppliedCoverFeeForRequest({
+      requestKind: "other_asset",
+      requestId: id,
+    });
 
     res.json({ success: true, message: "Other asset deleted successfully." });
   } catch (err: any) {

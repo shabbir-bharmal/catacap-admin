@@ -2,7 +2,11 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import ExcelJS from "exceljs";
 import pool from "../db.js";
-import { COVER_FEE_RATE } from "../utils/coverFees.js";
+import {
+  COVER_FEE_RATE,
+  fetchHeldTotalsByPool,
+  reconcilePendingHoldsForAllPools,
+} from "../utils/coverFees.js";
 import {
   projectPendingCoverFeesForPool,
   projectPendingCoverFeeTotalsForAllPools,
@@ -107,7 +111,18 @@ async function returnUnusedFunds(
 // ------------------------------------------------------------------ //
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const [poolsResult, pendingTotals] = await Promise.all([
+    // The Node server does not own the create path for pending_grants /
+    // asset_based_payment_requests (legacy .NET backend creates them).
+    // Materialize 'held' rows for any still-Pending requests that don't
+    // yet have one so the admin's "On Hold" / "Remaining" readouts
+    // reflect reality. Bounded and idempotent.
+    try {
+      await reconcilePendingHoldsForAllPools();
+    } catch (reconcileErr: any) {
+      console.error("reconcilePendingHoldsForAllPools failed:", reconcileErr?.message || reconcileErr);
+    }
+
+    const [poolsResult, pendingTotals, heldTotals] = await Promise.all([
       pool.query(
         `SELECT ccf.id,
                 ccf.name,
@@ -136,6 +151,7 @@ router.get("/", async (_req: Request, res: Response) => {
           ORDER BY ccf.created_at DESC`,
       ),
       projectPendingCoverFeeTotalsForAllPools(),
+      fetchHeldTotalsByPool(),
     ]);
 
     const items = await Promise.all(
@@ -149,6 +165,7 @@ router.get("/", async (_req: Request, res: Response) => {
           [g.id],
         );
         const pending = pendingTotals[g.id] || { pendingAmount: 0, pendingCount: 0 };
+        const held = heldTotals[g.id] || { heldAmount: 0, heldCount: 0 };
         return {
           id: g.id,
           name: g.name || "",
@@ -174,6 +191,8 @@ router.get("/", async (_req: Request, res: Response) => {
           timesUsed: parseInt(g.times_used) || 0,
           pendingAmount: pending.pendingAmount,
           pendingCount: pending.pendingCount,
+          heldAmount: held.heldAmount,
+          heldCount: held.heldCount,
           campaigns: campResult.rows.map((c: any) => ({ id: c.id, name: c.name })),
         };
       }),
@@ -228,6 +247,13 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
            LEFT JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
            LEFT JOIN pending_grants tpg ON tpg.id = tr.pending_grants_id
           WHERE a.cover_fee_id = $1
+            -- Exclude rows that are currently escrowed-but-not-fired
+            -- (status='held' AND not reversed). Those belong only in
+            -- the "Pending fee coverage" projection. Applied rows and
+            -- any reversed row (regardless of prior status) continue
+            -- to render here so admins keep full visibility into both
+            -- fired coverage and historical reversals.
+            AND NOT (a.status = 'held' AND a.fully_reversed_at IS NULL)
           ORDER BY a.created_at DESC
           LIMIT 500`,
         [id],
@@ -264,6 +290,10 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerType: p.trigger.triggerType,
         triggerStatus: p.trigger.triggerStatus,
         triggerAmount: p.trigger.triggerAmount,
+        triggerLabel:
+          p.trigger.triggerType === "asset_based_payment_request"
+            ? "Other Asset"
+            : "DAF Grant",
       })),
       pendingTotal:
         Math.round(projections.reduce((s, p) => s + p.projectedAmount, 0) * 100) / 100,
@@ -461,35 +491,67 @@ router.put("/:id", async (req: Request, res: Response) => {
     const oldReserved = parseFloat(g.reserved_amount) || 0;
     const amountUsed = parseFloat(g.amount_used) || 0;
 
-    if (newCap != null && newCap < amountUsed) {
+    // Hold-aware floor: outstanding 'held' escrow counts against the
+    // pool's committed funds. We must never let the admin set the cap
+    // below (amount_used + held_sum), refund held money to the sponsor,
+    // or change sponsor while holds are outstanding — any of those
+    // would leave pending donations referencing escrow that no longer
+    // exists.
+    const heldSumRes = await client.query(
+      `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS s
+         FROM campaign_cover_fees_activity
+        WHERE cover_fee_id = $1
+          AND status = 'held'
+          AND fully_reversed_at IS NULL`,
+      [id],
+    );
+    const heldSum = parseFloat(heldSumRes.rows[0]?.s || "0") || 0;
+    const committedFloor = parseFloat((amountUsed + heldSum).toFixed(2));
+
+    if (newCap != null && newCap < committedFloor) {
       await client.query("ROLLBACK");
       res.status(400).json({
         success: false,
-        message: `Cap cannot be set below amount already covered ($${amountUsed.toFixed(2)}).`,
+        message:
+          heldSum > 0
+            ? `Cap cannot be set below committed funds ($${committedFloor.toFixed(2)} = $${amountUsed.toFixed(2)} covered + $${heldSum.toFixed(2)} on hold).`
+            : `Cap cannot be set below amount already covered ($${amountUsed.toFixed(2)}).`,
       });
       return;
     }
 
     const sponsorChanged =
       b.sponsorUserId && b.sponsorUserId !== g.sponsor_user_id;
+    if (sponsorChanged && heldSum > 0) {
+      await client.query("ROLLBACK");
+      res.status(400).json({
+        success: false,
+        message: `Cannot change sponsor while $${heldSum.toFixed(2)} of cover-fee escrow is on hold for pending donations. Release the holds (reject the pending requests) and try again.`,
+      });
+      return;
+    }
     const poolLabel = poolName || g.name || `Cover Fees pool #${id}`;
     const isActiveAfter = b.isActive !== false;
     const newCommitted =
       newCap != null && newCap > 0 && isActiveAfter
-        ? Math.max(amountUsed, newCap)
-        : amountUsed;
+        ? Math.max(committedFloor, newCap)
+        : committedFloor;
 
     if (sponsorChanged) {
-      if (oldReserved > amountUsed) {
+      // Refund only the truly-unused portion to the old sponsor
+      // (reserved - used - held); held would have short-circuited
+      // above if > 0 so this is equivalent to reserved - used today,
+      // but we keep the formula hold-aware for clarity.
+      if (oldReserved > committedFloor) {
         await returnUnusedFunds(
           client,
           g.sponsor_user_id,
           oldReserved,
-          amountUsed,
+          committedFloor,
           poolLabel,
         );
       }
-      const newSponsorReservation = Math.max(0, newCommitted - amountUsed);
+      const newSponsorReservation = Math.max(0, newCommitted - committedFloor);
       if (newSponsorReservation > 0) {
         await reserveCapFromWallet(client, b.sponsorUserId, newSponsorReservation, poolLabel);
       }
@@ -735,6 +797,27 @@ router.delete("/:id", async (req: Request, res: Response) => {
     const g = existing.rows[0];
     const reserved = parseFloat(g.reserved_amount) || 0;
     const used = parseFloat(g.amount_used) || 0;
+
+    // Block delete while holds are outstanding — otherwise we would
+    // refund held escrow back to the sponsor's wallet and orphan the
+    // pending donations that reserved it.
+    const heldSumRes = await client.query(
+      `SELECT COALESCE(SUM(fee_amount::numeric), 0) AS s
+         FROM campaign_cover_fees_activity
+        WHERE cover_fee_id = $1
+          AND status = 'held'
+          AND fully_reversed_at IS NULL`,
+      [id],
+    );
+    const heldSum = parseFloat(heldSumRes.rows[0]?.s || "0") || 0;
+    if (heldSum > 0) {
+      await client.query("ROLLBACK");
+      res.status(400).json({
+        success: false,
+        message: `Cannot delete pool while $${heldSum.toFixed(2)} of cover-fee escrow is on hold for pending donations. Reject the pending requests first to release the holds.`,
+      });
+      return;
+    }
 
     const refunded = await returnUnusedFunds(
       client,
