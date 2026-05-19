@@ -10,8 +10,13 @@
 
 import pool from "../db.js";
 
+export type CoverFeeTriggerKind =
+  | "recommendation"
+  | "pending_grant"
+  | "asset_based_payment_request";
+
 export type CoverFeeProjectionTrigger = {
-  triggerType: "recommendation" | "pending_grant";
+  triggerType: CoverFeeTriggerKind;
   triggerId: number;
   campaignId: number;
   campaignName: string;
@@ -22,6 +27,7 @@ export type CoverFeeProjectionTrigger = {
   triggerDate: Date | string | null;
   triggerStatus: "pending";
   pendingGrantId: number | null;
+  assetRequestId: number | null;
 };
 
 export type CoverFeeProjectionEntry = {
@@ -86,15 +92,20 @@ type HeldRowKey = string; // `${triggerKind}:${triggerId}:${coverFeeId}`
 type HeldRowInfo = { feeAmount: number };
 
 function heldKey(
-  triggerKind: "recommendation" | "pending_grant",
+  triggerKind: CoverFeeTriggerKind,
   triggerId: number,
   pendingGrantId: number | null,
+  assetRequestId: number | null,
   coverFeeId: number,
 ): HeldRowKey[] {
-  // A held row may be linked via rec FK OR via pending_grant FK; check both.
+  // A held row may be linked via rec FK, pending_grant FK, OR
+  // asset-based-payment-request FK; check all that apply.
   const keys: HeldRowKey[] = [`${triggerKind}:${triggerId}:${coverFeeId}`];
   if (pendingGrantId != null) {
     keys.push(`pending_grant:${pendingGrantId}:${coverFeeId}`);
+  }
+  if (assetRequestId != null) {
+    keys.push(`asset_based_payment_request:${assetRequestId}:${coverFeeId}`);
   }
   return keys;
 }
@@ -119,6 +130,12 @@ async function fetchHeldRowsByTrigger(): Promise<Map<HeldRowKey, HeldRowInfo>> {
     }
     if (r.triggered_by_pending_grant_id != null) {
       out.set(`pending_grant:${Number(r.triggered_by_pending_grant_id)}:${cfId}`, { feeAmount: fee });
+    }
+    if (r.triggered_by_asset_based_payment_request_id != null) {
+      out.set(
+        `asset_based_payment_request:${Number(r.triggered_by_asset_based_payment_request_id)}:${cfId}`,
+        { feeAmount: fee },
+      );
     }
   }
   return out;
@@ -210,6 +227,35 @@ async function fetchPendingTriggers(
     [campaignIds],
   );
 
+  // Other-Assets (asset-based payment requests) that are still
+  // Pending OR In Transit and have not yet fired an 'applied'
+  // cover-fee row. Unlike DAF grants — whose cover-fee fires at the
+  // Pending→In Transit step — for Other-Assets the actual payment
+  // isn't realized until Received, so the row stays in "Pending fee
+  // coverage" through In Transit and only moves to Coverage Activity
+  // when the asset is Received.
+  const assetResult = await pool.query(
+    `SELECT abpr.id, abpr.user_id, u.email, u.first_name, u.last_name,
+            abpr.approximate_amount::numeric AS amount,
+            abpr.created_at AS date_created,
+            abpr.campaign_id, c.name AS campaign_name
+       FROM asset_based_payment_requests abpr
+       JOIN campaigns c ON c.id = abpr.campaign_id
+       LEFT JOIN users u ON u.id = abpr.user_id
+      WHERE abpr.campaign_id = ANY($1::int[])
+        AND COALESCE(abpr.is_deleted, false) = false
+        AND LOWER(COALESCE(abpr.status, '')) IN ('pending', 'in transit')
+        AND COALESCE(abpr.approximate_amount, 0)::numeric > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM campaign_cover_fees_activity a
+           WHERE a.triggered_by_asset_based_payment_request_id = abpr.id
+             AND a.fully_reversed_at IS NULL
+             AND a.status = 'applied'
+        )
+      ORDER BY abpr.created_at ASC, abpr.id ASC`,
+    [campaignIds],
+  );
+
   const triggers: CoverFeeProjectionTrigger[] = [];
 
   for (const r of recResult.rows) {
@@ -228,6 +274,7 @@ async function fetchPendingTriggers(
           : r.date_created || null,
       triggerStatus: "pending",
       pendingGrantId: r.pending_grants_id != null ? Number(r.pending_grants_id) : null,
+      assetRequestId: null,
     });
   }
 
@@ -246,6 +293,26 @@ async function fetchPendingTriggers(
       triggerDate: p.date_created || null,
       triggerStatus: "pending",
       pendingGrantId: Number(p.id),
+      assetRequestId: null,
+    });
+  }
+
+  for (const a of assetResult.rows) {
+    const composedName =
+      `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || a.email || "Anonymous";
+    triggers.push({
+      triggerType: "asset_based_payment_request",
+      triggerId: Number(a.id),
+      campaignId: Number(a.campaign_id),
+      campaignName: a.campaign_name || "",
+      triggerUserId: a.user_id || null,
+      triggerName: composedName,
+      triggerEmail: a.email || "",
+      triggerAmount: parseFloat(a.amount) || 0,
+      triggerDate: a.date_created || null,
+      triggerStatus: "pending",
+      pendingGrantId: null,
+      assetRequestId: Number(a.id),
     });
   }
 
@@ -315,7 +382,7 @@ function project(
       // remaining-decrement (already counted via heldByPool).
       let heldHit: HeldRowInfo | undefined;
       if (heldRowsByTrigger) {
-        for (const k of heldKey(trig.triggerType, trig.triggerId, trig.pendingGrantId, p.id)) {
+        for (const k of heldKey(trig.triggerType, trig.triggerId, trig.pendingGrantId, trig.assetRequestId, p.id)) {
           const hit = heldRowsByTrigger.get(k);
           if (hit) { heldHit = hit; break; }
         }

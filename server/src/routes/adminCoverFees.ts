@@ -247,6 +247,13 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
            LEFT JOIN recommendations tr ON tr.id = a.triggered_by_recommendation_id
            LEFT JOIN pending_grants tpg ON tpg.id = tr.pending_grants_id
           WHERE a.cover_fee_id = $1
+            -- Exclude rows that are currently escrowed-but-not-fired
+            -- (status='held' AND not reversed). Those belong only in
+            -- the "Pending fee coverage" projection. Applied rows and
+            -- any reversed row (regardless of prior status) continue
+            -- to render here so admins keep full visibility into both
+            -- fired coverage and historical reversals.
+            AND NOT (a.status = 'held' AND a.fully_reversed_at IS NULL)
           ORDER BY a.created_at DESC
           LIMIT 500`,
         [id],
@@ -283,6 +290,10 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
         triggerType: p.trigger.triggerType,
         triggerStatus: p.trigger.triggerStatus,
         triggerAmount: p.trigger.triggerAmount,
+        triggerLabel:
+          p.trigger.triggerType === "asset_based_payment_request"
+            ? "Other Asset"
+            : "DAF Grant",
       })),
       pendingTotal:
         Math.round(projections.reduce((s, p) => s + p.projectedAmount, 0) * 100) / 100,

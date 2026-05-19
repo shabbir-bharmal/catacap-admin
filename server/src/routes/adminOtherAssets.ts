@@ -16,7 +16,6 @@ import { sendCampaignOwnerFundingNotification } from "../utils/investmentNotific
 import { applyMatchGrants } from "../utils/matchingGrants.js";
 import {
   applyCoverFees,
-  backfillRecommendationLinkForRequest,
   convertHeldCoverFeeToApplied,
   ensureHoldForRequest,
   releaseHeldCoverFeeForRequest,
@@ -319,17 +318,11 @@ router.put("/:id/status", async (req: Request, res: Response) => {
       if (asset.camp_id) {
         await autoEnrollInvestorIfApplicable(client, asset.uid, asset.camp_id);
       }
-      // Flip any 'held' cover-fees activity row for this asset request to
-      // 'applied'. Other Assets don't have a recommendation yet at In Transit
-      // (rec is created at Received) — so the rec FK is backfilled later via
-      // backfillRecommendationLinkForRequest. Runs INSIDE the txn so the
-      // status flip and pool draw stay atomic.
-      await convertHeldCoverFeeToApplied({
-        requestKind: "other_asset",
-        requestId: id,
-        campaignName: asset.campaign_name || "",
-        client,
-      });
+      // For Other-Assets the cover-fee is deliberately NOT flipped from
+      // 'held' → 'applied' at In Transit. Unlike DAF grants, the asset
+      // isn't actually realized until Received — so we keep the row in
+      // "Pending fee coverage" through In Transit and only convert
+      // (and draw from the pool) when the status reaches Received.
     } else if (oldStatus === "In Transit" && newStatus === "Received") {
       const receivedAmount = data.amount > 0 ? data.amount : parseFloat(asset.received_amount) || 0;
 
@@ -380,14 +373,18 @@ router.put("/:id/status", async (req: Request, res: Response) => {
         );
         const newRecId = newRecResult.rows[0]?.id ?? null;
         if (newRecId) {
-          // Backfill the rec FK on the already-applied cover-fees activity
-          // row (placed at In Transit with rec FK NULL). Post-commit
-          // applyCoverFees then silently no-ops on the (pool, rec) unique
-          // index because the rec FK now matches. Runs INSIDE the txn.
-          await backfillRecommendationLinkForRequest({
+          // Flip the still-'held' cover-fees activity row for this asset
+          // request to 'applied', stamping the just-created rec FK in
+          // the same step. (For Other-Assets the flip is deferred from
+          // In Transit to Received — see the In Transit branch above.)
+          // Post-commit applyCoverFees then silently no-ops on the
+          // (pool, rec) unique index because the rec FK now matches.
+          // Runs INSIDE the txn so status flip and pool draw stay atomic.
+          await convertHeldCoverFeeToApplied({
             requestKind: "other_asset",
             requestId: id,
             triggeringRecommendationId: newRecId,
+            campaignName: asset.campaign_name || "",
             client,
           });
           matchAfterCommit = {
