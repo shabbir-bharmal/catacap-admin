@@ -53,7 +53,6 @@ export interface ReferralEvent {
   targetName: string | null;
   targetSlug: string | null;
   sourcePath: string | null;
-  amount: number | null;
   createdAt: string;
   referredUserId: string | null;
   referredFirstName: string;

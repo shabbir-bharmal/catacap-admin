@@ -59,14 +59,14 @@ function ReferrerEventsRow({ referrerId }: { referrerId: string }) {
 
   if (isLoading) {
     return (
-      <td colSpan={9} className="px-6 py-4 text-sm text-muted-foreground bg-muted/30">
+      <td colSpan={10} className="px-6 py-4 text-sm text-muted-foreground bg-muted/30">
         Loading referrals...
       </td>
     );
   }
   if (error) {
     return (
-      <td colSpan={9} className="px-6 py-4 text-sm text-destructive bg-muted/30">
+      <td colSpan={10} className="px-6 py-4 text-sm text-destructive bg-muted/30">
         Failed to load referrals.
       </td>
     );
@@ -74,13 +74,13 @@ function ReferrerEventsRow({ referrerId }: { referrerId: string }) {
   const items = data?.items ?? [];
   if (items.length === 0) {
     return (
-      <td colSpan={9} className="px-6 py-4 text-sm text-muted-foreground bg-muted/30">
+      <td colSpan={10} className="px-6 py-4 text-sm text-muted-foreground bg-muted/30">
         No referral events found.
       </td>
     );
   }
   return (
-    <td colSpan={9} className="p-0 bg-muted/30">
+    <td colSpan={10} className="p-0 bg-muted/30">
       <div className="overflow-x-auto px-6 py-4">
         <table className="w-full text-sm" data-testid={`table-referral-events-${referrerId}`}>
           <thead>
