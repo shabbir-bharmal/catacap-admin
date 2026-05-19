@@ -5,7 +5,7 @@ import { AdminLayout } from "../components/AdminLayout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ChevronLeft, Download } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, Download } from "lucide-react";
 import { currency_format } from "@/helpers/format";
 import { useToast } from "@/hooks/use-toast";
 
@@ -194,7 +194,18 @@ export default function InvestmentInvestors() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [sortField, setSortField] = useState<"date" | "amount">("date");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const { toast } = useToast();
+
+  const handleSort = (field: "date" | "amount") => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  };
 
   const handleExport = async () => {
     if (!data || data.items.length === 0) return;
@@ -229,7 +240,22 @@ export default function InvestmentInvestors() {
   }, [investmentId]);
 
   const totalAmount = data?.totalAmount || 0;
-  const items = data?.items || [];
+  const rawItems = data?.items || [];
+  const items = [...rawItems].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    if (sortField === "amount") {
+      return ((a.totalAmount || 0) - (b.totalAmount || 0)) * dir;
+    }
+    // date sort — missing dates sink to the bottom regardless of direction
+    const ta = a.date ? new Date(a.date).getTime() : NaN;
+    const tb = b.date ? new Date(b.date).getTime() : NaN;
+    const aMissing = Number.isNaN(ta);
+    const bMissing = Number.isNaN(tb);
+    if (aMissing && bMissing) return 0;
+    if (aMissing) return 1;
+    if (bMissing) return -1;
+    return (ta - tb) * dir;
+  });
 
   const statusTotals = items.reduce(
     (acc, it) => {
@@ -352,8 +378,36 @@ export default function InvestmentInvestors() {
                       <th className="px-3 py-2 text-left font-medium text-muted-foreground">Email</th>
                       <th className="px-3 py-2 text-left font-medium text-muted-foreground">Method</th>
                       <th className="px-3 py-2 text-left font-medium text-muted-foreground">Status</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Date</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Amount Invested</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                        <button
+                          type="button"
+                          onClick={() => handleSort("date")}
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          data-testid="button-sort-date"
+                        >
+                          Date
+                          {sortField === "date" && (
+                            sortDir === "asc"
+                              ? <ArrowUp className="h-3 w-3" />
+                              : <ArrowDown className="h-3 w-3" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">
+                        <button
+                          type="button"
+                          onClick={() => handleSort("amount")}
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          data-testid="button-sort-amount"
+                        >
+                          Amount Invested
+                          {sortField === "amount" && (
+                            sortDir === "asc"
+                              ? <ArrowUp className="h-3 w-3" />
+                              : <ArrowDown className="h-3 w-3" />
+                          )}
+                        </button>
+                      </th>
                       <th className="px-3 py-2 text-right font-medium text-muted-foreground">% of Total</th>
                     </tr>
                   </thead>
