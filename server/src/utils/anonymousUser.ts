@@ -1,6 +1,7 @@
 import pool from "../db.js";
 import crypto from "crypto";
 import { sendTemplateEmail } from "./emailService.js";
+import { generateUniqueRefCode } from "./refCode.js";
 
 export async function findOrCreateAnonymousUser(
   email: string,
@@ -38,13 +39,28 @@ export async function findOrCreateAnonymousUser(
   try {
     await client.query("BEGIN");
 
-    await client.query(
-      `INSERT INTO users (id, first_name, last_name, user_name, email, is_free_user, email_confirmed,
-       phone_number_confirmed, two_factor_enabled, lockout_enabled, access_failed_count,
-       security_stamp, concurrency_stamp, is_active, date_created)
-       VALUES ($1, $2, $3, $4, $5, true, false, false, false, true, 0, $6, $7, true, NOW())`,
-      [userId, trimmedFirst, trimmedLast, userName, userEmail, crypto.randomUUID(), crypto.randomUUID()]
-    );
+    let inserted = false;
+    for (let attempt = 0; attempt < 5 && !inserted; attempt++) {
+      const refCode = await generateUniqueRefCode(client);
+      try {
+        await client.query(
+          `INSERT INTO users (id, first_name, last_name, user_name, email, ref_code, is_free_user, email_confirmed,
+           phone_number_confirmed, two_factor_enabled, lockout_enabled, access_failed_count,
+           security_stamp, concurrency_stamp, is_active, date_created)
+           VALUES ($1, $2, $3, $4, $5, $6, true, false, false, false, true, 0, $7, $8, true, NOW())`,
+          [userId, trimmedFirst, trimmedLast, userName, userEmail, refCode, crypto.randomUUID(), crypto.randomUUID()]
+        );
+        inserted = true;
+      } catch (refErr: any) {
+        if (refErr.code === "23505" && refErr.constraint === "idx_users_ref_code_unique") {
+          continue;
+        }
+        throw refErr;
+      }
+    }
+    if (!inserted) {
+      throw new Error("findOrCreateAnonymousUser: could not allocate unique ref_code after 5 attempts");
+    }
 
     const roleResult = await client.query(
       `SELECT id FROM roles WHERE name = 'User' LIMIT 1`

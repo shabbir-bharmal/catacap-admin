@@ -139,3 +139,134 @@ Verification
 6. Reject a still-Pending pending_grant → "On Hold" decreases,
    "Remaining" returns to pre-hold value.
 
+
+
+C. Referrals: manual "Add Referral" with retroactive back-fill
+--------------------------------------------------------------
+
+Migration
+---------
+* 2026_05_19_003_referrals_unique_signup.sql
+  Adds partial unique index
+    idx_referrals_signup_unique_referred_user
+    ON public.referrals(referred_user_id) WHERE action_type='signup'
+  so a referred user can have at most ONE 'signup' attribution row.
+  This is the authoritative DB-level guard against two admins
+  concurrently linking the same person to two different referrers.
+  Pre-flight DO-block aborts the migration if existing data already
+  contains duplicate signup rows. Idempotent (IF NOT EXISTS).
+
+Intent
+------
+* Add an "Add Referral" button on /referrals that opens a dialog with
+  two email-pickers (referrer + referred). Submitting calls the new
+  endpoint POST /api/admin/referrals/link.
+
+* The endpoint inserts a signup attribution row AND back-fills
+  retroactive activity rows for everything the referred user has
+  already done:
+    - group_join: public.requests where request_owner_id = referred,
+      status='accepted', non-deleted, group_to_follow_id NOT NULL.
+    - investment: public.recommendations where user_id = referred,
+      non-deleted, campaign_id NOT NULL (amount carried over).
+    - raise_money_signup: public.campaigns where user_id = referred,
+      non-deleted.
+
+* Every insert uses NOT EXISTS (signup uses ON CONFLICT DO NOTHING on
+  the new unique index) so re-submitting the same pair only inserts
+  rows that aren't there yet — totalNew=0 means "already fully linked".
+
+* Conflict handling: if the referred user already has a signup row
+  pointing at a different referrer, the endpoint returns 409 with
+  "This user is already attributed to a different referrer." The same
+  message is returned both pre-flight and on the unique-violation race
+  path inside the catch block.
+
+Rollback
+--------
+  DROP INDEX IF EXISTS public.idx_referrals_signup_unique_referred_user;
+
+Verification
+------------
+1. psql -f releases/19_05_2026/migrations/2026_05_19_003_referrals_unique_signup.sql
+2. Verify index exists:
+     SELECT indexname FROM pg_indexes
+      WHERE schemaname='public'
+        AND indexname='idx_referrals_signup_unique_referred_user';
+3. /referrals → "Add Referral" → pick two users → Save Referral.
+   Toast shows counts; the new referrer appears (or its counts grow)
+   in the table after auto-invalidate.
+4. Submit the same pair again → toast "Referral already linked" with
+   0 new events.
+5. Pick a referred user that already belongs to another referrer →
+   error toast with the 409 message; no rows inserted.
+
+
+D. Referrals: ensure every user has a ref_code
+----------------------------------------------
+
+Migration
+---------
+* 2026_05_19_004_users_ref_code_backfill.sql
+  - Creates helper function public.generate_user_ref_code() that
+    returns a random 8-char alphanumeric code (a-z, A-Z, 0-9) which
+    is not already present in public.users.ref_code.
+  - Back-fills ref_code for every user where it is NULL or '' using
+    the helper (loops in PL/pgSQL, one UPDATE per missing user).
+  - Adds partial unique index idx_users_ref_code_unique
+      ON public.users(ref_code) WHERE ref_code IS NOT NULL AND <> ''
+    so two users can never share a code.
+  - Idempotent: function is CREATE OR REPLACE; backfill targets only
+    NULL/empty rows; index uses IF NOT EXISTS.
+
+Intent
+------
+* Previously ref_code was only populated for a handful of legacy users
+  (e.g. Ken Kurtzig), so the /referrals admin table showed "—" for
+  almost everyone and the public site had no referral link to give
+  out. After this release every account in public.users has a code,
+  and every user created through the Node backend is born with one.
+
+Runtime changes
+---------------
+* server/src/utils/refCode.ts (new)
+    generateUniqueRefCode(client?) — produces an 8-char alphanumeric
+    code (crypto.randomBytes -> CHARS lookup), retried up to 12 times
+    until SELECT confirms the code is not already in users.ref_code.
+    Pass an open PoolClient when generating inside a transaction.
+
+* server/src/utils/anonymousUser.ts
+    findOrCreateAnonymousUser now generates a ref_code inside the
+    insert transaction. On a 23505 hit against the new unique index
+    it retries up to 5 times with a fresh code before failing.
+
+* server/src/routes/adminUsers.ts (POST /api/admin/users — create user)
+    Same pattern: generate ref_code, INSERT with it, retry on
+    23505 / idx_users_ref_code_unique up to 5 times. On exhaustion
+    returns 500 with "Could not allocate a unique referral code."
+
+Caveat
+------
+* The .NET backend (Back-End/) also creates users via the public
+  registration / OAuth paths and is OUT OF SCOPE for edits per the
+  project's user-preference rule. Users created there will land with
+  ref_code = NULL until either the .NET side is patched OR the
+  back-fill migration is re-run (the back-fill is idempotent and will
+  populate any newly-NULL rows on a second invocation).
+
+Rollback
+--------
+  DROP INDEX IF EXISTS public.idx_users_ref_code_unique;
+  DROP FUNCTION IF EXISTS public.generate_user_ref_code();
+  -- (existing ref_code values left intact; harmless if kept)
+
+Verification
+------------
+1. psql -f releases/19_05_2026/migrations/2026_05_19_004_users_ref_code_backfill.sql
+2. SELECT COUNT(*) FILTER (WHERE ref_code IS NULL OR ref_code = '')
+     FROM public.users;
+   Expect 0.
+3. /referrals → REF CODE column shows a code for every row including
+   Lily Kanter and Tim Freundlich.
+4. POST /api/admin/users (admin "Create user" flow) → newly created
+   user row has a populated ref_code.

@@ -9,6 +9,7 @@ import { resolveFileUrl } from "../utils/uploadBase64Image.js";
 import { logAudit } from "../utils/auditLog.js";
 import { restoreUsersWithCascadeInTx } from "../utils/userRestore.js";
 import { cascadeSoftDeleteUserData } from "../utils/cascadeUserSoftDelete.js";
+import { generateUniqueRefCode } from "../utils/refCode.js";
 
 const router = Router();
 
@@ -1158,28 +1159,45 @@ router.post("/admin-users", async (req: Request, res: Response) => {
       const securityStamp = crypto.randomUUID();
       const concurrencyStamp = crypto.randomUUID();
 
-      await pool.query(
-        `INSERT INTO users (id, first_name, last_name, email, normalized_email,
-         user_name, normalized_user_name, password_hash, security_stamp,
-         concurrency_stamp, is_active, date_created, email_confirmed,
-         phone_number_confirmed, two_factor_enabled, lockout_enabled,
-         access_failed_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), false, false, $12, true, 0)`,
-        [
-          userId,
-          firstName,
-          lastName,
-          email.toLowerCase().trim(),
-          email.toUpperCase().trim(),
-          userName,
-          userName ? userName.toUpperCase() : null,
-          passwordHash,
-          securityStamp,
-          concurrencyStamp,
-          isActive ?? false,
-          twoFactorEnabled ?? false,
-        ]
-      );
+      let userInserted = false;
+      for (let attempt = 0; attempt < 5 && !userInserted; attempt++) {
+        const refCode = await generateUniqueRefCode();
+        try {
+          await pool.query(
+            `INSERT INTO users (id, first_name, last_name, email, normalized_email,
+             user_name, normalized_user_name, password_hash, security_stamp,
+             concurrency_stamp, ref_code, is_active, date_created, email_confirmed,
+             phone_number_confirmed, two_factor_enabled, lockout_enabled,
+             access_failed_count)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), false, false, $13, true, 0)`,
+            [
+              userId,
+              firstName,
+              lastName,
+              email.toLowerCase().trim(),
+              email.toUpperCase().trim(),
+              userName,
+              userName ? userName.toUpperCase() : null,
+              passwordHash,
+              securityStamp,
+              concurrencyStamp,
+              refCode,
+              isActive ?? false,
+              twoFactorEnabled ?? false,
+            ]
+          );
+          userInserted = true;
+        } catch (insertErr: any) {
+          if (insertErr.code === "23505" && insertErr.constraint === "idx_users_ref_code_unique") {
+            continue;
+          }
+          throw insertErr;
+        }
+      }
+      if (!userInserted) {
+        res.status(500).json({ success: false, message: "Could not allocate a unique referral code. Please try again." });
+        return;
+      }
 
       await pool.query(
         "INSERT INTO user_roles (user_id, role_id, discriminator, is_deleted) VALUES ($1, $2, $3, false)",
